@@ -1,0 +1,15 @@
+{
+  "name": "commands",
+  "module": "src/index.ts",
+  "type": "module",
+  "devDependencies": {
+    "@types/bun": "latest",
+    "zod": "^4.3.6"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@standard-schema/spec": "^1.1.0"
+  }
+}

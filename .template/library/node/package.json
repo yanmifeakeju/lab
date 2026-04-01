@@ -1,0 +1,31 @@
+{
+  "name": "@your-org/library-name",
+  "version": "0.0.1",
+  "description": "Library description",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsgo --build",
+    "check": "tsgo --noEmit",
+    "test": "node --test --experimental-strip-types src/**/*.test.ts",
+    "clean": "rm -rf dist"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "devDependencies": {
+    "@typescript/native-preview": "^7.0.0-dev"
+  },
+  "keywords": [],
+  "license": "MIT"
+}
