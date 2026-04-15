@@ -1,4 +1,5 @@
 import type { StandardSchemaV1 } from "@standard-schema/spec";
+import type { CommandDefinition, Commands, CommandRunner } from "../types.ts";
 import {
   CommandNotFoundError,
   CommandAlreadyExistsError,
@@ -6,40 +7,16 @@ import {
 } from "./errors.ts";
 import { validateSchema } from "./validate.ts";
 
-export interface CommandDefinition<
-  Schema extends StandardSchemaV1,
-  Context,
-  Result,
-> {
-  schema: Schema;
-  run: (
-    data: StandardSchemaV1.InferOutput<Schema>,
-    context: Context
-  ) => Promise<Result> | Result;
-}
-
-export interface Commands<Context> {
-  add<Schema extends StandardSchemaV1, Result>(
-    name: string,
-    definition: CommandDefinition<Schema, Context, Result>
-  ): Commands<Context>;
-
-  init(context: Context): CommandRunner;
-  list(): string[];
-  has(name: string): boolean;
-}
-
-export interface CommandRunner {
-  execute(name: string, data: unknown): Promise<void>;
-  list(): string[];
-  has(name: string): boolean;
-}
-
 interface StoredCommand<Context> {
   schema: StandardSchemaV1;
   run: (data: unknown, context: Context) => Promise<unknown> | unknown;
 }
 
+/**
+ * createCommands creates a new command registry.
+ * The split between Commands (registry) and CommandRunner (executor) allows for 
+ * a clear separation between setup/configuration and execution phases.
+ */
 export function createCommands<Context>(): Commands<Context> {
   const registry = new Map<string, StoredCommand<Context>>();
 
