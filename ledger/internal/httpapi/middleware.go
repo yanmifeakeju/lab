@@ -1,4 +1,4 @@
-package handler
+package httpapi
 
 import "net/http"
 
@@ -7,7 +7,7 @@ import "net/http"
 // outermost wrapper of the returned handler.
 func Use(middlewares ...func(http.Handler) http.Handler) func(http.Handler) http.Handler {
 	return func(handler http.Handler) http.Handler {
-		for i := range middlewares {
+		for i := len(middlewares) - 1; i >= 0; i-- {
 			handler = middlewares[i](handler)
 		}
 

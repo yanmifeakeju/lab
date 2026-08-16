@@ -1,0 +1,267 @@
+openapi: 3.0.3
+info:
+  title: Ledger API
+  version: 0.1.0
+  description: HTTP API for the ledger service.
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Check whether the service is running
+      responses:
+        "200":
+          description: The service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /ledgers/{slug}/accounts:
+    post:
+      operationId: createPayableAccount
+      summary: Create a payable account in a ledger
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/LedgerSlug"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePayableAccountRequest"
+      responses:
+        "200":
+          description: An identical request was previously completed; the existing account is returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreatePayableAccountResponse"
+        "201":
+          description: The payable account was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreatePayableAccountResponse"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          description: The requested ledger does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: Ledger not found.
+                error:
+                  code: ledger_not_found
+        "409":
+          description: The request conflicts with the ledger's current state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                ledgerClosed:
+                  summary: The ledger is closed
+                  value:
+                    message: Ledger is closed.
+                    error:
+                      code: ledger_closed
+                holderConflict:
+                  summary: The holder identity conflicts with an existing holder
+                  value:
+                    message: Holder information conflicts with an existing holder.
+                    error:
+                      code: holder_conflict
+        "500":
+          description: The server could not complete the request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: The server could not complete the request.
+                error:
+                  code: internal_server_error
+
+components:
+  schemas:
+    LedgerSlug:
+      type: string
+      description: Opaque identifier assigned to the ledger.
+      minLength: 3
+      maxLength: 63
+      pattern: '^[a-z0-9]+(?:_[a-z0-9]+)*$'
+      example: ngn_ng
+      x-validation-messages:
+          minLength: must contain at least 3 characters
+          maxLength: must not exceed 63 characters
+          pattern: must contain lowercase letters and numbers separated by single underscores
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          example: ok
+
+    CreatePayableAccountRequest:
+      type: object
+      required:
+        - external_id
+        - name
+      properties:
+        external_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '.*\S.*'
+          x-go-name: ExternalID
+          x-validation-messages:
+            type: must be a string
+            minLength: must not be empty
+            maxLength: must not exceed 255 characters
+            pattern: must not be blank
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '.*\S.*'
+          x-validation-messages:
+            type: must be a string
+            minLength: must not be empty
+            maxLength: must not exceed 255 characters
+            pattern: must not be blank
+
+    CreatePayableAccountResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - ledger_slug
+        - external_id
+        - name
+        - created_at
+      properties:
+        ledger_slug:
+          $ref: "#/components/schemas/LedgerSlug"
+        external_id:
+          type: string
+          minLength: 1
+          example: merchant_123
+          x-go-name: ExternalID
+        name:
+          type: string
+          minLength: 1
+          example: Acme Ltd
+        created_at:
+          type: string
+          format: date-time
+
+    ValidationErrorResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - message
+        - error
+      properties:
+        message:
+          type: string
+          minLength: 1
+          example: Request validation failed.
+        error:
+          $ref: "#/components/schemas/ValidationError"
+
+    ValidationError:
+      type: object
+      additionalProperties: false
+      required:
+        - code
+        - details
+      properties:
+        code:
+          type: string
+          enum:
+            - validation_error
+        details:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/ValidationErrorDetail"
+
+    ValidationErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+        - location
+        - field
+        - code
+        - message
+      properties:
+        location:
+          type: string
+          enum:
+             - request
+             - path
+             - query
+             - body
+        field:
+          type: string
+          minLength: 1
+          example: external_id
+        code:
+          type: string
+          enum:
+            - required
+            - invalid_type
+            - invalid_format
+            - min_length
+            - max_length
+            - unknown_field
+        message:
+          type: string
+          minLength: 1
+          example: external_id is required
+
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - message
+        - error
+      properties:
+        message:
+          type: string
+          minLength: 1
+        error:
+          $ref: "#/components/schemas/ErrorInfo"
+
+    ErrorInfo:
+      type: object
+      additionalProperties: false
+      required:
+        - code
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+
+    ErrorCode:
+      type: string
+      enum:
+        - ledger_not_found
+        - ledger_closed
+        - holder_conflict
+        - internal_server_error
+
+  responses:
+    InvalidRequest:
+      description: The request does not satisfy the API contract.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ValidationErrorResponse"

@@ -2,9 +2,13 @@
 node_modules/
 dist/
 *.tsbuildinfo
+node/
 
 # Local environment
 .env
 
 # Go
 /bin/
+
+# Test
+coverage.out
