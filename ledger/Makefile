@@ -1,4 +1,4 @@
-.PHONY: generate build build-api test test-race vet cover run start migrate-up migrate-status clean
+.PHONY: generate build build-api test test-integration test-race vet cover run start migrate-up migrate-status clean
 
 DB_URL?=$$DATABASE_URL
 API_BIN:=bin/ledger-api
@@ -15,6 +15,9 @@ build-api:
 
 test:
 	go test ./...
+
+test-integration:
+	go test -tags=integration -count=1 ./internal/postgres
 
 test-race:
 	go test -race ./...
