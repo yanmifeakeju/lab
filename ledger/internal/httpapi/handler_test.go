@@ -3,6 +3,7 @@ package httpapi_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,14 +16,18 @@ import (
 )
 
 type fakePayableAccountCreator struct {
+	input  account.CreatePayableInput
 	result account.CreateResult
 	err    error
+	calls  int
 }
 
-func (f fakePayableAccountCreator) CreatePayableAccount(
-	context.Context,
-	account.CreatePayableInput,
+func (f *fakePayableAccountCreator) CreatePayableAccount(
+	_ context.Context,
+	input account.CreatePayableInput,
 ) (account.CreateResult, error) {
+	f.input = input
+	f.calls++
 	return f.result, f.err
 }
 
@@ -58,7 +63,7 @@ func TestRoutes(t *testing.T) {
 	}
 }
 
-func TestCreateAccountValidation(t *testing.T) {
+func TestCreatePayableAccountValidation(t *testing.T) {
 	tests := []struct {
 		name        string
 		target      string
@@ -136,7 +141,7 @@ func TestCreateAccountValidation(t *testing.T) {
 		},
 	}
 
-	handler, err := httpapi.NewHandler(fakePayableAccountCreator{
+	handler, err := httpapi.NewHandler(&fakePayableAccountCreator{
 		result: account.CreateResult{
 			Created: true,
 			Account: account.Account{
@@ -192,7 +197,7 @@ func TestCreateAccountValidation(t *testing.T) {
 }
 
 func TestHealth(t *testing.T) {
-	handler, err := httpapi.NewHandler(fakePayableAccountCreator{})
+	handler, err := httpapi.NewHandler(&fakePayableAccountCreator{})
 	if err != nil {
 		t.Fatalf("Routes: %v", err)
 	}
@@ -210,5 +215,135 @@ func TestHealth(t *testing.T) {
 	}
 	if got.Status != "ok" {
 		t.Errorf("status body = %q, want ok", got.Status)
+	}
+}
+
+func TestCreatePayableAccountResponses(t *testing.T) {
+	createdAt := time.Date(2026, time.August, 18, 14, 30, 0, 0, time.UTC)
+	wantInput := account.CreatePayableInput{
+		LedgerSlug: "ngn_ng",
+		ExternalID: "merchant_1",
+		Name:       "Acme Ltd",
+	}
+
+	tests := []struct {
+		name        string
+		result      account.CreateResult
+		err         error
+		wantStatus  int
+		wantCode    api.ErrorCode
+		wantMessage string
+	}{
+		{
+			name: "created",
+			result: account.CreateResult{
+				Created: true,
+				Account: account.Account{
+					HolderName: "Acme Ltd",
+					CreatedAt:  createdAt,
+				},
+			},
+			wantStatus: http.StatusCreated,
+		},
+		{
+			name: "idempotent retry",
+			result: account.CreateResult{
+				Created: false,
+				Account: account.Account{
+					HolderName: "Acme Ltd",
+					CreatedAt:  createdAt,
+				},
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:        "ledger not found",
+			err:         fmt.Errorf("create payable account: %w", account.ErrLedgerNotFound),
+			wantStatus:  http.StatusNotFound,
+			wantCode:    api.LedgerNotFound,
+			wantMessage: "Ledger not found.",
+		},
+		{
+			name:        "ledger closed",
+			err:         fmt.Errorf("create payable account: %w", account.ErrLedgerClosed),
+			wantStatus:  http.StatusConflict,
+			wantCode:    api.LedgerClosed,
+			wantMessage: "Ledger is closed.",
+		},
+		{
+			name:        "holder conflict",
+			err:         fmt.Errorf("create payable account: %w", account.ErrHolderConflict),
+			wantStatus:  http.StatusConflict,
+			wantCode:    api.HolderConflict,
+			wantMessage: "Holder information conflicts with an existing holder.",
+		},
+		{
+			name:        "unexpected error",
+			err:         fmt.Errorf("database unavailable"),
+			wantStatus:  http.StatusInternalServerError,
+			wantCode:    api.InternalServerError,
+			wantMessage: "The server could not complete the request.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			creator := &fakePayableAccountCreator{result: tt.result, err: tt.err}
+			handler, err := httpapi.NewHandler(creator)
+			if err != nil {
+				t.Fatalf("NewHandler: %v", err)
+			}
+
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/ledgers/ngn_ng/accounts",
+				strings.NewReader(`{"external_id":"merchant_1","name":"Acme Ltd"}`),
+			)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if creator.calls != 1 {
+				t.Fatalf("CreatePayableAccount() calls = %d, want 1", creator.calls)
+			}
+			if creator.input != wantInput {
+				t.Errorf("CreatePayableAccount() input = %+v, want %+v", creator.input, wantInput)
+			}
+
+			if tt.wantCode == "" {
+				var got api.CreatePayableAccountResponse
+				if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+					t.Fatalf("decode success response: %v", err)
+				}
+				if got.LedgerSlug != api.LedgerSlug(wantInput.LedgerSlug) {
+					t.Errorf("ledger_slug = %q, want %q", got.LedgerSlug, wantInput.LedgerSlug)
+				}
+				if got.ExternalID != wantInput.ExternalID {
+					t.Errorf("external_id = %q, want %q", got.ExternalID, wantInput.ExternalID)
+				}
+				if got.Name != tt.result.Account.HolderName {
+					t.Errorf("name = %q, want %q", got.Name, tt.result.Account.HolderName)
+				}
+				if !got.CreatedAt.Equal(tt.result.Account.CreatedAt) {
+					t.Errorf("created_at = %v, want %v", got.CreatedAt, tt.result.Account.CreatedAt)
+				}
+				return
+			}
+
+			var got api.ErrorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode error response: %v", err)
+			}
+			if got.Error.Code != tt.wantCode {
+				t.Errorf("error code = %q, want %q", got.Error.Code, tt.wantCode)
+			}
+			if got.Message != tt.wantMessage {
+				t.Errorf("message = %q, want %q", got.Message, tt.wantMessage)
+			}
+		})
 	}
 }
