@@ -145,8 +145,10 @@ func TestCreatePayableAccountValidation(t *testing.T) {
 		result: account.CreateResult{
 			Created: true,
 			Account: account.Account{
-				HolderName: "Acme Ltd",
-				CreatedAt:  time.Now(),
+				Reference:       "acct_01K33YV8M82N9MXP4E7J6B1QWK",
+				HolderReference: "hld_01K33YVADP5Z8B0T3X2Q91C6RH",
+				HolderName:      "Acme Ltd",
+				CreatedAt:       time.Now(),
 			},
 		},
 	})
@@ -220,6 +222,8 @@ func TestHealth(t *testing.T) {
 
 func TestCreatePayableAccountResponses(t *testing.T) {
 	createdAt := time.Date(2026, time.August, 18, 14, 30, 0, 0, time.UTC)
+	accountRef := "acct_01K33YV8M82N9MXP4E7J6B1QWK"
+	holderRef := "hld_01K33YVADP5Z8B0T3X2Q91C6RH"
 	wantInput := account.CreatePayableInput{
 		LedgerSlug: "ngn_ng",
 		ExternalID: "merchant_1",
@@ -239,8 +243,10 @@ func TestCreatePayableAccountResponses(t *testing.T) {
 			result: account.CreateResult{
 				Created: true,
 				Account: account.Account{
-					HolderName: "Acme Ltd",
-					CreatedAt:  createdAt,
+					Reference:       accountRef,
+					HolderReference: holderRef,
+					HolderName:      "Acme Ltd",
+					CreatedAt:       createdAt,
 				},
 			},
 			wantStatus: http.StatusCreated,
@@ -250,8 +256,10 @@ func TestCreatePayableAccountResponses(t *testing.T) {
 			result: account.CreateResult{
 				Created: false,
 				Account: account.Account{
-					HolderName: "Acme Ltd",
-					CreatedAt:  createdAt,
+					Reference:       accountRef,
+					HolderReference: holderRef,
+					HolderName:      "Acme Ltd",
+					CreatedAt:       createdAt,
 				},
 			},
 			wantStatus: http.StatusOK,
@@ -322,6 +330,12 @@ func TestCreatePayableAccountResponses(t *testing.T) {
 				if got.LedgerSlug != api.LedgerSlug(wantInput.LedgerSlug) {
 					t.Errorf("ledger_slug = %q, want %q", got.LedgerSlug, wantInput.LedgerSlug)
 				}
+				if got.AccountRef != accountRef {
+					t.Errorf("account_ref = %q, want %q", got.AccountRef, accountRef)
+				}
+				if got.HolderRef != holderRef {
+					t.Errorf("holder_ref = %q, want %q", got.HolderRef, holderRef)
+				}
 				if got.ExternalID != wantInput.ExternalID {
 					t.Errorf("external_id = %q, want %q", got.ExternalID, wantInput.ExternalID)
 				}
@@ -345,5 +359,40 @@ func TestCreatePayableAccountResponses(t *testing.T) {
 				t.Errorf("message = %q, want %q", got.Message, tt.wantMessage)
 			}
 		})
+	}
+}
+
+func TestCreatePayableAccountTrimsName(t *testing.T) {
+	creator := &fakePayableAccountCreator{
+		result: account.CreateResult{
+			Created: true,
+			Account: account.Account{
+				Reference:       "acct_01K33YV8M82N9MXP4E7J6B1QWK",
+				HolderReference: "hld_01K33YVADP5Z8B0T3X2Q91C6RH",
+				HolderName:      "Acme Ltd",
+				CreatedAt:       time.Now(),
+			},
+		},
+	}
+	handler, err := httpapi.NewHandler(creator)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/ledgers/ngn_ng/accounts",
+		strings.NewReader(`{"external_id":"merchant_1","name":"  Acme Ltd  "}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if creator.input.Name != "Acme Ltd" {
+		t.Errorf("CreatePayableAccount() input name = %q, want %q", creator.input.Name, "Acme Ltd")
 	}
 }

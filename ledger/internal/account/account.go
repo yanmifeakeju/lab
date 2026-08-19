@@ -13,10 +13,12 @@ const (
 
 type Account struct {
 	ID                         int64
+	Reference                  string
 	LedgerID                   int
 	Kind                       AccountKind
 	Channel                    *string
 	HolderID                   *int64
+	HolderReference            string
 	HolderName                 string
 	Description                *string
 	DebitsPending              int64

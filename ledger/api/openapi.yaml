@@ -98,9 +98,24 @@ components:
       pattern: '^[a-z0-9]+(?:_[a-z0-9]+)*$'
       example: ngn_ng
       x-validation-messages:
-          minLength: must contain at least 3 characters
-          maxLength: must not exceed 63 characters
-          pattern: must contain lowercase letters and numbers separated by single underscores
+        minLength: must contain at least 3 characters
+        maxLength: must not exceed 63 characters
+        pattern: must contain lowercase letters and numbers separated by single underscores
+
+    HolderRef:
+      type: string
+      description: Stable opaque reference assigned to a holder by the ledger.
+      minLength: 1
+      maxLength: 64
+      example: hld_01K33YVADP5Z8B0T3X2Q91C6RH
+
+    AccountRef:
+      type: string
+      description: Stable opaque reference assigned to an account by the ledger.
+      minLength: 1
+      maxLength: 64
+      example: acct_01K33YV8M82N9MXP4E7J6B1QWK
+
     HealthResponse:
       type: object
       additionalProperties: false
@@ -143,11 +158,17 @@ components:
       type: object
       additionalProperties: false
       required:
+        - holder_ref
+        - account_ref
         - ledger_slug
         - external_id
         - name
         - created_at
       properties:
+        holder_ref:
+          $ref: "#/components/schemas/HolderRef"
+        account_ref:
+          $ref: "#/components/schemas/AccountRef"
         ledger_slug:
           $ref: "#/components/schemas/LedgerSlug"
         external_id:

@@ -1,15 +1,19 @@
 -- +goose Up
 CREATE TABLE "holders" (
 	"id" bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY (sequence name "holders_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
+	"public_ref" text COLLATE "C" NOT NULL,
 	"external_id" text NOT NULL,
 	"name" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "holders_public_ref_unique" UNIQUE("public_ref"),
+	CONSTRAINT "holders_public_ref_valid" CHECK ("holders"."public_ref" ~ '^hld_[0-7][0-9A-HJKMNP-TV-Z]{25}$'),
 	CONSTRAINT "holders_external_id_unique" UNIQUE("external_id"),
 	CONSTRAINT "holders_name_not_blank" CHECK (length(btrim("holders"."name")) > 0)
 );
 
 CREATE TABLE "accounts" (
 	"id" bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY (sequence name "accounts_id_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1),
+	"public_ref" text COLLATE "C" NOT NULL,
 	"ledger_id" integer NOT NULL,
 	"kind" text NOT NULL,
 	"channel" text,
@@ -23,6 +27,8 @@ CREATE TABLE "accounts" (
 	"credits_must_not_exceed_debits" boolean DEFAULT false NOT NULL,
 	"is_closed" boolean DEFAULT false NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "accounts_public_ref_unique" UNIQUE("public_ref"),
+	CONSTRAINT "accounts_public_ref_valid" CHECK ("accounts"."public_ref" ~ '^acct_[0-7][0-9A-HJKMNP-TV-Z]{25}$'),
 	CONSTRAINT "accounts_kind_valid" CHECK ("accounts"."kind" in ('payable', 'receivable', 'treasury', 'fee_revenue')),
 	CONSTRAINT "accounts_kind_matches_holder" CHECK (("accounts"."kind" = 'payable') = ("accounts"."holder_id" is not null)),
 	CONSTRAINT "accounts_channel_matches_kind" CHECK (("accounts"."kind" = 'receivable') = ("accounts"."channel" is not null)),

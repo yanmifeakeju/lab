@@ -5,27 +5,12 @@ package postgres_test
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 
 	"yanmifeakeju.com/ledger/internal/account"
 	"yanmifeakeju.com/ledger/internal/postgres"
 )
-
-func seedLedger(t *testing.T, tx *sql.Tx, slug, currency string) int {
-	t.Helper()
-
-	const query = `
-		INSERT INTO ledgers (slug, currency, scale)
-		VALUES ($1, $2, $3)
-		RETURNING id`
-
-	var id int
-	if err := tx.QueryRowContext(t.Context(), query, slug, currency, 2).Scan(&id); err != nil {
-		t.Fatalf("seed ledger %q: %v", slug, err)
-	}
-
-	return id
-}
 
 func TestStore_CreatePayableAccount(t *testing.T) {
 	tx := newTestTx(t)
@@ -49,6 +34,9 @@ func TestStore_CreatePayableAccount(t *testing.T) {
 	if got.ID == 0 {
 		t.Error("CreatePayableAccount() Account.ID = 0, want generated ID")
 	}
+	if !strings.HasPrefix(got.Reference, "acct_") {
+		t.Errorf("CreatePayableAccount() Account.Reference = %q, want acct_ prefix", got.Reference)
+	}
 	if got.LedgerID != ledgerID {
 		t.Errorf("CreatePayableAccount() Account.LedgerID = %d, want %d", got.LedgerID, ledgerID)
 	}
@@ -63,6 +51,12 @@ func TestStore_CreatePayableAccount(t *testing.T) {
 	}
 	if *got.HolderID == 0 {
 		t.Error("CreatePayableAccount() Account.HolderID = 0, want generated ID")
+	}
+	if !strings.HasPrefix(got.HolderReference, "hld_") {
+		t.Errorf(
+			"CreatePayableAccount() Account.HolderReference = %q, want hld_ prefix",
+			got.HolderReference,
+		)
 	}
 	if got.HolderName != "Acme Ltd" {
 		t.Errorf("CreatePayableAccount() Account.HolderName = %q, want %q", got.HolderName, "Acme Ltd")
@@ -122,6 +116,13 @@ func TestStore_CreatePayableAccount_IdempotentRetry(t *testing.T) {
 			first.Account.ID,
 		)
 	}
+	if second.Account.Reference != first.Account.Reference {
+		t.Errorf(
+			"retry CreatePayableAccount() Account.Reference = %q, want %q",
+			second.Account.Reference,
+			first.Account.Reference,
+		)
+	}
 	if first.Account.HolderID == nil {
 		t.Fatal("first CreatePayableAccount() Account.HolderID = nil, want generated ID")
 	}
@@ -133,6 +134,13 @@ func TestStore_CreatePayableAccount_IdempotentRetry(t *testing.T) {
 			"retry CreatePayableAccount() Account.HolderID = %d, want %d",
 			*second.Account.HolderID,
 			*first.Account.HolderID,
+		)
+	}
+	if second.Account.HolderReference != first.Account.HolderReference {
+		t.Errorf(
+			"retry CreatePayableAccount() Account.HolderReference = %q, want %q",
+			second.Account.HolderReference,
+			first.Account.HolderReference,
 		)
 	}
 }
@@ -187,6 +195,12 @@ func TestStore_CreatePayableAccount_SameHolderAcrossLedgers(t *testing.T) {
 			usdResult.Account.ID,
 		)
 	}
+	if usdResult.Account.Reference == ngnResult.Account.Reference {
+		t.Errorf(
+			"accounts share reference %q, want different references for different ledgers",
+			usdResult.Account.Reference,
+		)
+	}
 	if ngnResult.Account.HolderID == nil {
 		t.Fatal("NGN CreatePayableAccount() Account.HolderID = nil, want generated ID")
 	}
@@ -198,6 +212,13 @@ func TestStore_CreatePayableAccount_SameHolderAcrossLedgers(t *testing.T) {
 			"USD CreatePayableAccount() Account.HolderID = %d, want %d",
 			*usdResult.Account.HolderID,
 			*ngnResult.Account.HolderID,
+		)
+	}
+	if usdResult.Account.HolderReference != ngnResult.Account.HolderReference {
+		t.Errorf(
+			"USD CreatePayableAccount() Account.HolderReference = %q, want %q",
+			usdResult.Account.HolderReference,
+			ngnResult.Account.HolderReference,
 		)
 	}
 }
@@ -278,4 +299,20 @@ func TestStore_CreatePayableAccount_Errors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func seedLedger(t *testing.T, tx *sql.Tx, slug, currency string) int {
+	t.Helper()
+
+	const query = `
+		INSERT INTO ledgers (slug, currency, scale)
+		VALUES ($1, $2, $3)
+		RETURNING id`
+
+	var id int
+	if err := tx.QueryRowContext(t.Context(), query, slug, currency, 2).Scan(&id); err != nil {
+		t.Fatalf("seed ledger %q: %v", slug, err)
+	}
+
+	return id
 }

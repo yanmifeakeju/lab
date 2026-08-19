@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/lib/pq"
+	"github.com/oklog/ulid/v2"
 	"yanmifeakeju.com/ledger/internal/account"
 )
 
@@ -37,11 +38,21 @@ func (s *Store) CreatePayableAccount(
 		a       account.Account
 		created bool
 	)
-	const q = `SELECT * FROM create_payable_account($1, $2, $3)`
+	holderReference := "hld_" + ulid.Make().String()
+	accountReference := "acct_" + ulid.Make().String()
+	const q = `SELECT * FROM create_payable_account($1, $2, $3, $4, $5)`
 
-	err := s.db.QueryRowContext(ctx, q, input.ExternalID, input.Name, input.LedgerSlug).Scan(
-		&a.ID, &a.LedgerID, &a.Kind, &a.Channel, &a.HolderID, &a.HolderName,
-		&a.Description,
+	err := s.db.QueryRowContext(
+		ctx,
+		q,
+		input.ExternalID,
+		input.Name,
+		input.LedgerSlug,
+		holderReference,
+		accountReference,
+	).Scan(
+		&a.ID, &a.Reference, &a.LedgerID, &a.Kind, &a.Channel, &a.HolderID,
+		&a.HolderReference, &a.HolderName, &a.Description,
 		&a.DebitsPending, &a.CreditsPending, &a.DebitsPosted, &a.CreditsPosted,
 		&a.DebitsMustNotExceedCredits, &a.CreditsMustNotExceedDebits,
 		&a.IsClosed, &a.CreatedAt, &created,

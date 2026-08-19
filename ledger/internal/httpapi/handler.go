@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3filter"
 	nethttpmiddleware "github.com/oapi-codegen/nethttp-middleware"
@@ -80,7 +81,7 @@ func (s *server) CreatePayableAccount(
 	input := account.CreatePayableInput{
 		LedgerSlug: request.Slug,
 		ExternalID: request.Body.ExternalID,
-		Name:       request.Body.Name,
+		Name:       strings.TrimSpace(request.Body.Name),
 	}
 	result, err := s.accounts.CreatePayableAccount(ctx, input)
 	if err != nil {
@@ -88,6 +89,8 @@ func (s *server) CreatePayableAccount(
 	}
 
 	response := api.CreatePayableAccountResponse{
+		AccountRef: result.Account.Reference,
+		HolderRef:  result.Account.HolderReference,
 		LedgerSlug: request.Slug,
 		ExternalID: input.ExternalID,
 		Name:       result.Account.HolderName,
