@@ -13,9 +13,8 @@ import (
 	"log"
 	"os"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
-
-	_ "github.com/lib/pq"
 
 	"yanmifeakeju.com/ledger/migrations"
 )
@@ -38,7 +37,7 @@ func main() {
 		log.Fatal("DATABASE_URL not set")
 	}
 
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		log.Fatalf("open db: %v", err)
 	}

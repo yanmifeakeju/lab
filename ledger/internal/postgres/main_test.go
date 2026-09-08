@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
@@ -20,6 +20,8 @@ import (
 
 var testDB *sql.DB
 
+// TODO: Test the store using a restricted runtime database role that has only
+// CONNECT, schema USAGE, and EXECUTE privileges on public API routines.
 func TestMain(m *testing.M) {
 	os.Exit(runIntegrationTests(m))
 }
@@ -58,7 +60,7 @@ func runIntegrationTests(m *testing.M) (code int) {
 		return 1
 	}
 
-	testDB, err = sql.Open("postgres", dsn)
+	testDB, err = sql.Open("pgx", dsn)
 	if err != nil {
 		log.Printf("open postgres: %v", err)
 		return 1
@@ -107,4 +109,26 @@ func newTestTx(t *testing.T) *sql.Tx {
 	})
 
 	return tx
+}
+
+func runWithRollbackSavepoint(t *testing.T, tx *sql.Tx, fn func() error) error {
+	t.Helper()
+
+	savepoint := "test_attempt"
+	ctx := t.Context()
+
+	if _, err := tx.ExecContext(ctx, "SAVEPOINT "+savepoint); err != nil {
+		t.Fatalf("create savepoint: %v", err)
+	}
+
+	fnErr := fn()
+	if _, err := tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT "+savepoint); err != nil {
+		t.Fatalf("rollback to savepoint: %v", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, "RELEASE SAVEPOINT "+savepoint); err != nil {
+		t.Fatalf("release savepoint: %v", err)
+	}
+
+	return fnErr
 }

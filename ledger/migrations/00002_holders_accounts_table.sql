@@ -16,7 +16,6 @@ CREATE TABLE "accounts" (
 	"public_ref" text COLLATE "C" NOT NULL,
 	"ledger_id" integer NOT NULL,
 	"kind" text NOT NULL,
-	"channel" text,
 	"holder_id" bigint,
 	"description" text,
 	"debits_pending" bigint DEFAULT 0 NOT NULL,
@@ -29,9 +28,11 @@ CREATE TABLE "accounts" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "accounts_public_ref_unique" UNIQUE("public_ref"),
 	CONSTRAINT "accounts_public_ref_valid" CHECK ("accounts"."public_ref" ~ '^acct_[0-7][0-9A-HJKMNP-TV-Z]{25}$'),
-	CONSTRAINT "accounts_kind_valid" CHECK ("accounts"."kind" in ('payable', 'receivable', 'treasury', 'fee_revenue')),
+	CONSTRAINT "accounts_kind_valid" CHECK ("accounts"."kind" in ('payable', 'cash', 'fee_revenue')),
 	CONSTRAINT "accounts_kind_matches_holder" CHECK (("accounts"."kind" = 'payable') = ("accounts"."holder_id" is not null)),
-	CONSTRAINT "accounts_channel_matches_kind" CHECK (("accounts"."kind" = 'receivable') = ("accounts"."channel" is not null)),
+	-- TODO: Decide the payable negative-balance policy before enabling this.
+	-- Chargebacks may need to debit a merchant beyond their posted credits.
+	-- CONSTRAINT "accounts_payable_debits_restricted" CHECK ("accounts"."kind" <> 'payable' or "accounts"."debits_must_not_exceed_credits"),
 	CONSTRAINT "accounts_flags_exclusive" CHECK (not ("accounts"."debits_must_not_exceed_credits" and "accounts"."credits_must_not_exceed_debits")),
 	CONSTRAINT "accounts_counters_non_negative" CHECK ("accounts"."debits_pending" >= 0 and "accounts"."credits_pending" >= 0
            and "accounts"."debits_posted" >= 0 and "accounts"."credits_posted" >= 0),
@@ -46,4 +47,4 @@ ALTER TABLE "accounts" ADD CONSTRAINT "accounts_holder_id_holders_id_fk" FOREIGN
 
 CREATE INDEX "accounts_ledger_idx" ON "accounts" USING btree ("ledger_id");
 CREATE UNIQUE INDEX "accounts_holder_kind_key" ON "accounts" USING btree ("holder_id","ledger_id","kind") WHERE holder_id is not null;
-CREATE UNIQUE INDEX "accounts_platform_kind_key" ON "accounts" USING btree ("ledger_id","kind",COALESCE("channel", '')) WHERE holder_id is null;
+CREATE UNIQUE INDEX "accounts_platform_kind_key" ON "accounts" USING btree ("ledger_id","kind") WHERE holder_id is null;

@@ -6,8 +6,7 @@ type AccountKind string
 
 const (
 	AccountKindPayable    AccountKind = "payable"
-	AccountKindReceivable AccountKind = "receivable"
-	AccountKindTreasury   AccountKind = "treasury"
+	AccountKindCash       AccountKind = "cash"
 	AccountKindFeeRevenue AccountKind = "fee_revenue"
 )
 
@@ -16,7 +15,6 @@ type Account struct {
 	Reference                  string
 	LedgerID                   int
 	Kind                       AccountKind
-	Channel                    *string
 	HolderID                   *int64
 	HolderReference            string
 	HolderName                 string

@@ -17,7 +17,7 @@ CREATE TABLE "journal_entries" (
 	CONSTRAINT "journal_entries_request_id_not_blank" CHECK (length(btrim("journal_entries"."request_id")) > 0),
 	CONSTRAINT "journal_entries_request_id_length" CHECK (length("journal_entries"."request_id") <= 255),
 	CONSTRAINT "journal_entries_fingerprint_not_blank" CHECK (length(btrim("journal_entries"."fingerprint")) > 0),
-	CONSTRAINT "journal_entries_kind_valid" CHECK ("journal_entries"."kind" in ('payment', 'settlement', 'payout')),
+	CONSTRAINT "journal_entries_kind_valid" CHECK ("journal_entries"."kind" in ('payment', 'settlement', 'transfer')),
 	CONSTRAINT "journal_entries_state_valid" CHECK ("journal_entries"."state" in ('pending', 'posted', 'captured', 'voided', 'expired')),
 	CONSTRAINT "journal_entries_pending_has_expiry" CHECK ("journal_entries"."state" <> 'pending' or "journal_entries"."expires_at" is not null),
 	CONSTRAINT "journal_entries_terminal_has_expiry" CHECK ("journal_entries"."state" not in ('captured', 'voided', 'expired') or "journal_entries"."expires_at" is not null),

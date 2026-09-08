@@ -43,9 +43,6 @@ func TestStore_CreatePayableAccount(t *testing.T) {
 	if got.Kind != account.AccountKindPayable {
 		t.Errorf("CreatePayableAccount() Account.Kind = %q, want %q", got.Kind, account.AccountKindPayable)
 	}
-	if got.Channel != nil {
-		t.Errorf("CreatePayableAccount() Account.Channel = %q, want nil", *got.Channel)
-	}
 	if got.HolderID == nil {
 		t.Fatal("CreatePayableAccount() Account.HolderID = nil, want generated ID")
 	}
@@ -82,6 +79,8 @@ func TestStore_CreatePayableAccount(t *testing.T) {
 	}
 }
 
+// TestStore_CreatePayableAccount_IdempotentRetry verifies that retrying the
+// same onboarding request returns the original holder and payable account.
 func TestStore_CreatePayableAccount_IdempotentRetry(t *testing.T) {
 	tx := newTestTx(t)
 	seedLedger(t, tx, "ngn_ng", "NGN")
@@ -145,6 +144,8 @@ func TestStore_CreatePayableAccount_IdempotentRetry(t *testing.T) {
 	}
 }
 
+// TestStore_CreatePayableAccount_SameHolderAcrossLedgers verifies that one
+// holder receives distinct payable accounts in each ledger.
 func TestStore_CreatePayableAccount_SameHolderAcrossLedgers(t *testing.T) {
 	tx := newTestTx(t)
 	ngnLedgerID := seedLedger(t, tx, "ngn_ng", "NGN")

@@ -3,7 +3,7 @@
 --
 -- A payable account carries a holder as its external identity, so onboarding
 -- creates both together or neither. The account is the aggregate; the holder
--- exists only to back it. Platform accounts (treasury, receivable, fee_revenue)
+-- exists only to back it. Platform accounts (cash and fee_revenue)
 -- are seeded separately per ledger.
 --
 --   LG001  ledger_not_found
@@ -23,7 +23,6 @@ RETURNS TABLE (
   out_account_ref   text,
   out_ledger_id     integer,
   out_kind          text,
-  out_channel       text,
   out_holder_id     bigint,
   out_holder_ref    text,
   out_holder_name   text,
@@ -73,8 +72,8 @@ BEGIN
 
   -- ON CONFLICT is what lets a retry, or the same account onboarding onto a
   -- second ledger, add only what is missing.
-  INSERT INTO accounts (public_ref, ledger_id, kind, holder_id, channel, debits_must_not_exceed_credits)
-  VALUES (p_account_ref, v_ledger.id, 'payable', v_holder.id, NULL, true)
+  INSERT INTO accounts (public_ref, ledger_id, kind, holder_id, debits_must_not_exceed_credits)
+  VALUES (p_account_ref, v_ledger.id, 'payable', v_holder.id, true)
   ON CONFLICT (holder_id, ledger_id, kind) WHERE holder_id IS NOT NULL
   DO NOTHING;
 
@@ -82,7 +81,7 @@ BEGIN
   v_created := v_rows = 1;
 
   RETURN QUERY
-  SELECT a.id, a.public_ref, a.ledger_id, a.kind, a.channel, a.holder_id,
+  SELECT a.id, a.public_ref, a.ledger_id, a.kind, a.holder_id,
          h.public_ref, h.name, a.description,
          a.debits_pending, a.credits_pending,
          a.debits_posted, a.credits_posted,
