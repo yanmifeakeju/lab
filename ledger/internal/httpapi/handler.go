@@ -14,26 +14,37 @@ import (
 
 	"yanmifeakeju.com/ledger/internal/account"
 	"yanmifeakeju.com/ledger/internal/api"
+	"yanmifeakeju.com/ledger/internal/journal"
 )
 
 type PayableAccountCreator interface {
 	CreatePayableAccount(context.Context, account.CreatePayableInput) (account.CreateResult, error)
 }
 
+type JournalEntryPoster interface {
+	PostEntry(context.Context, journal.PostInput) (journal.PostResult, error)
+}
+
+// Service provides the application operations exposed by the HTTP API.
+type Service interface {
+	PayableAccountCreator
+	JournalEntryPoster
+}
+
 // server implements the generated strict OpenAPI server interface. It stays
 // private because callers only need the fully configured http.Handler returned
 // by NewHandler.
 type server struct {
-	accounts PayableAccountCreator
+	service Service
 }
 
 var _ api.StrictServerInterface = (*server)(nil)
 
 // NewHandler constructs the complete HTTP API, including routing, strict
 // request/response handling, and OpenAPI request validation.
-func NewHandler(accounts PayableAccountCreator) (http.Handler, error) {
-	if accounts == nil {
-		return nil, errors.New("httpapi: payable account creator is required")
+func NewHandler(service Service) (http.Handler, error) {
+	if service == nil {
+		return nil, errors.New("httpapi: service is required")
 	}
 
 	spec, err := api.GetSpec()
@@ -54,14 +65,15 @@ func NewHandler(accounts PayableAccountCreator) (http.Handler, error) {
 		},
 	)
 
-	strict := api.NewStrictHandlerWithOptions(&server{accounts: accounts}, nil, api.StrictHTTPServerOptions{
+	strict := api.NewStrictHandlerWithOptions(&server{service: service}, nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc:  writeRequestError,
 		ResponseErrorHandlerFunc: writeResponseError,
 	})
 	mux := http.NewServeMux()
 	api.HandlerWithOptions(strict, api.StdHTTPServerOptions{
-		BaseRouter:  mux,
-		Middlewares: []api.MiddlewareFunc{api.MiddlewareFunc(validateRequest)},
+		BaseRouter:       mux,
+		Middlewares:      []api.MiddlewareFunc{api.MiddlewareFunc(validateRequest)},
+		ErrorHandlerFunc: writeParameterError,
 	})
 
 	return mux, nil
@@ -83,7 +95,7 @@ func (s *server) CreatePayableAccount(
 		ExternalID: request.Body.ExternalID,
 		Name:       strings.TrimSpace(request.Body.Name),
 	}
-	result, err := s.accounts.CreatePayableAccount(ctx, input)
+	result, err := s.service.CreatePayableAccount(ctx, input)
 	if err != nil {
 		return mapCreatePayableAccountError(err), nil
 	}
@@ -102,6 +114,62 @@ func (s *server) CreatePayableAccount(
 	}
 
 	return api.CreatePayableAccount200JSONResponse(response), nil
+}
+
+// PostJournalEntry posts an immediate journal entry or returns the existing
+// entry when the idempotency key identifies an identical request.
+func (s *server) PostJournalEntry(
+	ctx context.Context,
+	request api.PostJournalEntryRequestObject,
+) (api.PostJournalEntryResponseObject, error) {
+	lines := make([]journal.LineInput, len(request.Body.Lines))
+	for i, line := range request.Body.Lines {
+		if line.DebitAccountRef == line.CreditAccountRef {
+			return postJournalEntryValidationResponse(
+				fmt.Sprintf("lines[%d]", i),
+				"debit_account_ref and credit_account_ref must differ",
+			), nil
+		}
+
+		lines[i] = journal.LineInput{
+			DebitAccountReference:  line.DebitAccountRef,
+			CreditAccountReference: line.CreditAccountRef,
+			Amount:                 line.Amount,
+		}
+	}
+
+	description := request.Body.Description
+	if description != nil {
+		trimmed := strings.TrimSpace(*description)
+		description = &trimmed
+	}
+
+	result, err := s.service.PostEntry(ctx, journal.PostInput{
+		LedgerSlug:  request.Slug,
+		RequestID:   request.Params.IdempotencyKey,
+		Kind:        journal.Kind(request.Body.Kind),
+		Description: description,
+		EffectiveAt: request.Body.EffectiveAt,
+		Lines:       lines,
+	})
+	if err != nil {
+		return mapPostJournalEntryError(err), nil
+	}
+
+	response := api.PostJournalEntryResponse{
+		JournalRef:  result.Entry.Reference,
+		LedgerSlug:  request.Slug,
+		Kind:        api.JournalEntryKind(result.Entry.Kind),
+		State:       api.PostJournalEntryResponseState(result.Entry.State),
+		Description: result.Entry.Description,
+		EffectiveAt: result.Entry.EffectiveAt,
+		CreatedAt:   result.Entry.CreatedAt,
+	}
+	if result.Created {
+		return api.PostJournalEntry201JSONResponse(response), nil
+	}
+
+	return api.PostJournalEntry200JSONResponse(response), nil
 }
 
 func mapCreatePayableAccountError(err error) api.CreatePayableAccountResponseObject {
@@ -137,5 +205,75 @@ func mapCreatePayableAccountError(err error) api.CreatePayableAccountResponseObj
 				Code: api.InternalServerError,
 			},
 		}
+	}
+}
+
+func mapPostJournalEntryError(err error) api.PostJournalEntryResponseObject {
+	switch {
+	case errors.Is(err, journal.ErrLedgerNotFound):
+		return api.PostJournalEntry404JSONResponse{
+			Message: "Ledger not found.",
+			Error:   api.ErrorInfo{Code: api.LedgerNotFound},
+		}
+	case errors.Is(err, journal.ErrAccountNotFound):
+		return api.PostJournalEntry404JSONResponse{
+			Message: "Account not found.",
+			Error:   api.ErrorInfo{Code: api.AccountNotFound},
+		}
+	case errors.Is(err, journal.ErrLedgerClosed):
+		return api.PostJournalEntry409JSONResponse{
+			Message: "Ledger is closed.",
+			Error:   api.ErrorInfo{Code: api.LedgerClosed},
+		}
+	case errors.Is(err, journal.ErrAccountClosed):
+		return api.PostJournalEntry409JSONResponse{
+			Message: "Account is closed.",
+			Error:   api.ErrorInfo{Code: api.AccountClosed},
+		}
+	case errors.Is(err, journal.ErrInsufficientFunds):
+		return api.PostJournalEntry409JSONResponse{
+			Message: "Insufficient funds.",
+			Error:   api.ErrorInfo{Code: api.InsufficientFunds},
+		}
+	case errors.Is(err, journal.ErrIdempotencyConflict):
+		return api.PostJournalEntry409JSONResponse{
+			Message: "Idempotency key conflicts with a previous request.",
+			Error:   api.ErrorInfo{Code: api.IdempotencyConflict},
+		}
+	case errors.Is(err, journal.ErrNoLines):
+		return postJournalEntryValidationResponse(
+			"lines",
+			"lines must contain at least one journal line",
+		)
+	case errors.Is(err, journal.ErrNoSelfTransfer):
+		return postJournalEntryValidationResponse(
+			"lines",
+			"debit_account_ref and credit_account_ref must differ",
+		)
+	case errors.Is(err, journal.ErrNonPositiveAmount):
+		return postJournalEntryValidationResponse(
+			"lines",
+			"line amounts must be greater than zero",
+		)
+	default:
+		return api.PostJournalEntry500JSONResponse{
+			Message: "The server could not complete the request.",
+			Error:   api.ErrorInfo{Code: api.InternalServerError},
+		}
+	}
+}
+
+func postJournalEntryValidationResponse(field, message string) api.PostJournalEntry400JSONResponse {
+	return api.PostJournalEntry400JSONResponse{
+		InvalidRequestJSONResponse: api.InvalidRequestJSONResponse(
+			newValidationResponse([]api.ValidationErrorDetail{
+				{
+					Location: api.Body,
+					Field:    field,
+					Code:     api.InvalidValue,
+					Message:  message,
+				},
+			}),
+		),
 	}
 }

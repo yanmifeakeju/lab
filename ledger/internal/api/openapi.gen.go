@@ -24,7 +24,11 @@ import (
 
 // Defines values for ErrorCode.
 const (
+	AccountClosed       ErrorCode = "account_closed"
+	AccountNotFound     ErrorCode = "account_not_found"
 	HolderConflict      ErrorCode = "holder_conflict"
+	IdempotencyConflict ErrorCode = "idempotency_conflict"
+	InsufficientFunds   ErrorCode = "insufficient_funds"
 	InternalServerError ErrorCode = "internal_server_error"
 	LedgerClosed        ErrorCode = "ledger_closed"
 	LedgerNotFound      ErrorCode = "ledger_not_found"
@@ -33,13 +37,57 @@ const (
 // Valid indicates whether the value is a known member of the ErrorCode enum.
 func (e ErrorCode) Valid() bool {
 	switch e {
+	case AccountClosed:
+		return true
+	case AccountNotFound:
+		return true
 	case HolderConflict:
+		return true
+	case IdempotencyConflict:
+		return true
+	case InsufficientFunds:
 		return true
 	case InternalServerError:
 		return true
 	case LedgerClosed:
 		return true
 	case LedgerNotFound:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for JournalEntryKind.
+const (
+	Payment    JournalEntryKind = "payment"
+	Settlement JournalEntryKind = "settlement"
+	Transfer   JournalEntryKind = "transfer"
+)
+
+// Valid indicates whether the value is a known member of the JournalEntryKind enum.
+func (e JournalEntryKind) Valid() bool {
+	switch e {
+	case Payment:
+		return true
+	case Settlement:
+		return true
+	case Transfer:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PostJournalEntryResponseState.
+const (
+	Posted PostJournalEntryResponseState = "posted"
+)
+
+// Valid indicates whether the value is a known member of the PostJournalEntryResponseState enum.
+func (e PostJournalEntryResponseState) Valid() bool {
+	switch e {
+	case Posted:
 		return true
 	default:
 		return false
@@ -65,6 +113,7 @@ func (e ValidationErrorCode) Valid() bool {
 const (
 	InvalidFormat ValidationErrorDetailCode = "invalid_format"
 	InvalidType   ValidationErrorDetailCode = "invalid_type"
+	InvalidValue  ValidationErrorDetailCode = "invalid_value"
 	MaxLength     ValidationErrorDetailCode = "max_length"
 	MinLength     ValidationErrorDetailCode = "min_length"
 	Required      ValidationErrorDetailCode = "required"
@@ -77,6 +126,8 @@ func (e ValidationErrorDetailCode) Valid() bool {
 	case InvalidFormat:
 		return true
 	case InvalidType:
+		return true
+	case InvalidValue:
 		return true
 	case MaxLength:
 		return true
@@ -94,6 +145,7 @@ func (e ValidationErrorDetailCode) Valid() bool {
 // Defines values for ValidationErrorDetailLocation.
 const (
 	Body    ValidationErrorDetailLocation = "body"
+	Header  ValidationErrorDetailLocation = "header"
 	Path    ValidationErrorDetailLocation = "path"
 	Query   ValidationErrorDetailLocation = "query"
 	Request ValidationErrorDetailLocation = "request"
@@ -103,6 +155,8 @@ const (
 func (e ValidationErrorDetailLocation) Valid() bool {
 	switch e {
 	case Body:
+		return true
+	case Header:
 		return true
 	case Path:
 		return true
@@ -176,10 +230,75 @@ type HealthResponse struct {
 // Example: hld_01K33YVADP5Z8B0T3X2Q91C6RH
 type HolderRef = string
 
+// IdempotencyKey Caller-generated identifier used to make a ledger operation idempotent.
+//
+// Example: payment_123
+type IdempotencyKey = string
+
+// JournalEntryKind Business classification of a journal entry.
+type JournalEntryKind string
+
+// JournalRef Stable opaque reference assigned to a journal entry by the ledger.
+//
+// Example: jrn_01K33YW0MDHJ9E4N7Z2QPV6R8K
+type JournalRef = string
+
 // LedgerSlug Opaque identifier assigned to the ledger.
 //
 // Example: ngn_ng
 type LedgerSlug = string
+
+// PostJournalEntryLine defines model for PostJournalEntryLine.
+type PostJournalEntryLine struct {
+	// Amount Positive amount expressed in the ledger's minor units.
+	//
+	// Example: 10000
+	Amount int64 `json:"amount"`
+
+	// CreditAccountRef Stable opaque reference assigned to an account by the ledger.
+	//
+	// Example: acct_01K33YV8M82N9MXP4E7J6B1QWK
+	CreditAccountRef AccountRef `json:"credit_account_ref"`
+
+	// DebitAccountRef Stable opaque reference assigned to an account by the ledger.
+	//
+	// Example: acct_01K33YV8M82N9MXP4E7J6B1QWK
+	DebitAccountRef AccountRef `json:"debit_account_ref"`
+}
+
+// PostJournalEntryRequest defines model for PostJournalEntryRequest.
+type PostJournalEntryRequest struct {
+	Description *string    `json:"description,omitempty"`
+	EffectiveAt *time.Time `json:"effective_at,omitempty"`
+
+	// Kind Business classification of a journal entry.
+	Kind  JournalEntryKind       `json:"kind"`
+	Lines []PostJournalEntryLine `json:"lines"`
+}
+
+// PostJournalEntryResponse defines model for PostJournalEntryResponse.
+type PostJournalEntryResponse struct {
+	CreatedAt   time.Time `json:"created_at"`
+	Description *string   `json:"description,omitempty"`
+	EffectiveAt time.Time `json:"effective_at"`
+
+	// JournalRef Stable opaque reference assigned to a journal entry by the ledger.
+	//
+	// Example: jrn_01K33YW0MDHJ9E4N7Z2QPV6R8K
+	JournalRef JournalRef `json:"journal_ref"`
+
+	// Kind Business classification of a journal entry.
+	Kind JournalEntryKind `json:"kind"`
+
+	// LedgerSlug Opaque identifier assigned to the ledger.
+	//
+	// Example: ngn_ng
+	LedgerSlug LedgerSlug                    `json:"ledger_slug"`
+	State      PostJournalEntryResponseState `json:"state"`
+}
+
+// PostJournalEntryResponseState defines model for PostJournalEntryResponse.State.
+type PostJournalEntryResponseState string
 
 // ValidationError defines model for ValidationError.
 type ValidationError struct {
@@ -219,8 +338,17 @@ type ValidationErrorResponse struct {
 // InvalidRequest defines model for InvalidRequest.
 type InvalidRequest = ValidationErrorResponse
 
+// PostJournalEntryParams defines parameters for PostJournalEntry.
+type PostJournalEntryParams struct {
+	// IdempotencyKey Caller-generated key that uniquely identifies this posting within the ledger.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
 // CreatePayableAccountJSONRequestBody defines body for CreatePayableAccount for application/json ContentType.
 type CreatePayableAccountJSONRequestBody = CreatePayableAccountRequest
+
+// PostJournalEntryJSONRequestBody defines body for PostJournalEntry for application/json ContentType.
+type PostJournalEntryJSONRequestBody = PostJournalEntryRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -230,6 +358,9 @@ type ServerInterface interface {
 	// CreatePayableAccount Create a payable account in a ledger
 	// (POST /ledgers/{slug}/accounts)
 	CreatePayableAccount(w http.ResponseWriter, r *http.Request, slug LedgerSlug)
+	// PostJournalEntry Post a journal entry to a ledger
+	// (POST /ledgers/{slug}/entries)
+	PostJournalEntry(w http.ResponseWriter, r *http.Request, slug LedgerSlug, params PostJournalEntryParams)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -272,6 +403,60 @@ func (siw *ServerInterfaceWrapper) CreatePayableAccount(w http.ResponseWriter, r
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreatePayableAccount(w, r, slug)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostJournalEntry operation middleware
+func (siw *ServerInterfaceWrapper) PostJournalEntry(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "slug" -------------
+	var slug LedgerSlug
+
+	err = runtime.BindStyledParameterWithOptions("simple", "slug", r.PathValue("slug"), &slug, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "slug", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params PostJournalEntryParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey IdempotencyKey
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = IdempotencyKey
+
+	} else {
+		err := fmt.Errorf("Header parameter Idempotency-Key is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "Idempotency-Key", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostJournalEntry(w, r, slug, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -403,6 +588,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/health", wrapper.GetHealth)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/ledgers/{slug}/accounts", wrapper.CreatePayableAccount)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/ledgers/{slug}/entries", wrapper.PostJournalEntry)
 
 	return m
 }
@@ -523,6 +709,100 @@ func (response CreatePayableAccount500JSONResponse) VisitCreatePayableAccountRes
 	return err
 }
 
+type PostJournalEntryRequestObject struct {
+	Slug   LedgerSlug `json:"slug"`
+	Params PostJournalEntryParams
+	Body   *PostJournalEntryJSONRequestBody
+}
+
+type PostJournalEntryResponseObject interface {
+	VisitPostJournalEntryResponse(w http.ResponseWriter) error
+}
+
+type PostJournalEntry200JSONResponse PostJournalEntryResponse
+
+func (response PostJournalEntry200JSONResponse) VisitPostJournalEntryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PostJournalEntry201JSONResponse PostJournalEntryResponse
+
+func (response PostJournalEntry201JSONResponse) VisitPostJournalEntryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PostJournalEntry400JSONResponse struct{ InvalidRequestJSONResponse }
+
+func (response PostJournalEntry400JSONResponse) VisitPostJournalEntryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PostJournalEntry404JSONResponse ErrorResponse
+
+func (response PostJournalEntry404JSONResponse) VisitPostJournalEntryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PostJournalEntry409JSONResponse ErrorResponse
+
+func (response PostJournalEntry409JSONResponse) VisitPostJournalEntryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PostJournalEntry500JSONResponse ErrorResponse
+
+func (response PostJournalEntry500JSONResponse) VisitPostJournalEntryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// GetHealth Check whether the service is running
@@ -531,6 +811,9 @@ type StrictServerInterface interface {
 	// CreatePayableAccount Create a payable account in a ledger
 	// (POST /ledgers/{slug}/accounts)
 	CreatePayableAccount(ctx context.Context, request CreatePayableAccountRequestObject) (CreatePayableAccountResponseObject, error)
+	// PostJournalEntry Post a journal entry to a ledger
+	// (POST /ledgers/{slug}/entries)
+	PostJournalEntry(ctx context.Context, request PostJournalEntryRequestObject) (PostJournalEntryResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -629,37 +912,85 @@ func (sh *strictHandler) CreatePayableAccount(w http.ResponseWriter, r *http.Req
 	}
 }
 
+// PostJournalEntry operation middleware
+func (sh *strictHandler) PostJournalEntry(w http.ResponseWriter, r *http.Request, slug LedgerSlug, params PostJournalEntryParams) {
+	var request PostJournalEntryRequestObject
+
+	request.Slug = slug
+	request.Params = params
+
+	var body PostJournalEntryJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PostJournalEntry(ctx, request.(PostJournalEntryRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PostJournalEntry")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PostJournalEntryResponseObject); ok {
+		if err := validResponse.VisitPostJournalEntryResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // Base64 encoded, compressed with deflate, json marshaled OpenAPI spec.
 // Stored as a slice of fixed-width chunks rather than one concatenated
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
-	"rTyCU0swJQpc/hkAAP//",
+	"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",
+	"aWmSbofrZaG3WPw3AAD//w==",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

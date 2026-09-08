@@ -3,9 +3,11 @@ package httpapi_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -13,16 +15,21 @@ import (
 	"yanmifeakeju.com/ledger/internal/account"
 	"yanmifeakeju.com/ledger/internal/api"
 	"yanmifeakeju.com/ledger/internal/httpapi"
+	"yanmifeakeju.com/ledger/internal/journal"
 )
 
-type fakePayableAccountCreator struct {
-	input  account.CreatePayableInput
-	result account.CreateResult
-	err    error
-	calls  int
+type fakeService struct {
+	input      account.CreatePayableInput
+	result     account.CreateResult
+	err        error
+	calls      int
+	postInput  journal.PostInput
+	postResult journal.PostResult
+	postErr    error
+	postCalls  int
 }
 
-func (f *fakePayableAccountCreator) CreatePayableAccount(
+func (f *fakeService) CreatePayableAccount(
 	_ context.Context,
 	input account.CreatePayableInput,
 ) (account.CreateResult, error) {
@@ -31,8 +38,17 @@ func (f *fakePayableAccountCreator) CreatePayableAccount(
 	return f.result, f.err
 }
 
+func (f *fakeService) PostEntry(
+	_ context.Context,
+	input journal.PostInput,
+) (journal.PostResult, error) {
+	f.postInput = input
+	f.postCalls++
+	return f.postResult, f.postErr
+}
+
 func TestRoutes(t *testing.T) {
-	f := &fakePayableAccountCreator{}
+	f := &fakeService{}
 	server, err := httpapi.NewHandler(f)
 	if err != nil {
 		t.Fatalf("Routes: %v", err)
@@ -141,7 +157,7 @@ func TestCreatePayableAccountValidation(t *testing.T) {
 		},
 	}
 
-	handler, err := httpapi.NewHandler(&fakePayableAccountCreator{
+	handler, err := httpapi.NewHandler(&fakeService{
 		result: account.CreateResult{
 			Created: true,
 			Account: account.Account{
@@ -199,7 +215,7 @@ func TestCreatePayableAccountValidation(t *testing.T) {
 }
 
 func TestHealth(t *testing.T) {
-	handler, err := httpapi.NewHandler(&fakePayableAccountCreator{})
+	handler, err := httpapi.NewHandler(&fakeService{})
 	if err != nil {
 		t.Fatalf("Routes: %v", err)
 	}
@@ -296,7 +312,7 @@ func TestCreatePayableAccountResponses(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			creator := &fakePayableAccountCreator{result: tt.result, err: tt.err}
+			creator := &fakeService{result: tt.result, err: tt.err}
 			handler, err := httpapi.NewHandler(creator)
 			if err != nil {
 				t.Fatalf("NewHandler: %v", err)
@@ -363,7 +379,7 @@ func TestCreatePayableAccountResponses(t *testing.T) {
 }
 
 func TestCreatePayableAccountTrimsName(t *testing.T) {
-	creator := &fakePayableAccountCreator{
+	creator := &fakeService{
 		result: account.CreateResult{
 			Created: true,
 			Account: account.Account{
@@ -394,5 +410,284 @@ func TestCreatePayableAccountTrimsName(t *testing.T) {
 	}
 	if creator.input.Name != "Acme Ltd" {
 		t.Errorf("CreatePayableAccount() input name = %q, want %q", creator.input.Name, "Acme Ltd")
+	}
+}
+
+func TestPostJournalEntryValidation(t *testing.T) {
+	const validBody = `{
+		"kind":"payment",
+		"lines":[{
+			"debit_account_ref":"acct_cash",
+			"credit_account_ref":"acct_payable",
+			"amount":10000
+		}]
+	}`
+
+	tests := []struct {
+		name        string
+		body        string
+		key         string
+		wantDetails []api.ValidationErrorDetail
+	}{
+		{
+			name: "missing idempotency key",
+			body: validBody,
+			wantDetails: []api.ValidationErrorDetail{
+				{Location: api.Header, Field: "Idempotency-Key", Code: api.Required},
+			},
+		},
+		{
+			name: "missing body fields",
+			body: `{}`,
+			key:  "payment_123",
+			wantDetails: []api.ValidationErrorDetail{
+				{Location: api.Body, Field: "kind", Code: api.Required},
+				{Location: api.Body, Field: "lines", Code: api.Required},
+			},
+		},
+		{
+			name: "unsupported kind",
+			body: `{
+				"kind":"refund",
+				"lines":[{
+					"debit_account_ref":"acct_cash",
+					"credit_account_ref":"acct_payable",
+					"amount":10000
+				}]
+			}`,
+			key: "payment_123",
+			wantDetails: []api.ValidationErrorDetail{
+				{
+					Location: api.Body,
+					Field:    "kind",
+					Code:     api.InvalidValue,
+					Message:  "kind must be one of: payment, settlement, transfer",
+				},
+			},
+		},
+		{
+			name: "no lines",
+			body: `{"kind":"payment","lines":[]}`,
+			key:  "payment_123",
+			wantDetails: []api.ValidationErrorDetail{
+				{Location: api.Body, Field: "lines", Code: api.InvalidValue},
+			},
+		},
+		{
+			name: "non-positive amount",
+			body: `{
+				"kind":"payment",
+				"lines":[{
+					"debit_account_ref":"acct_cash",
+					"credit_account_ref":"acct_payable",
+					"amount":0
+				}]
+			}`,
+			key: "payment_123",
+			wantDetails: []api.ValidationErrorDetail{
+				{Location: api.Body, Field: "lines[0].amount", Code: api.InvalidValue},
+			},
+		},
+		{
+			name: "self transfer",
+			body: `{
+				"kind":"payment",
+				"lines":[{
+					"debit_account_ref":"acct_same",
+					"credit_account_ref":"acct_same",
+					"amount":10000
+				}]
+			}`,
+			key: "payment_123",
+			wantDetails: []api.ValidationErrorDetail{
+				{
+					Location: api.Body,
+					Field:    "lines[0]",
+					Code:     api.InvalidValue,
+					Message:  "debit_account_ref and credit_account_ref must differ",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &fakeService{}
+			handler, err := httpapi.NewHandler(service)
+			if err != nil {
+				t.Fatalf("NewHandler: %v", err)
+			}
+
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/ledgers/ngn_ng/entries",
+				strings.NewReader(tt.body),
+			)
+			req.Header.Set("Content-Type", "application/json")
+			if tt.key != "" {
+				req.Header.Set("Idempotency-Key", tt.key)
+			}
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			if service.postCalls != 0 {
+				t.Errorf("PostEntry() calls = %d, want 0", service.postCalls)
+			}
+
+			var got api.ValidationErrorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if len(got.Error.Details) != len(tt.wantDetails) {
+				t.Fatalf("details = %+v, want %+v", got.Error.Details, tt.wantDetails)
+			}
+			for i, want := range tt.wantDetails {
+				detail := got.Error.Details[i]
+				if detail.Location != want.Location || detail.Field != want.Field || detail.Code != want.Code {
+					t.Errorf("detail[%d] = %+v, want location=%q field=%q code=%q", i, detail, want.Location, want.Field, want.Code)
+				}
+				if detail.Message == "" {
+					t.Errorf("detail[%d] has an empty message", i)
+				}
+				if want.Message != "" && detail.Message != want.Message {
+					t.Errorf("detail[%d] message = %q, want %q", i, detail.Message, want.Message)
+				}
+			}
+		})
+	}
+}
+
+func TestPostJournalEntryResponses(t *testing.T) {
+	effectiveAt := time.Date(2026, time.September, 8, 10, 30, 0, 0, time.UTC)
+	createdAt := effectiveAt.Add(time.Second)
+	description := "Payment received"
+
+	wantInput := journal.PostInput{
+		LedgerSlug:  "ngn_ng",
+		RequestID:   "payment_123",
+		Kind:        journal.KindPayment,
+		Description: &description,
+		EffectiveAt: &effectiveAt,
+		Lines: []journal.LineInput{
+			{
+				DebitAccountReference:  "acct_cash",
+				CreditAccountReference: "acct_payable",
+				Amount:                 10_000,
+			},
+		},
+	}
+	postedEntry := journal.Entry{
+		Reference:   "jrn_01K33YW0MDHJ9E4N7Z2QPV6R8K",
+		Kind:        journal.KindPayment,
+		State:       journal.StatePosted,
+		Description: &description,
+		EffectiveAt: effectiveAt,
+		CreatedAt:   createdAt,
+	}
+
+	tests := []struct {
+		name        string
+		result      journal.PostResult
+		err         error
+		wantStatus  int
+		wantCode    api.ErrorCode
+		wantMessage string
+		validation  bool
+	}{
+		{name: "created", result: journal.PostResult{Entry: postedEntry, Created: true}, wantStatus: http.StatusCreated},
+		{name: "idempotent retry", result: journal.PostResult{Entry: postedEntry}, wantStatus: http.StatusOK},
+		{name: "ledger not found", err: journal.ErrLedgerNotFound, wantStatus: http.StatusNotFound, wantCode: api.LedgerNotFound, wantMessage: "Ledger not found."},
+		{name: "account not found", err: journal.ErrAccountNotFound, wantStatus: http.StatusNotFound, wantCode: api.AccountNotFound, wantMessage: "Account not found."},
+		{name: "ledger closed", err: journal.ErrLedgerClosed, wantStatus: http.StatusConflict, wantCode: api.LedgerClosed, wantMessage: "Ledger is closed."},
+		{name: "account closed", err: journal.ErrAccountClosed, wantStatus: http.StatusConflict, wantCode: api.AccountClosed, wantMessage: "Account is closed."},
+		{name: "insufficient funds", err: journal.ErrInsufficientFunds, wantStatus: http.StatusConflict, wantCode: api.InsufficientFunds, wantMessage: "Insufficient funds."},
+		{name: "idempotency conflict", err: journal.ErrIdempotencyConflict, wantStatus: http.StatusConflict, wantCode: api.IdempotencyConflict, wantMessage: "Idempotency key conflicts with a previous request."},
+		{name: "defensive no lines", err: journal.ErrNoLines, wantStatus: http.StatusBadRequest, validation: true},
+		{name: "defensive self transfer", err: journal.ErrNoSelfTransfer, wantStatus: http.StatusBadRequest, validation: true},
+		{name: "defensive non-positive amount", err: journal.ErrNonPositiveAmount, wantStatus: http.StatusBadRequest, validation: true},
+		{name: "unexpected error", err: errors.New("database unavailable"), wantStatus: http.StatusInternalServerError, wantCode: api.InternalServerError, wantMessage: "The server could not complete the request."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &fakeService{postResult: tt.result, postErr: tt.err}
+			handler, err := httpapi.NewHandler(service)
+			if err != nil {
+				t.Fatalf("NewHandler: %v", err)
+			}
+
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/ledgers/ngn_ng/entries",
+				strings.NewReader(`{
+					"kind":"payment",
+					"description":"  Payment received  ",
+					"effective_at":"2026-09-08T10:30:00Z",
+					"lines":[{
+						"debit_account_ref":"acct_cash",
+						"credit_account_ref":"acct_payable",
+						"amount":10000
+					}]
+				}`),
+			)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", "payment_123")
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if service.postCalls != 1 {
+				t.Fatalf("PostEntry() calls = %d, want 1", service.postCalls)
+			}
+			if !reflect.DeepEqual(service.postInput, wantInput) {
+				t.Errorf("PostEntry() input = %#v, want %#v", service.postInput, wantInput)
+			}
+
+			switch {
+			case tt.validation:
+				var got api.ValidationErrorResponse
+				if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+					t.Fatalf("decode validation response: %v", err)
+				}
+				if got.Error.Code != api.ValidationErrorCodeValidationError || len(got.Error.Details) != 1 {
+					t.Errorf("validation error = %+v", got.Error)
+				}
+			case tt.wantCode != "":
+				var got api.ErrorResponse
+				if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+					t.Fatalf("decode error response: %v", err)
+				}
+				if got.Error.Code != tt.wantCode {
+					t.Errorf("error code = %q, want %q", got.Error.Code, tt.wantCode)
+				}
+				if got.Message != tt.wantMessage {
+					t.Errorf("message = %q, want %q", got.Message, tt.wantMessage)
+				}
+			default:
+				var got api.PostJournalEntryResponse
+				if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+					t.Fatalf("decode success response: %v", err)
+				}
+				if got.JournalRef != postedEntry.Reference {
+					t.Errorf("journal_ref = %q, want %q", got.JournalRef, postedEntry.Reference)
+				}
+				if got.LedgerSlug != "ngn_ng" || got.Kind != api.Payment || got.State != api.Posted {
+					t.Errorf("response identity = %+v", got)
+				}
+				if got.Description == nil || *got.Description != description {
+					t.Errorf("description = %v, want %q", got.Description, description)
+				}
+				if !got.EffectiveAt.Equal(effectiveAt) || !got.CreatedAt.Equal(createdAt) {
+					t.Errorf("response timestamps = (%v, %v), want (%v, %v)", got.EffectiveAt, got.CreatedAt, effectiveAt, createdAt)
+				}
+			}
+		})
 	}
 }

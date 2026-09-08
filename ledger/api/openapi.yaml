@@ -88,6 +88,104 @@ paths:
                 error:
                   code: internal_server_error
 
+  /ledgers/{slug}/entries:
+    post:
+      operationId: postJournalEntry
+      summary: Post a journal entry to a ledger
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/LedgerSlug"
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Caller-generated key that uniquely identifies this posting within the ledger.
+          schema:
+            $ref: "#/components/schemas/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostJournalEntryRequest"
+      responses:
+        "200":
+          description: An identical request was previously completed; the existing entry is returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostJournalEntryResponse"
+        "201":
+          description: The journal entry was posted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostJournalEntryResponse"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          description: The ledger or one of the referenced accounts does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                ledgerNotFound:
+                  summary: The ledger does not exist
+                  value:
+                    message: Ledger not found.
+                    error:
+                      code: ledger_not_found
+                accountNotFound:
+                  summary: A referenced account does not exist in the ledger
+                  value:
+                    message: Account not found.
+                    error:
+                      code: account_not_found
+        "409":
+          description: The posting conflicts with existing ledger state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                ledgerClosed:
+                  summary: The ledger is closed
+                  value:
+                    message: Ledger is closed.
+                    error:
+                      code: ledger_closed
+                accountClosed:
+                  summary: A referenced account is closed
+                  value:
+                    message: Account is closed.
+                    error:
+                      code: account_closed
+                insufficientFunds:
+                  summary: An account balance restriction would be exceeded
+                  value:
+                    message: Insufficient funds.
+                    error:
+                      code: insufficient_funds
+                idempotencyConflict:
+                  summary: The idempotency key was previously used for different content
+                  value:
+                    message: Idempotency key conflicts with a previous request.
+                    error:
+                      code: idempotency_conflict
+        "500":
+          description: The server could not complete the request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: The server could not complete the request.
+                error:
+                  code: internal_server_error
+
 components:
   schemas:
     LedgerSlug:
@@ -115,6 +213,122 @@ components:
       minLength: 1
       maxLength: 64
       example: acct_01K33YV8M82N9MXP4E7J6B1QWK
+
+    JournalRef:
+      type: string
+      description: Stable opaque reference assigned to a journal entry by the ledger.
+      minLength: 1
+      maxLength: 64
+      example: jrn_01K33YW0MDHJ9E4N7Z2QPV6R8K
+
+    IdempotencyKey:
+      type: string
+      description: Caller-generated identifier used to make a ledger operation idempotent.
+      minLength: 1
+      maxLength: 255
+      pattern: '.*\S.*'
+      example: payment_123
+      x-validation-messages:
+        type: must be a string
+        minLength: must not be empty
+        maxLength: must not exceed 255 characters
+        pattern: must not be blank
+
+    JournalEntryKind:
+      type: string
+      description: Business classification of a journal entry.
+      enum:
+        - payment
+        - settlement
+        - transfer
+      x-validation-messages:
+        enum: "must be one of: payment, settlement, transfer"
+
+    PostJournalEntryRequest:
+      type: object
+      required:
+        - kind
+        - lines
+      properties:
+        kind:
+          $ref: "#/components/schemas/JournalEntryKind"
+        description:
+          type: string
+          minLength: 1
+          maxLength: 500
+          pattern: '.*\S.*'
+          x-validation-messages:
+            type: must be a string
+            minLength: must not be empty
+            maxLength: must not exceed 500 characters
+            pattern: must not be blank
+        effective_at:
+          type: string
+          format: date-time
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/PostJournalEntryLine"
+          x-validation-messages:
+            type: must be an array
+            minItems: must contain at least one journal line
+            maxItems: must not contain more than 100 journal lines
+
+    PostJournalEntryLine:
+      type: object
+      required:
+        - debit_account_ref
+        - credit_account_ref
+        - amount
+      properties:
+        debit_account_ref:
+          $ref: "#/components/schemas/AccountRef"
+        credit_account_ref:
+          $ref: "#/components/schemas/AccountRef"
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 9223372036854775807
+          description: Positive amount expressed in the ledger's minor units.
+          example: 10000
+          x-validation-messages:
+            type: must be an integer
+            minimum: must be greater than zero
+            maximum: must not exceed the maximum supported amount
+
+    PostJournalEntryResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - journal_ref
+        - ledger_slug
+        - kind
+        - state
+        - effective_at
+        - created_at
+      properties:
+        journal_ref:
+          $ref: "#/components/schemas/JournalRef"
+        ledger_slug:
+          $ref: "#/components/schemas/LedgerSlug"
+        kind:
+          $ref: "#/components/schemas/JournalEntryKind"
+        state:
+          type: string
+          enum:
+            - posted
+        description:
+          type: string
+          minLength: 1
+        effective_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
 
     HealthResponse:
       type: object
@@ -230,6 +444,7 @@ components:
              - request
              - path
              - query
+             - header
              - body
         field:
           type: string
@@ -241,6 +456,7 @@ components:
             - required
             - invalid_type
             - invalid_format
+            - invalid_value
             - min_length
             - max_length
             - unknown_field
@@ -277,6 +493,10 @@ components:
         - ledger_not_found
         - ledger_closed
         - holder_conflict
+        - account_not_found
+        - account_closed
+        - insufficient_funds
+        - idempotency_conflict
         - internal_server_error
 
   responses:

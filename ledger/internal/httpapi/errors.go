@@ -51,6 +51,44 @@ func writeRequestError(w http.ResponseWriter, _ *http.Request, _ error) {
 	})
 }
 
+func writeParameterError(w http.ResponseWriter, r *http.Request, err error) {
+	switch typed := err.(type) {
+	case *api.RequiredHeaderError:
+		writeValidationResponse(w, []api.ValidationErrorDetail{
+			{
+				Location: api.Header,
+				Field:    typed.ParamName,
+				Code:     api.Required,
+				Message:  fmt.Sprintf("%s is required", typed.ParamName),
+			},
+		})
+	case *api.TooManyValuesForParamError:
+		writeValidationResponse(w, []api.ValidationErrorDetail{
+			{
+				Location: api.Header,
+				Field:    typed.ParamName,
+				Code:     api.InvalidFormat,
+				Message:  fmt.Sprintf("%s must contain one value", typed.ParamName),
+			},
+		})
+	case *api.InvalidParamFormatError:
+		location := api.Path
+		if len(r.Header.Values(typed.ParamName)) > 0 {
+			location = api.Header
+		}
+		writeValidationResponse(w, []api.ValidationErrorDetail{
+			{
+				Location: location,
+				Field:    typed.ParamName,
+				Code:     api.InvalidFormat,
+				Message:  fmt.Sprintf("%s has an invalid format", typed.ParamName),
+			},
+		})
+	default:
+		writeRequestError(w, r, err)
+	}
+}
+
 func writeResponseError(w http.ResponseWriter, _ *http.Request, _ error) {
 	writeError(w, http.StatusInternalServerError, errorResponse{
 		Error:   "internal_server_error",
@@ -67,13 +105,17 @@ func writeError(w http.ResponseWriter, status int, body errorResponse) {
 func writeValidationResponse(w http.ResponseWriter, details []api.ValidationErrorDetail) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusBadRequest)
-	_ = json.NewEncoder(w).Encode(api.ValidationErrorResponse{
+	_ = json.NewEncoder(w).Encode(newValidationResponse(details))
+}
+
+func newValidationResponse(details []api.ValidationErrorDetail) api.ValidationErrorResponse {
+	return api.ValidationErrorResponse{
 		Message: "Request validation failed.",
 		Error: api.ValidationError{
 			Code:    api.ValidationErrorCodeValidationError,
 			Details: details,
 		},
-	})
+	}
 }
 
 func validationErrorDetails(err error) []api.ValidationErrorDetail {
@@ -170,6 +212,8 @@ func validationCode(schemaField string) api.ValidationErrorDetailCode {
 		return api.Required
 	case "type":
 		return api.InvalidType
+	case "enum", "minimum", "maximum", "minItems", "maxItems":
+		return api.InvalidValue
 	case "minLength":
 		return api.MinLength
 	case "maxLength":
