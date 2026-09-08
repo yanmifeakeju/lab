@@ -1,4 +1,4 @@
-.PHONY: generate build build-api test test-integration test-race vet cover run start migrate-up migrate-status clean
+.PHONY: generate build build-api test test-integration test-integration-race test-race vet cover run start db-reset migrate-up migrate-status clean
 
 DB_URL?=$$DATABASE_URL
 API_BIN:=bin/ledger-api
@@ -19,6 +19,9 @@ test:
 test-integration:
 	go test -tags=integration -count=1 ./internal/postgres
 
+test-integration-race:
+	go test -race -tags=integration -count=1 ./internal/postgres
+
 test-race:
 	go test -race ./...
 
@@ -34,6 +37,15 @@ run:
 
 start: build-api
 	$(API_BIN)
+
+db-reset:
+	@set -eu; \
+	if [ -z "$${DATABASE_URL:-}" ] && [ -f .env ]; then \
+		set -a; . ./.env; set +a; \
+	fi; \
+	./scripts/database.sh --reset; \
+	$(MAKE) migrate-up; \
+	./scripts/seed.sh
 
 migrate-up:
 	DATABASE_URL="$(DB_URL)" go run ./cmd/migrate up
