@@ -27,6 +27,10 @@ type fakeService struct {
 	postResult journal.PostResult
 	postErr    error
 	postCalls  int
+	getInput   account.GetPayableAccountInput
+	getResult  account.GetPayableAccountResult
+	getErr     error
+	getCalls   int
 }
 
 func (f *fakeService) CreatePayableAccount(
@@ -36,6 +40,15 @@ func (f *fakeService) CreatePayableAccount(
 	f.input = input
 	f.calls++
 	return f.result, f.err
+}
+
+func (f *fakeService) GetPayableAccount(
+	_ context.Context,
+	input account.GetPayableAccountInput,
+) (account.GetPayableAccountResult, error) {
+	f.getInput = input
+	f.getCalls++
+	return f.getResult, f.getErr
 }
 
 func (f *fakeService) PostEntry(
@@ -691,3 +704,175 @@ func TestPostJournalEntryResponses(t *testing.T) {
 		})
 	}
 }
+
+func TestGetAccount(t *testing.T) {
+	const (
+		accountRef = "acct_01K33YV8M82N9MXP4E7J6B1QWK"
+		ledgerSlug = "ngn_ng"
+	)
+	createdAt := time.Date(2026, time.September, 8, 10, 30, 0, 0, time.UTC)
+
+	tests := []struct {
+		name        string
+		result      account.GetPayableAccountResult
+		err         error
+		wantStatus  int
+		wantCode    api.ErrorCode
+		wantMessage string
+	}{
+		{
+			name: "successful lookup",
+			result: account.GetPayableAccountResult{
+				Reference:  accountRef,
+				Kind:       account.KindPayable,
+				LedgerSlug: ledgerSlug,
+				Balances: account.BalanceCounters{
+					DebitsPending:  200,
+					CreditsPending: 0,
+					DebitsPosted:   0,
+					CreditsPosted:  10000,
+				},
+				CreatedAt: createdAt,
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:        "ledger not found",
+			err:         fmt.Errorf("get payable account: %w", account.ErrLedgerNotFound),
+			wantStatus:  http.StatusNotFound,
+			wantCode:    api.LedgerNotFound,
+			wantMessage: "Ledger not found.",
+		},
+		{
+			name:        "account not found",
+			err:         fmt.Errorf("get payable account: %w", account.ErrAccountNotFound),
+			wantStatus:  http.StatusNotFound,
+			wantCode:    api.AccountNotFound,
+			wantMessage: "Account not found.",
+		},
+		{
+			name:        "unexpected error",
+			err:         errors.New("database connection lost"),
+			wantStatus:  http.StatusInternalServerError,
+			wantCode:    api.InternalServerError,
+			wantMessage: "The server could not complete the request.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &fakeService{getResult: tt.result, getErr: tt.err}
+			handler, err := httpapi.NewHandler(svc)
+			if err != nil {
+				t.Fatalf("NewHandler: %v", err)
+			}
+
+			req := httptest.NewRequest(
+				http.MethodGet,
+				fmt.Sprintf("/ledgers/%s/accounts/%s", ledgerSlug, accountRef),
+				nil,
+			)
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if svc.getCalls != 1 {
+				t.Fatalf("GetPayableAccount() calls = %d, want 1", svc.getCalls)
+			}
+			if svc.getInput.LedgerSlug != ledgerSlug {
+				t.Errorf("GetPayableAccount() LedgerSlug = %q, want %q", svc.getInput.LedgerSlug, ledgerSlug)
+			}
+			if svc.getInput.Reference != accountRef {
+				t.Errorf("GetPayableAccount() Reference = %q, want %q", svc.getInput.Reference, accountRef)
+			}
+
+			if tt.wantCode != "" {
+				var got api.ErrorResponse
+				if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+					t.Fatalf("decode error response: %v", err)
+				}
+				if got.Error.Code != tt.wantCode {
+					t.Errorf("error code = %q, want %q", got.Error.Code, tt.wantCode)
+				}
+				if got.Message != tt.wantMessage {
+					t.Errorf("message = %q, want %q", got.Message, tt.wantMessage)
+				}
+			} else {
+				var got api.GetAccountResponse
+				if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+					t.Fatalf("decode success response: %v", err)
+				}
+				if got.AccountRef != accountRef {
+					t.Errorf("account_ref = %q, want %q", got.AccountRef, accountRef)
+				}
+				if got.LedgerSlug != ledgerSlug {
+					t.Errorf("ledger_slug = %q, want %q", got.LedgerSlug, ledgerSlug)
+				}
+				if got.Kind != api.Payable {
+					t.Errorf("kind = %q, want %q", got.Kind, api.Payable)
+				}
+				const wantAvailable = int64(9800)
+				if got.Available != wantAvailable {
+					t.Errorf("available = %d, want %d", got.Available, wantAvailable)
+				}
+				wantBalances := api.AccountBalances{
+					DebitsPending:  200,
+					CreditsPending: 0,
+					DebitsPosted:   0,
+					CreditsPosted:  10000,
+				}
+				if got.Balances != wantBalances {
+					t.Errorf("balances = %+v, want %+v", got.Balances, wantBalances)
+				}
+				if !got.CreatedAt.Equal(createdAt) {
+					t.Errorf("created_at = %v, want %v", got.CreatedAt, createdAt)
+				}
+			}
+		})
+	}
+}
+
+func TestGetAccountValidation(t *testing.T) {
+	tests := []struct {
+		name       string
+		target     string
+		wantStatus int
+	}{
+		{
+			name:       "invalid ledger slug characters",
+			target:     "/ledgers/invalid-slug!/accounts/acct_01K33YV8M82N9MXP4E7J6B1QWK",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "ledger slug too short",
+			target:     "/ledgers/ab/accounts/acct_01K33YV8M82N9MXP4E7J6B1QWK",
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &fakeService{}
+			handler, err := httpapi.NewHandler(svc)
+			if err != nil {
+				t.Fatalf("NewHandler: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, tt.target, nil)
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d; body = %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if svc.getCalls != 0 {
+				t.Errorf("GetPayableAccount() calls = %d, want 0", svc.getCalls)
+			}
+		})
+	}
+}
+

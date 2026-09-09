@@ -88,6 +88,61 @@ paths:
                 error:
                   code: internal_server_error
 
+  /ledgers/{slug}/accounts/{account_ref}:
+    get:
+      operationId: getAccount
+      summary: Get a payable account and its balance
+      description: Retrieves one payable account and exposes both its derived available amount and its underlying ledger counters. This API does not expose internal cash or revenue accounts.
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/LedgerSlug"
+        - name: account_ref
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/AccountRef"
+      responses:
+        "200":
+          description: The payable account was found and returned with its balances.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetAccountResponse"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          description: The requested ledger or payable account does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                ledgerNotFound:
+                  summary: The ledger does not exist
+                  value:
+                    message: Ledger not found.
+                    error:
+                      code: ledger_not_found
+                accountNotFound:
+                  summary: The payable account does not exist in the ledger
+                  value:
+                    message: Account not found.
+                    error:
+                      code: account_not_found
+        "500":
+          description: The server could not complete the request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: The server could not complete the request.
+                error:
+                  code: internal_server_error
+
   /ledgers/{slug}/entries:
     post:
       operationId: postJournalEntry
@@ -397,6 +452,83 @@ components:
         created_at:
           type: string
           format: date-time
+
+    GetAccountResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - account_ref
+        - ledger_slug
+        - kind
+        - available
+        - balances
+        - created_at
+      properties:
+        account_ref:
+          $ref: "#/components/schemas/AccountRef"
+        ledger_slug:
+          $ref: "#/components/schemas/LedgerSlug"
+        kind:
+          type: string
+          enum:
+            - payable
+          example: payable
+        available:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Derived available amount in minor units (credits_posted - debits_posted - debits_pending).
+          example: 9800
+        balances:
+          $ref: "#/components/schemas/AccountBalances"
+        created_at:
+          type: string
+          format: date-time
+      example:
+        account_ref: acct_01K33YV8M82N9MXP4E7J6B1QWK
+        ledger_slug: ngn_ng
+        kind: payable
+        available: 9800
+        balances:
+          debits_pending: 200
+          credits_pending: 0
+          debits_posted: 0
+          credits_posted: 10000
+        created_at: "2026-09-08T10:30:00Z"
+
+    AccountBalances:
+      type: object
+      additionalProperties: false
+      required:
+        - debits_pending
+        - credits_pending
+        - debits_posted
+        - credits_posted
+      properties:
+        debits_pending:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Total pending debit amount in minor units.
+          example: 200
+        credits_pending:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Total pending credit amount in minor units.
+          example: 0
+        debits_posted:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Total posted debit amount in minor units.
+          example: 0
+        credits_posted:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Total posted credit amount in minor units.
+          example: 10000
 
     ValidationErrorResponse:
       type: object

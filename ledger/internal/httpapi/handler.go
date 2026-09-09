@@ -21,6 +21,10 @@ type PayableAccountCreator interface {
 	CreatePayableAccount(context.Context, account.CreatePayableInput) (account.CreateResult, error)
 }
 
+type PayableAccountGetter interface {
+	GetPayableAccount(context.Context, account.GetPayableAccountInput) (account.GetPayableAccountResult, error)
+}
+
 type JournalEntryPoster interface {
 	PostEntry(context.Context, journal.PostInput) (journal.PostResult, error)
 }
@@ -28,6 +32,7 @@ type JournalEntryPoster interface {
 // Service provides the application operations exposed by the HTTP API.
 type Service interface {
 	PayableAccountCreator
+	PayableAccountGetter
 	JournalEntryPoster
 }
 
@@ -116,6 +121,36 @@ func (s *server) CreatePayableAccount(
 	return api.CreatePayableAccount200JSONResponse(response), nil
 }
 
+// GetAccount retrieves a payable account and its ledger balances.
+func (s *server) GetAccount(
+	ctx context.Context,
+	request api.GetAccountRequestObject,
+) (api.GetAccountResponseObject, error) {
+	result, err := s.service.GetPayableAccount(ctx, account.GetPayableAccountInput{
+		LedgerSlug: request.Slug,
+		Reference:  request.AccountRef,
+	})
+	if err != nil {
+		return mapGetAccountError(err), nil
+	}
+
+	response := api.GetAccountResponse{
+		AccountRef: result.Reference,
+		LedgerSlug: result.LedgerSlug,
+		Kind:       api.Payable,
+		Available:  int64(result.Balances.Available(result.Kind)),
+		Balances: api.AccountBalances{
+			DebitsPending:  result.Balances.DebitsPending,
+			CreditsPending: result.Balances.CreditsPending,
+			DebitsPosted:   result.Balances.DebitsPosted,
+			CreditsPosted:  result.Balances.CreditsPosted,
+		},
+		CreatedAt: result.CreatedAt,
+	}
+
+	return api.GetAccount200JSONResponse(response), nil
+}
+
 // PostJournalEntry posts an immediate journal entry or returns the existing
 // entry when the idempotency key identifies an identical request.
 func (s *server) PostJournalEntry(
@@ -200,6 +235,34 @@ func mapCreatePayableAccountError(err error) api.CreatePayableAccountResponseObj
 
 	default:
 		return api.CreatePayableAccount500JSONResponse{
+			Message: "The server could not complete the request.",
+			Error: api.ErrorInfo{
+				Code: api.InternalServerError,
+			},
+		}
+	}
+}
+
+func mapGetAccountError(err error) api.GetAccountResponseObject {
+	switch {
+	case errors.Is(err, account.ErrLedgerNotFound):
+		return api.GetAccount404JSONResponse{
+			Message: "Ledger not found.",
+			Error: api.ErrorInfo{
+				Code: api.LedgerNotFound,
+			},
+		}
+
+	case errors.Is(err, account.ErrAccountNotFound):
+		return api.GetAccount404JSONResponse{
+			Message: "Account not found.",
+			Error: api.ErrorInfo{
+				Code: api.AccountNotFound,
+			},
+		}
+
+	default:
+		return api.GetAccount500JSONResponse{
 			Message: "The server could not complete the request.",
 			Error: api.ErrorInfo{
 				Code: api.InternalServerError,
