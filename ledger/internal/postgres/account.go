@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 
@@ -61,4 +62,80 @@ func mapCreatePayableAccountError(err error) error {
 		}
 	}
 	return fmt.Errorf("create payable account: %w", err)
+}
+
+func (s *Store) GetPayableAccount(ctx context.Context, input account.GetPayableAccountInput) (account.GetPayableAccountResult, error) {
+	const q = `
+	SELECT
+		a.public_ref,
+		a.kind,
+		a.debits_pending,
+		a.credits_pending,
+		a.debits_posted,
+		a.credits_posted,
+		a.is_closed,
+		a.created_at,
+		l.slug,
+		h.public_ref
+	FROM ledgers l
+	LEFT JOIN accounts a
+		ON a.ledger_id = l.id
+		AND a.public_ref = $2
+		AND a.kind = 'payable'
+	LEFT JOIN holders h
+		ON a.holder_id = h.id
+	WHERE l.slug = $1;`
+
+	row := s.db.QueryRowContext(ctx, q, input.LedgerSlug, input.Reference)
+
+	var (
+		accountRef     sql.NullString
+		kind           sql.NullString
+		debitsPending  sql.NullInt64
+		creditsPending sql.NullInt64
+		debitsPosted   sql.NullInt64
+		creditsPosted  sql.NullInt64
+		isClosed       sql.NullBool
+		createdAt      sql.NullTime
+		ledgerSlug     string
+		holderRef      sql.NullString
+	)
+
+	if err := row.Scan(
+		&accountRef,
+		&kind,
+		&debitsPending,
+		&creditsPending,
+		&debitsPosted,
+		&creditsPosted,
+		&isClosed,
+		&createdAt,
+		&ledgerSlug,
+		&holderRef,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return account.GetPayableAccountResult{}, fmt.Errorf("get payable account: %w", account.ErrLedgerNotFound)
+		}
+
+		return account.GetPayableAccountResult{}, fmt.Errorf("get payable account: %w", err)
+	}
+
+	if !accountRef.Valid {
+		return account.GetPayableAccountResult{}, fmt.Errorf("get payable account: %w", account.ErrAccountNotFound)
+	}
+
+	return account.GetPayableAccountResult{
+		Reference:  accountRef.String,
+		HolderRef:  holderRef.String,
+		Kind:       account.Kind(kind.String),
+		LedgerSlug: ledgerSlug,
+		IsClosed:   isClosed.Bool,
+		Balances: account.BalanceCounters{
+			DebitsPending:  debitsPending.Int64,
+			CreditsPending: creditsPending.Int64,
+			DebitsPosted:   debitsPosted.Int64,
+			CreditsPosted:  creditsPosted.Int64,
+		},
+		CreatedAt: createdAt.Time,
+	}, nil
 }

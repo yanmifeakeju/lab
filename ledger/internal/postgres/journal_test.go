@@ -655,7 +655,7 @@ func TestStore_PostEntry_Errors(t *testing.T) {
 					t,
 					fixture.tx,
 					otherLedgerID,
-					account.AccountKindCash,
+					account.KindCash,
 				)
 				input.Lines[0].DebitAccountReference = otherCash.Reference
 			},
@@ -981,12 +981,12 @@ func seedPlatformAccounts(t *testing.T, tx *sql.Tx, ledgerID int) platformAccoun
 	t.Helper()
 
 	return platformAccounts{
-		Cash: seedPlatformAccount(t, tx, ledgerID, account.AccountKindCash),
+		Cash: seedPlatformAccount(t, tx, ledgerID, account.KindCash),
 		FeeRevenue: seedPlatformAccount(
 			t,
 			tx,
 			ledgerID,
-			account.AccountKindFeeRevenue,
+			account.KindFeeRevenue,
 		),
 	}
 }
@@ -995,7 +995,7 @@ func seedPlatformAccount(
 	t *testing.T,
 	tx *sql.Tx,
 	ledgerID int,
-	kind account.AccountKind,
+	kind account.Kind,
 ) seededAccount {
 	t.Helper()
 

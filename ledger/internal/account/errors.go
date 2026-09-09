@@ -12,4 +12,7 @@ var (
 	// ErrHolderConflict is returned when a holder with the same external id
 	// already exists under a different name.
 	ErrHolderConflict = errors.New("holder conflict")
+
+	// ErrAccountNotFound is returned when an account cannot be retrieved
+	ErrAccountNotFound = errors.New("account not found")
 )

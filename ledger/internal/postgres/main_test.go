@@ -111,6 +111,22 @@ func newTestTx(t *testing.T) *sql.Tx {
 	return tx
 }
 
+func seedLedger(t *testing.T, tx *sql.Tx, slug, currency string) int {
+	t.Helper()
+
+	const query = `
+		INSERT INTO ledgers (slug, currency, scale)
+		VALUES ($1, $2, $3)
+		RETURNING id`
+
+	var id int
+	if err := tx.QueryRowContext(t.Context(), query, slug, currency, 2).Scan(&id); err != nil {
+		t.Fatalf("seed ledger %q: %v", slug, err)
+	}
+
+	return id
+}
+
 func runWithRollbackSavepoint(t *testing.T, tx *sql.Tx, fn func() error) error {
 	t.Helper()
 

@@ -40,8 +40,8 @@ func TestStore_CreatePayableAccount(t *testing.T) {
 	if got.LedgerID != ledgerID {
 		t.Errorf("CreatePayableAccount() Account.LedgerID = %d, want %d", got.LedgerID, ledgerID)
 	}
-	if got.Kind != account.AccountKindPayable {
-		t.Errorf("CreatePayableAccount() Account.Kind = %q, want %q", got.Kind, account.AccountKindPayable)
+	if got.Kind != account.KindPayable {
+		t.Errorf("CreatePayableAccount() Account.Kind = %q, want %q", got.Kind, account.KindPayable)
 	}
 	if got.HolderID == nil {
 		t.Fatal("CreatePayableAccount() Account.HolderID = nil, want generated ID")
@@ -302,18 +302,182 @@ func TestStore_CreatePayableAccount_Errors(t *testing.T) {
 	}
 }
 
-func seedLedger(t *testing.T, tx *sql.Tx, slug, currency string) int {
-	t.Helper()
+func TestStore_GetPayableAccount(t *testing.T) {
+	tx := newTestTx(t)
+	store := postgres.New(tx)
+	ledgerID := seedLedger(t, tx, "ngn_ng", "NGN")
 
-	const query = `
-		INSERT INTO ledgers (slug, currency, scale)
-		VALUES ($1, $2, $3)
-		RETURNING id`
-
-	var id int
-	if err := tx.QueryRowContext(t.Context(), query, slug, currency, 2).Scan(&id); err != nil {
-		t.Fatalf("seed ledger %q: %v", slug, err)
+	created, err := store.CreatePayableAccount(t.Context(), account.CreatePayableInput{
+		LedgerSlug: "ngn_ng",
+		ExternalID: "merchant_1",
+		Name:       "Acme Ltd",
+	})
+	if err != nil {
+		t.Fatalf("arrange payable account: %v", err)
 	}
 
-	return id
+	t.Run("account found with zero balances", func(t *testing.T) {
+		got, err := store.GetPayableAccount(t.Context(), account.GetPayableAccountInput{
+			LedgerSlug: "ngn_ng",
+			Reference:  created.Account.Reference,
+		})
+		if err != nil {
+			t.Fatalf("GetPayableAccount() error = %v", err)
+		}
+
+		if got.Reference != created.Account.Reference {
+			t.Errorf("GetPayableAccount() Reference = %q, want %q", got.Reference, created.Account.Reference)
+		}
+		if got.Kind != account.KindPayable {
+			t.Errorf("GetPayableAccount() Kind = %q, want %q", got.Kind, account.KindPayable)
+		}
+		if got.LedgerSlug != "ngn_ng" {
+			t.Errorf("GetPayableAccount() LedgerSlug = %q, want %q", got.LedgerSlug, "ngn_ng")
+		}
+		if got.HolderRef != created.Account.HolderReference {
+			t.Errorf("GetPayableAccount() HolderRef = %q, want %q", got.HolderRef, created.Account.HolderReference)
+		}
+		if got.IsClosed {
+			t.Error("GetPayableAccount() IsClosed = true, want false")
+		}
+		if !got.CreatedAt.Equal(created.Account.CreatedAt) {
+			t.Errorf("GetPayableAccount() CreatedAt = %v, want %v", got.CreatedAt, created.Account.CreatedAt)
+		}
+		if got.Balances.DebitsPending != 0 || got.Balances.CreditsPending != 0 ||
+			got.Balances.DebitsPosted != 0 || got.Balances.CreditsPosted != 0 {
+			t.Errorf("GetPayableAccount() Balances = %+v, want all zeros", got.Balances)
+		}
+		if got.Balances.Available(got.Kind) != 0 {
+			t.Errorf("GetPayableAccount() Balances.Available() = %d, want 0", got.Balances.Available(got.Kind))
+		}
+	})
+
+	t.Run("account found with balances and derived available", func(t *testing.T) {
+		funded, err := store.CreatePayableAccount(t.Context(), account.CreatePayableInput{
+			LedgerSlug: "ngn_ng",
+			ExternalID: "merchant_funded",
+			Name:       "Funded Merchant",
+		})
+		if err != nil {
+			t.Fatalf("arrange funded account: %v", err)
+		}
+
+		// credits_posted=10000, debits_posted=100, debits_pending=200, credits_pending=500
+		// available = credits_posted - debits_posted - debits_pending = 10000 - 100 - 200 = 9700
+		const update = `
+			UPDATE accounts
+			SET credits_posted = 10000, debits_posted = 100, debits_pending = 200, credits_pending = 500
+			WHERE public_ref = $1`
+		if _, err := tx.ExecContext(t.Context(), update, funded.Account.Reference); err != nil {
+			t.Fatalf("update account balances: %v", err)
+		}
+
+		got, err := store.GetPayableAccount(t.Context(), account.GetPayableAccountInput{
+			LedgerSlug: "ngn_ng",
+			Reference:  funded.Account.Reference,
+		})
+		if err != nil {
+			t.Fatalf("GetPayableAccount() error = %v", err)
+		}
+
+		wantBalances := account.BalanceCounters{
+			DebitsPending:  200,
+			CreditsPending: 500,
+			DebitsPosted:   100,
+			CreditsPosted:  10000,
+		}
+		if got.Balances != wantBalances {
+			t.Errorf("GetPayableAccount() Balances = %+v, want %+v", got.Balances, wantBalances)
+		}
+		const wantAvailable = uint64(9700)
+		if got.Balances.Available(got.Kind) != wantAvailable {
+			t.Errorf("GetPayableAccount() Balances.Available() = %d, want %d", got.Balances.Available(got.Kind), wantAvailable)
+		}
+	})
+
+	t.Run("ledger not found", func(t *testing.T) {
+		_, err := store.GetPayableAccount(t.Context(), account.GetPayableAccountInput{
+			LedgerSlug: "missing",
+			Reference:  created.Account.Reference,
+		})
+		if !errors.Is(err, account.ErrLedgerNotFound) {
+			t.Errorf("GetPayableAccount() error = %v, want %v", err, account.ErrLedgerNotFound)
+		}
+	})
+
+	t.Run("account not found", func(t *testing.T) {
+		_, err := store.GetPayableAccount(t.Context(), account.GetPayableAccountInput{
+			LedgerSlug: "ngn_ng",
+			Reference:  "acct_01K00000000000000000000000",
+		})
+		if !errors.Is(err, account.ErrAccountNotFound) {
+			t.Errorf("GetPayableAccount() error = %v, want %v", err, account.ErrAccountNotFound)
+		}
+	})
+
+	t.Run("internal cash account reference returns account not found", func(t *testing.T) {
+		cash := seedPlatformAccount(t, tx, ledgerID, account.KindCash)
+
+		_, err := store.GetPayableAccount(t.Context(), account.GetPayableAccountInput{
+			LedgerSlug: "ngn_ng",
+			Reference:  cash.Reference,
+		})
+		if !errors.Is(err, account.ErrAccountNotFound) {
+			t.Errorf("GetPayableAccount() error = %v, want %v", err, account.ErrAccountNotFound)
+		}
+	})
+
+	t.Run("internal fee revenue account reference returns account not found", func(t *testing.T) {
+		feeRevenue := seedPlatformAccount(t, tx, ledgerID, account.KindFeeRevenue)
+
+		_, err := store.GetPayableAccount(t.Context(), account.GetPayableAccountInput{
+			LedgerSlug: "ngn_ng",
+			Reference:  feeRevenue.Reference,
+		})
+		if !errors.Is(err, account.ErrAccountNotFound) {
+			t.Errorf("GetPayableAccount() error = %v, want %v", err, account.ErrAccountNotFound)
+		}
+	})
+
+	t.Run("account in different ledger returns account not found", func(t *testing.T) {
+		seedLedger(t, tx, "usd_ng", "USD")
+
+		_, err := store.GetPayableAccount(t.Context(), account.GetPayableAccountInput{
+			LedgerSlug: "usd_ng",
+			Reference:  created.Account.Reference,
+		})
+		if !errors.Is(err, account.ErrAccountNotFound) {
+			t.Errorf("GetPayableAccount() error = %v, want %v", err, account.ErrAccountNotFound)
+		}
+	})
+
+	t.Run("closed payable account is returned", func(t *testing.T) {
+		closed, err := store.CreatePayableAccount(t.Context(), account.CreatePayableInput{
+			LedgerSlug: "ngn_ng",
+			ExternalID: "merchant_closed",
+			Name:       "Closed Merchant Ltd",
+		})
+		if err != nil {
+			t.Fatalf("arrange closed account: %v", err)
+		}
+
+		if _, err := tx.ExecContext(
+			t.Context(),
+			`UPDATE accounts SET is_closed = true WHERE public_ref = $1`,
+			closed.Account.Reference,
+		); err != nil {
+			t.Fatalf("close account: %v", err)
+		}
+
+		got, err := store.GetPayableAccount(t.Context(), account.GetPayableAccountInput{
+			LedgerSlug: "ngn_ng",
+			Reference:  closed.Account.Reference,
+		})
+		if err != nil {
+			t.Fatalf("GetPayableAccount() error = %v", err)
+		}
+		if !got.IsClosed {
+			t.Error("GetPayableAccount() IsClosed = false, want true")
+		}
+	})
 }
