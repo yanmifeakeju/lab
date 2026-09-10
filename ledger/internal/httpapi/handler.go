@@ -22,7 +22,7 @@ type PayableAccountCreator interface {
 }
 
 type PayableAccountGetter interface {
-	GetPayableAccount(context.Context, account.GetPayableAccountInput) (account.GetPayableAccountResult, error)
+	GetPayableAccount(context.Context, account.GetPayableInput) (account.Payable, error)
 }
 
 type JournalEntryPoster interface {
@@ -106,12 +106,21 @@ func (s *server) CreatePayableAccount(
 	}
 
 	response := api.CreatePayableAccountResponse{
-		AccountRef: result.Account.Reference,
-		HolderRef:  result.Account.HolderReference,
-		LedgerSlug: request.Slug,
-		ExternalID: input.ExternalID,
-		Name:       result.Account.HolderName,
-		CreatedAt:  result.Account.CreatedAt,
+		Reference:       result.Account.Reference,
+		HolderReference: result.Account.HolderReference,
+		LedgerSlug:      request.Slug,
+		ExternalID:      input.ExternalID,
+		Name:            result.Account.HolderName,
+		Kind:            api.Payable,
+		Status:          payableAccountStatus(result.Account.IsClosed),
+		Available:       int64(result.Account.Available()),
+		Balances: api.AccountBalances{
+			DebitsPending:  result.Account.Balances.DebitsPending,
+			CreditsPending: result.Account.Balances.CreditsPending,
+			DebitsPosted:   result.Account.Balances.DebitsPosted,
+			CreditsPosted:  result.Account.Balances.CreditsPosted,
+		},
+		CreatedAt: result.Account.CreatedAt,
 	}
 
 	if result.Created {
@@ -126,19 +135,22 @@ func (s *server) GetAccount(
 	ctx context.Context,
 	request api.GetAccountRequestObject,
 ) (api.GetAccountResponseObject, error) {
-	result, err := s.service.GetPayableAccount(ctx, account.GetPayableAccountInput{
+	result, err := s.service.GetPayableAccount(ctx, account.GetPayableInput{
 		LedgerSlug: request.Slug,
-		Reference:  request.AccountRef,
+		Reference:  request.AccountReference,
 	})
 	if err != nil {
 		return mapGetAccountError(err), nil
 	}
 
 	response := api.GetAccountResponse{
-		AccountRef: result.Reference,
-		LedgerSlug: result.LedgerSlug,
-		Kind:       api.Payable,
-		Available:  int64(result.Balances.Available(result.Kind)),
+		Reference:       result.Reference,
+		HolderReference: result.HolderReference,
+		LedgerSlug:      result.LedgerSlug,
+		Kind:            api.Payable,
+		Name:            result.HolderName,
+		Status:          payableAccountStatus(result.IsClosed),
+		Available:       int64(result.Available()),
 		Balances: api.AccountBalances{
 			DebitsPending:  result.Balances.DebitsPending,
 			CreditsPending: result.Balances.CreditsPending,
@@ -149,6 +161,13 @@ func (s *server) GetAccount(
 	}
 
 	return api.GetAccount200JSONResponse(response), nil
+}
+
+func payableAccountStatus(closed bool) api.AccountStatus {
+	if closed {
+		return api.Closed
+	}
+	return api.Active
 }
 
 // PostJournalEntry posts an immediate journal entry or returns the existing

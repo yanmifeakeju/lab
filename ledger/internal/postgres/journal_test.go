@@ -916,7 +916,7 @@ type postEntryFixture struct {
 	store    *postgres.Store
 	ledgerID int
 	slug     string
-	payable  account.Account
+	payable  seededAccount
 	platform platformAccounts
 }
 
@@ -943,7 +943,7 @@ func newPostEntryFixture(t *testing.T) postEntryFixture {
 		ledgerID: ledgerID,
 		store:    store,
 		slug:     slug,
-		payable:  result.Account,
+		payable:  lookupSeededAccount(t, tx, result.Account.Reference),
 		platform: seedPlatformAccounts(t, tx, ledgerID),
 	}
 }
@@ -969,6 +969,20 @@ type accountBalances struct {
 type seededAccount struct {
 	ID        int64
 	Reference string
+}
+
+func lookupSeededAccount(t *testing.T, tx *sql.Tx, reference string) seededAccount {
+	t.Helper()
+
+	var result seededAccount
+	if err := tx.QueryRowContext(
+		t.Context(),
+		`SELECT id, public_ref FROM accounts WHERE public_ref = $1`,
+		reference,
+	).Scan(&result.ID, &result.Reference); err != nil {
+		t.Fatalf("look up seeded account %q: %v", reference, err)
+	}
+	return result
 }
 
 // platformAccounts contains the platform-owned accounts for a ledger.

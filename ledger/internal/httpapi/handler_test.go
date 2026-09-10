@@ -27,8 +27,8 @@ type fakeService struct {
 	postResult journal.PostResult
 	postErr    error
 	postCalls  int
-	getInput   account.GetPayableAccountInput
-	getResult  account.GetPayableAccountResult
+	getInput   account.GetPayableInput
+	getResult  account.Payable
 	getErr     error
 	getCalls   int
 }
@@ -44,8 +44,8 @@ func (f *fakeService) CreatePayableAccount(
 
 func (f *fakeService) GetPayableAccount(
 	_ context.Context,
-	input account.GetPayableAccountInput,
-) (account.GetPayableAccountResult, error) {
+	input account.GetPayableInput,
+) (account.Payable, error) {
 	f.getInput = input
 	f.getCalls++
 	return f.getResult, f.getErr
@@ -173,7 +173,7 @@ func TestCreatePayableAccountValidation(t *testing.T) {
 	handler, err := httpapi.NewHandler(&fakeService{
 		result: account.CreateResult{
 			Created: true,
-			Account: account.Account{
+			Account: account.Payable{
 				Reference:       "acct_01K33YV8M82N9MXP4E7J6B1QWK",
 				HolderReference: "hld_01K33YVADP5Z8B0T3X2Q91C6RH",
 				HolderName:      "Acme Ltd",
@@ -271,7 +271,7 @@ func TestCreatePayableAccountResponses(t *testing.T) {
 			name: "created",
 			result: account.CreateResult{
 				Created: true,
-				Account: account.Account{
+				Account: account.Payable{
 					Reference:       accountRef,
 					HolderReference: holderRef,
 					HolderName:      "Acme Ltd",
@@ -281,14 +281,21 @@ func TestCreatePayableAccountResponses(t *testing.T) {
 			wantStatus: http.StatusCreated,
 		},
 		{
-			name: "idempotent retry",
+			name: "idempotent retry of closed account",
 			result: account.CreateResult{
 				Created: false,
-				Account: account.Account{
+				Account: account.Payable{
 					Reference:       accountRef,
 					HolderReference: holderRef,
 					HolderName:      "Acme Ltd",
-					CreatedAt:       createdAt,
+					IsClosed:        true,
+					Balances: account.BalanceCounters{
+						DebitsPending:  200,
+						CreditsPending: 500,
+						DebitsPosted:   100,
+						CreditsPosted:  10000,
+					},
+					CreatedAt: createdAt,
 				},
 			},
 			wantStatus: http.StatusOK,
@@ -359,17 +366,40 @@ func TestCreatePayableAccountResponses(t *testing.T) {
 				if got.LedgerSlug != api.LedgerSlug(wantInput.LedgerSlug) {
 					t.Errorf("ledger_slug = %q, want %q", got.LedgerSlug, wantInput.LedgerSlug)
 				}
-				if got.AccountRef != accountRef {
-					t.Errorf("account_ref = %q, want %q", got.AccountRef, accountRef)
+				if got.Reference != accountRef {
+					t.Errorf("reference = %q, want %q", got.Reference, accountRef)
 				}
-				if got.HolderRef != holderRef {
-					t.Errorf("holder_ref = %q, want %q", got.HolderRef, holderRef)
+				if got.HolderReference != holderRef {
+					t.Errorf("holder_reference = %q, want %q", got.HolderReference, holderRef)
 				}
 				if got.ExternalID != wantInput.ExternalID {
 					t.Errorf("external_id = %q, want %q", got.ExternalID, wantInput.ExternalID)
 				}
 				if got.Name != tt.result.Account.HolderName {
 					t.Errorf("name = %q, want %q", got.Name, tt.result.Account.HolderName)
+				}
+				if got.Kind != api.Payable {
+					t.Errorf("kind = %q, want %q", got.Kind, api.Payable)
+				}
+				wantAccountStatus := api.Active
+				if tt.result.Account.IsClosed {
+					wantAccountStatus = api.Closed
+				}
+				if got.Status != wantAccountStatus {
+					t.Errorf("status = %q, want %q", got.Status, wantAccountStatus)
+				}
+				wantBalances := api.AccountBalances{
+					DebitsPending:  tt.result.Account.Balances.DebitsPending,
+					CreditsPending: tt.result.Account.Balances.CreditsPending,
+					DebitsPosted:   tt.result.Account.Balances.DebitsPosted,
+					CreditsPosted:  tt.result.Account.Balances.CreditsPosted,
+				}
+				if got.Balances != wantBalances {
+					t.Errorf("balances = %+v, want %+v", got.Balances, wantBalances)
+				}
+				wantAvailable := int64(tt.result.Account.Available())
+				if got.Available != wantAvailable {
+					t.Errorf("available = %d, want %d", got.Available, wantAvailable)
 				}
 				if !got.CreatedAt.Equal(tt.result.Account.CreatedAt) {
 					t.Errorf("created_at = %v, want %v", got.CreatedAt, tt.result.Account.CreatedAt)
@@ -395,7 +425,7 @@ func TestCreatePayableAccountTrimsName(t *testing.T) {
 	creator := &fakeService{
 		result: account.CreateResult{
 			Created: true,
-			Account: account.Account{
+			Account: account.Payable{
 				Reference:       "acct_01K33YV8M82N9MXP4E7J6B1QWK",
 				HolderReference: "hld_01K33YVADP5Z8B0T3X2Q91C6RH",
 				HolderName:      "Acme Ltd",
@@ -713,19 +743,21 @@ func TestGetAccount(t *testing.T) {
 	createdAt := time.Date(2026, time.September, 8, 10, 30, 0, 0, time.UTC)
 
 	tests := []struct {
-		name        string
-		result      account.GetPayableAccountResult
-		err         error
-		wantStatus  int
-		wantCode    api.ErrorCode
-		wantMessage string
+		name              string
+		result            account.Payable
+		err               error
+		wantStatus        int
+		wantCode          api.ErrorCode
+		wantMessage       string
+		wantAccountStatus api.AccountStatus
 	}{
 		{
 			name: "successful lookup",
-			result: account.GetPayableAccountResult{
-				Reference:  accountRef,
-				Kind:       account.KindPayable,
-				LedgerSlug: ledgerSlug,
+			result: account.Payable{
+				Reference:       accountRef,
+				HolderReference: "hld_01K33YVADP5Z8B0T3X2Q91C6RH",
+				HolderName:      "Acme Ltd",
+				LedgerSlug:      ledgerSlug,
 				Balances: account.BalanceCounters{
 					DebitsPending:  200,
 					CreditsPending: 0,
@@ -734,7 +766,27 @@ func TestGetAccount(t *testing.T) {
 				},
 				CreatedAt: createdAt,
 			},
-			wantStatus: http.StatusOK,
+			wantStatus:        http.StatusOK,
+			wantAccountStatus: api.Active,
+		},
+		{
+			name: "closed account",
+			result: account.Payable{
+				Reference:       accountRef,
+				HolderReference: "hld_01K33YVADP5Z8B0T3X2Q91C6RH",
+				HolderName:      "Acme Ltd",
+				LedgerSlug:      ledgerSlug,
+				IsClosed:        true,
+				Balances: account.BalanceCounters{
+					DebitsPending:  200,
+					CreditsPending: 0,
+					DebitsPosted:   0,
+					CreditsPosted:  10000,
+				},
+				CreatedAt: createdAt,
+			},
+			wantStatus:        http.StatusOK,
+			wantAccountStatus: api.Closed,
 		},
 		{
 			name:        "ledger not found",
@@ -805,14 +857,23 @@ func TestGetAccount(t *testing.T) {
 				if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 					t.Fatalf("decode success response: %v", err)
 				}
-				if got.AccountRef != accountRef {
-					t.Errorf("account_ref = %q, want %q", got.AccountRef, accountRef)
+				if got.Reference != accountRef {
+					t.Errorf("reference = %q, want %q", got.Reference, accountRef)
+				}
+				if got.HolderReference != tt.result.HolderReference {
+					t.Errorf("holder_reference = %q, want %q", got.HolderReference, tt.result.HolderReference)
 				}
 				if got.LedgerSlug != ledgerSlug {
 					t.Errorf("ledger_slug = %q, want %q", got.LedgerSlug, ledgerSlug)
 				}
 				if got.Kind != api.Payable {
 					t.Errorf("kind = %q, want %q", got.Kind, api.Payable)
+				}
+				if got.Name != tt.result.HolderName {
+					t.Errorf("name = %q, want %q", got.Name, tt.result.HolderName)
+				}
+				if got.Status != tt.wantAccountStatus {
+					t.Errorf("status = %q, want %q", got.Status, tt.wantAccountStatus)
 				}
 				const wantAvailable = int64(9800)
 				if got.Available != wantAvailable {
@@ -839,17 +900,37 @@ func TestGetAccountValidation(t *testing.T) {
 	tests := []struct {
 		name       string
 		target     string
-		wantStatus int
+		wantDetail api.ValidationErrorDetail
 	}{
 		{
-			name:       "invalid ledger slug characters",
-			target:     "/ledgers/invalid-slug!/accounts/acct_01K33YV8M82N9MXP4E7J6B1QWK",
-			wantStatus: http.StatusBadRequest,
+			name:   "invalid ledger slug characters",
+			target: "/ledgers/invalid-slug!/accounts/acct_01K33YV8M82N9MXP4E7J6B1QWK",
+			wantDetail: api.ValidationErrorDetail{
+				Location: api.Path,
+				Field:    "slug",
+				Code:     api.InvalidFormat,
+				Message:  "slug must contain lowercase letters and numbers separated by single underscores",
+			},
 		},
 		{
-			name:       "ledger slug too short",
-			target:     "/ledgers/ab/accounts/acct_01K33YV8M82N9MXP4E7J6B1QWK",
-			wantStatus: http.StatusBadRequest,
+			name:   "ledger slug too short",
+			target: "/ledgers/ab/accounts/acct_01K33YV8M82N9MXP4E7J6B1QWK",
+			wantDetail: api.ValidationErrorDetail{
+				Location: api.Path,
+				Field:    "slug",
+				Code:     api.MinLength,
+				Message:  "slug must contain at least 3 characters",
+			},
+		},
+		{
+			name:   "account reference too long",
+			target: "/ledgers/ngn_ng/accounts/" + strings.Repeat("a", 65),
+			wantDetail: api.ValidationErrorDetail{
+				Location: api.Path,
+				Field:    "account_reference",
+				Code:     api.MaxLength,
+				Message:  "account_reference must not exceed 64 characters",
+			},
 		},
 	}
 
@@ -866,13 +947,23 @@ func TestGetAccountValidation(t *testing.T) {
 
 			handler.ServeHTTP(rec, req)
 
-			if rec.Code != tt.wantStatus {
-				t.Errorf("status = %d, want %d; body = %s", rec.Code, tt.wantStatus, rec.Body.String())
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
 			}
 			if svc.getCalls != 0 {
 				t.Errorf("GetPayableAccount() calls = %d, want 0", svc.getCalls)
 			}
+
+			var got api.ValidationErrorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode validation response: %v", err)
+			}
+			if len(got.Error.Details) != 1 {
+				t.Fatalf("details = %+v, want one detail", got.Error.Details)
+			}
+			if detail := got.Error.Details[0]; detail != tt.wantDetail {
+				t.Errorf("detail = %+v, want %+v", detail, tt.wantDetail)
+			}
 		})
 	}
 }
-

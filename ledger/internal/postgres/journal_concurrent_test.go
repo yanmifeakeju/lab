@@ -295,7 +295,7 @@ func TestStore_PostEntry_ConcurrentInsufficientFunds(t *testing.T) {
 type committedPostEntryFixture struct {
 	ledgerID int
 	slug     string
-	payable  account.Account
+	payable  seededAccount
 	platform platformAccounts
 }
 
@@ -326,6 +326,7 @@ func newCommittedPostEntryFixture(t *testing.T) committedPostEntryFixture {
 	if err != nil {
 		t.Fatalf("create payable account: %v", err)
 	}
+	payableAccount := lookupSeededAccount(t, setupTx, payable.Account.Reference)
 	if err := setupTx.Commit(); err != nil {
 		t.Fatalf("commit setup transaction: %v", err)
 	}
@@ -355,7 +356,7 @@ func newCommittedPostEntryFixture(t *testing.T) committedPostEntryFixture {
 	return committedPostEntryFixture{
 		ledgerID: ledgerID,
 		slug:     slug,
-		payable:  payable.Account,
+		payable:  payableAccount,
 		platform: platform,
 	}
 }

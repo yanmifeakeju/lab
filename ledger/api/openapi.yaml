@@ -88,7 +88,7 @@ paths:
                 error:
                   code: internal_server_error
 
-  /ledgers/{slug}/accounts/{account_ref}:
+  /ledgers/{slug}/accounts/{account_reference}:
     get:
       operationId: getAccount
       summary: Get a payable account and its balance
@@ -99,11 +99,11 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/LedgerSlug"
-        - name: account_ref
+        - name: account_reference
           in: path
           required: true
           schema:
-            $ref: "#/components/schemas/AccountRef"
+            $ref: "#/components/schemas/AccountReference"
       responses:
         "200":
           description: The payable account was found and returned with its balances.
@@ -255,19 +255,43 @@ components:
         maxLength: must not exceed 63 characters
         pattern: must contain lowercase letters and numbers separated by single underscores
 
-    HolderRef:
+    HolderReference:
       type: string
       description: Stable opaque reference assigned to a holder by the ledger.
       minLength: 1
       maxLength: 64
       example: hld_01K33YVADP5Z8B0T3X2Q91C6RH
 
-    AccountRef:
+    AccountReference:
       type: string
       description: Stable opaque reference assigned to an account by the ledger.
       minLength: 1
       maxLength: 64
       example: acct_01K33YV8M82N9MXP4E7J6B1QWK
+      x-validation-messages:
+        minLength: must not be empty
+        maxLength: must not exceed 64 characters
+
+    AccountStatus:
+      type: string
+      description: Whether the payable account itself is active or closed.
+      enum:
+        - active
+        - closed
+      example: active
+
+    PayableAccountKind:
+      type: string
+      enum:
+        - payable
+      example: payable
+
+    AvailableBalance:
+      type: integer
+      format: int64
+      minimum: 0
+      description: Derived available amount in minor units (credits_posted - debits_posted - debits_pending).
+      example: 9800
 
     JournalRef:
       type: string
@@ -339,9 +363,9 @@ components:
         - amount
       properties:
         debit_account_ref:
-          $ref: "#/components/schemas/AccountRef"
+          $ref: "#/components/schemas/AccountReference"
         credit_account_ref:
-          $ref: "#/components/schemas/AccountRef"
+          $ref: "#/components/schemas/AccountReference"
         amount:
           type: integer
           format: int64
@@ -427,17 +451,21 @@ components:
       type: object
       additionalProperties: false
       required:
-        - holder_ref
-        - account_ref
+        - holder_reference
+        - reference
         - ledger_slug
         - external_id
         - name
+        - kind
+        - status
+        - available
+        - balances
         - created_at
       properties:
-        holder_ref:
-          $ref: "#/components/schemas/HolderRef"
-        account_ref:
-          $ref: "#/components/schemas/AccountRef"
+        holder_reference:
+          $ref: "#/components/schemas/HolderReference"
+        reference:
+          $ref: "#/components/schemas/AccountReference"
         ledger_slug:
           $ref: "#/components/schemas/LedgerSlug"
         external_id:
@@ -449,6 +477,14 @@ components:
           type: string
           minLength: 1
           example: Acme Ltd
+        kind:
+          $ref: "#/components/schemas/PayableAccountKind"
+        status:
+          $ref: "#/components/schemas/AccountStatus"
+        available:
+          $ref: "#/components/schemas/AvailableBalance"
+        balances:
+          $ref: "#/components/schemas/AccountBalances"
         created_at:
           type: string
           format: date-time
@@ -457,37 +493,44 @@ components:
       type: object
       additionalProperties: false
       required:
-        - account_ref
+        - reference
+        - holder_reference
         - ledger_slug
         - kind
+        - name
+        - status
         - available
         - balances
         - created_at
       properties:
-        account_ref:
-          $ref: "#/components/schemas/AccountRef"
+        reference:
+          $ref: "#/components/schemas/AccountReference"
+        holder_reference:
+          $ref: "#/components/schemas/HolderReference"
         ledger_slug:
           $ref: "#/components/schemas/LedgerSlug"
         kind:
+          $ref: "#/components/schemas/PayableAccountKind"
+        name:
           type: string
-          enum:
-            - payable
-          example: payable
+          minLength: 1
+          example: Acme Ltd
+        status:
+          $ref: "#/components/schemas/AccountStatus"
         available:
-          type: integer
-          format: int64
-          minimum: 0
-          description: Derived available amount in minor units (credits_posted - debits_posted - debits_pending).
-          example: 9800
+          $ref: "#/components/schemas/AvailableBalance"
         balances:
           $ref: "#/components/schemas/AccountBalances"
         created_at:
           type: string
           format: date-time
       example:
-        account_ref: acct_01K33YV8M82N9MXP4E7J6B1QWK
+        reference: acct_01K33YV8M82N9MXP4E7J6B1QWK
+        holder_reference: hld_01K33YVADP5Z8B0T3X2Q91C6RH
         ledger_slug: ngn_ng
         kind: payable
+        name: Acme Ltd
+        status: active
         available: 9800
         balances:
           debits_pending: 200

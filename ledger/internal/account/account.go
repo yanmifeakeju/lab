@@ -46,12 +46,12 @@ type CreatePayableInput struct {
 
 // CreateResult is the result of onboarding a payable account.
 type CreateResult struct {
-	Account Account
+	Account Payable
 	Created bool
 }
 
-// GetPayableAccountInput contains the query parameters for looking up a payable account.
-type GetPayableAccountInput struct {
+// GetPayableInput contains the query parameters for looking up a payable account.
+type GetPayableInput struct {
 	LedgerSlug string
 	Reference  string
 }
@@ -68,6 +68,8 @@ type BalanceCounters struct {
 // For payable accounts: available = credits_posted - debits_posted - debits_pending.
 // Pending credits do not increase availability until captured or posted.
 // Panics if kind is payable and available balance is negative.
+// TODO: Return a signed balance and allow negative API values if payable
+// accounts are permitted to go negative for chargebacks in the future.
 func (b BalanceCounters) Available(kind Kind) uint64 {
 	switch kind {
 	case KindPayable:
@@ -81,13 +83,18 @@ func (b BalanceCounters) Available(kind Kind) uint64 {
 	}
 }
 
-// GetPayableAccountResult contains the public details and balance counters of a retrieved payable account.
-type GetPayableAccountResult struct {
-	Reference  string
-	HolderRef  string
-	Kind       Kind
-	LedgerSlug string
-	IsClosed   bool
-	Balances   BalanceCounters
-	CreatedAt  time.Time
+// Payable represents a merchant payable account exposed by account operations.
+type Payable struct {
+	Reference       string
+	HolderReference string
+	HolderName      string
+	LedgerSlug      string
+	IsClosed        bool
+	Balances        BalanceCounters
+	CreatedAt       time.Time
+}
+
+// Available returns the payable account's derived spendable balance.
+func (p Payable) Available() uint64 {
+	return p.Balances.Available(KindPayable)
 }

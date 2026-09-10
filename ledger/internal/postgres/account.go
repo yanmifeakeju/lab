@@ -45,9 +45,26 @@ func (s *Store) CreatePayableAccount(
 		return account.CreateResult{}, mapCreatePayableAccountError(err)
 	}
 	return account.CreateResult{
-		Account: a,
+		Account: payableFromAccount(a, input.LedgerSlug),
 		Created: created,
 	}, nil
+}
+
+func payableFromAccount(a account.Account, ledgerSlug string) account.Payable {
+	return account.Payable{
+		Reference:       a.Reference,
+		HolderReference: a.HolderReference,
+		HolderName:      a.HolderName,
+		LedgerSlug:      ledgerSlug,
+		IsClosed:        a.IsClosed,
+		Balances: account.BalanceCounters{
+			DebitsPending:  a.DebitsPending,
+			CreditsPending: a.CreditsPending,
+			DebitsPosted:   a.DebitsPosted,
+			CreditsPosted:  a.CreditsPosted,
+		},
+		CreatedAt: a.CreatedAt,
+	}
 }
 
 func mapCreatePayableAccountError(err error) error {
@@ -64,11 +81,10 @@ func mapCreatePayableAccountError(err error) error {
 	return fmt.Errorf("create payable account: %w", err)
 }
 
-func (s *Store) GetPayableAccount(ctx context.Context, input account.GetPayableAccountInput) (account.GetPayableAccountResult, error) {
+func (s *Store) GetPayableAccount(ctx context.Context, input account.GetPayableInput) (account.Payable, error) {
 	const q = `
 	SELECT
 		a.public_ref,
-		a.kind,
 		a.debits_pending,
 		a.credits_pending,
 		a.debits_posted,
@@ -76,7 +92,8 @@ func (s *Store) GetPayableAccount(ctx context.Context, input account.GetPayableA
 		a.is_closed,
 		a.created_at,
 		l.slug,
-		h.public_ref
+		h.public_ref,
+		h.name
 	FROM ledgers l
 	LEFT JOIN accounts a
 		ON a.ledger_id = l.id
@@ -90,7 +107,6 @@ func (s *Store) GetPayableAccount(ctx context.Context, input account.GetPayableA
 
 	var (
 		accountRef     sql.NullString
-		kind           sql.NullString
 		debitsPending  sql.NullInt64
 		creditsPending sql.NullInt64
 		debitsPosted   sql.NullInt64
@@ -99,11 +115,11 @@ func (s *Store) GetPayableAccount(ctx context.Context, input account.GetPayableA
 		createdAt      sql.NullTime
 		ledgerSlug     string
 		holderRef      sql.NullString
+		holderName     sql.NullString
 	)
 
 	if err := row.Scan(
 		&accountRef,
-		&kind,
 		&debitsPending,
 		&creditsPending,
 		&debitsPosted,
@@ -112,24 +128,25 @@ func (s *Store) GetPayableAccount(ctx context.Context, input account.GetPayableA
 		&createdAt,
 		&ledgerSlug,
 		&holderRef,
+		&holderName,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return account.GetPayableAccountResult{}, fmt.Errorf("get payable account: %w", account.ErrLedgerNotFound)
+			return account.Payable{}, fmt.Errorf("get payable account: %w", account.ErrLedgerNotFound)
 		}
 
-		return account.GetPayableAccountResult{}, fmt.Errorf("get payable account: %w", err)
+		return account.Payable{}, fmt.Errorf("get payable account: %w", err)
 	}
 
 	if !accountRef.Valid {
-		return account.GetPayableAccountResult{}, fmt.Errorf("get payable account: %w", account.ErrAccountNotFound)
+		return account.Payable{}, fmt.Errorf("get payable account: %w", account.ErrAccountNotFound)
 	}
 
-	return account.GetPayableAccountResult{
-		Reference:  accountRef.String,
-		HolderRef:  holderRef.String,
-		Kind:       account.Kind(kind.String),
-		LedgerSlug: ledgerSlug,
-		IsClosed:   isClosed.Bool,
+	return account.Payable{
+		Reference:       accountRef.String,
+		HolderReference: holderRef.String,
+		HolderName:      holderName.String,
+		LedgerSlug:      ledgerSlug,
+		IsClosed:        isClosed.Bool,
 		Balances: account.BalanceCounters{
 			DebitsPending:  debitsPending.Int64,
 			CreditsPending: creditsPending.Int64,

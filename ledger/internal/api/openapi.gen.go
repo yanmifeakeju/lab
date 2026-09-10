@@ -22,6 +22,24 @@ import (
 	"github.com/oapi-codegen/runtime"
 )
 
+// Defines values for AccountStatus.
+const (
+	Active AccountStatus = "active"
+	Closed AccountStatus = "closed"
+)
+
+// Valid indicates whether the value is a known member of the AccountStatus enum.
+func (e AccountStatus) Valid() bool {
+	switch e {
+	case Active:
+		return true
+	case Closed:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ErrorCode.
 const (
 	AccountClosed       ErrorCode = "account_closed"
@@ -58,21 +76,6 @@ func (e ErrorCode) Valid() bool {
 	}
 }
 
-// Defines values for GetAccountResponseKind.
-const (
-	Payable GetAccountResponseKind = "payable"
-)
-
-// Valid indicates whether the value is a known member of the GetAccountResponseKind enum.
-func (e GetAccountResponseKind) Valid() bool {
-	switch e {
-	case Payable:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for JournalEntryKind.
 const (
 	Payment    JournalEntryKind = "payment"
@@ -88,6 +91,21 @@ func (e JournalEntryKind) Valid() bool {
 	case Settlement:
 		return true
 	case Transfer:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PayableAccountKind.
+const (
+	Payable PayableAccountKind = "payable"
+)
+
+// Valid indicates whether the value is a known member of the PayableAccountKind enum.
+func (e PayableAccountKind) Valid() bool {
+	switch e {
+	case Payable:
 		return true
 	default:
 		return false
@@ -207,10 +225,20 @@ type AccountBalances struct {
 	DebitsPosted int64 `json:"debits_posted"`
 }
 
-// AccountRef Stable opaque reference assigned to an account by the ledger.
+// AccountReference Stable opaque reference assigned to an account by the ledger.
 //
 // Example: acct_01K33YV8M82N9MXP4E7J6B1QWK
-type AccountRef = string
+type AccountReference = string
+
+// AccountStatus Whether the payable account itself is active or closed.
+//
+// Example: active
+type AccountStatus string
+
+// AvailableBalance Derived available amount in minor units (credits_posted - debits_posted - debits_pending).
+//
+// Example: 9800
+type AvailableBalance = int64
 
 // CreatePayableAccountRequest defines model for CreatePayableAccountRequest.
 type CreatePayableAccountRequest struct {
@@ -220,19 +248,23 @@ type CreatePayableAccountRequest struct {
 
 // CreatePayableAccountResponse defines model for CreatePayableAccountResponse.
 type CreatePayableAccountResponse struct {
-	// AccountRef Stable opaque reference assigned to an account by the ledger.
+	// Available Derived available amount in minor units (credits_posted - debits_posted - debits_pending).
 	//
-	// Example: acct_01K33YV8M82N9MXP4E7J6B1QWK
-	AccountRef AccountRef `json:"account_ref"`
-	CreatedAt  time.Time  `json:"created_at"`
+	// Example: 9800
+	Available AvailableBalance `json:"available"`
+	Balances  AccountBalances  `json:"balances"`
+	CreatedAt time.Time        `json:"created_at"`
 
 	// ExternalID Example: merchant_123
 	ExternalID string `json:"external_id"`
 
-	// HolderRef Stable opaque reference assigned to a holder by the ledger.
+	// HolderReference Stable opaque reference assigned to a holder by the ledger.
 	//
 	// Example: hld_01K33YVADP5Z8B0T3X2Q91C6RH
-	HolderRef HolderRef `json:"holder_ref"`
+	HolderReference HolderReference `json:"holder_reference"`
+
+	// Kind Example: payable
+	Kind PayableAccountKind `json:"kind"`
 
 	// LedgerSlug Opaque identifier assigned to the ledger.
 	//
@@ -241,6 +273,16 @@ type CreatePayableAccountResponse struct {
 
 	// Name Example: Acme Ltd
 	Name string `json:"name"`
+
+	// Reference Stable opaque reference assigned to an account by the ledger.
+	//
+	// Example: acct_01K33YV8M82N9MXP4E7J6B1QWK
+	Reference AccountReference `json:"reference"`
+
+	// Status Whether the payable account itself is active or closed.
+	//
+	// Example: active
+	Status AccountStatus `json:"status"`
 }
 
 // ErrorCode defines model for ErrorCode.
@@ -257,31 +299,41 @@ type ErrorResponse struct {
 	Message string    `json:"message"`
 }
 
-// GetAccountResponse Example: {"account_ref":"acct_01K33YV8M82N9MXP4E7J6B1QWK","available":9800,"balances":{"credits_pending":0,"credits_posted":10000,"debits_pending":200,"debits_posted":0},"created_at":"2026-09-08T10:30:00Z","kind":"payable","ledger_slug":"ngn_ng"}
+// GetAccountResponse Example: {"available":9800,"balances":{"credits_pending":0,"credits_posted":10000,"debits_pending":200,"debits_posted":0},"created_at":"2026-09-08T10:30:00Z","holder_reference":"hld_01K33YVADP5Z8B0T3X2Q91C6RH","kind":"payable","ledger_slug":"ngn_ng","name":"Acme Ltd","reference":"acct_01K33YV8M82N9MXP4E7J6B1QWK","status":"active"}
 type GetAccountResponse struct {
-	// AccountRef Stable opaque reference assigned to an account by the ledger.
-	//
-	// Example: acct_01K33YV8M82N9MXP4E7J6B1QWK
-	AccountRef AccountRef `json:"account_ref"`
-
 	// Available Derived available amount in minor units (credits_posted - debits_posted - debits_pending).
 	//
 	// Example: 9800
-	Available int64           `json:"available"`
-	Balances  AccountBalances `json:"balances"`
-	CreatedAt time.Time       `json:"created_at"`
+	Available AvailableBalance `json:"available"`
+	Balances  AccountBalances  `json:"balances"`
+	CreatedAt time.Time        `json:"created_at"`
+
+	// HolderReference Stable opaque reference assigned to a holder by the ledger.
+	//
+	// Example: hld_01K33YVADP5Z8B0T3X2Q91C6RH
+	HolderReference HolderReference `json:"holder_reference"`
 
 	// Kind Example: payable
-	Kind GetAccountResponseKind `json:"kind"`
+	Kind PayableAccountKind `json:"kind"`
 
 	// LedgerSlug Opaque identifier assigned to the ledger.
 	//
 	// Example: ngn_ng
 	LedgerSlug LedgerSlug `json:"ledger_slug"`
-}
 
-// GetAccountResponseKind Example: payable
-type GetAccountResponseKind string
+	// Name Example: Acme Ltd
+	Name string `json:"name"`
+
+	// Reference Stable opaque reference assigned to an account by the ledger.
+	//
+	// Example: acct_01K33YV8M82N9MXP4E7J6B1QWK
+	Reference AccountReference `json:"reference"`
+
+	// Status Whether the payable account itself is active or closed.
+	//
+	// Example: active
+	Status AccountStatus `json:"status"`
+}
 
 // HealthResponse defines model for HealthResponse.
 type HealthResponse struct {
@@ -289,10 +341,10 @@ type HealthResponse struct {
 	Status string `json:"status"`
 }
 
-// HolderRef Stable opaque reference assigned to a holder by the ledger.
+// HolderReference Stable opaque reference assigned to a holder by the ledger.
 //
 // Example: hld_01K33YVADP5Z8B0T3X2Q91C6RH
-type HolderRef = string
+type HolderReference = string
 
 // IdempotencyKey Caller-generated identifier used to make a ledger operation idempotent.
 //
@@ -312,6 +364,9 @@ type JournalRef = string
 // Example: ngn_ng
 type LedgerSlug = string
 
+// PayableAccountKind Example: payable
+type PayableAccountKind string
+
 // PostJournalEntryLine defines model for PostJournalEntryLine.
 type PostJournalEntryLine struct {
 	// Amount Positive amount expressed in the ledger's minor units.
@@ -322,12 +377,12 @@ type PostJournalEntryLine struct {
 	// CreditAccountRef Stable opaque reference assigned to an account by the ledger.
 	//
 	// Example: acct_01K33YV8M82N9MXP4E7J6B1QWK
-	CreditAccountRef AccountRef `json:"credit_account_ref"`
+	CreditAccountRef AccountReference `json:"credit_account_ref"`
 
 	// DebitAccountRef Stable opaque reference assigned to an account by the ledger.
 	//
 	// Example: acct_01K33YV8M82N9MXP4E7J6B1QWK
-	DebitAccountRef AccountRef `json:"debit_account_ref"`
+	DebitAccountRef AccountReference `json:"debit_account_ref"`
 }
 
 // PostJournalEntryRequest defines model for PostJournalEntryRequest.
@@ -423,8 +478,8 @@ type ServerInterface interface {
 	// (POST /ledgers/{slug}/accounts)
 	CreatePayableAccount(w http.ResponseWriter, r *http.Request, slug LedgerSlug)
 	// GetAccount Get a payable account and its balance
-	// (GET /ledgers/{slug}/accounts/{account_ref})
-	GetAccount(w http.ResponseWriter, r *http.Request, slug LedgerSlug, accountRef AccountRef)
+	// (GET /ledgers/{slug}/accounts/{account_reference})
+	GetAccount(w http.ResponseWriter, r *http.Request, slug LedgerSlug, accountReference AccountReference)
 	// PostJournalEntry Post a journal entry to a ledger
 	// (POST /ledgers/{slug}/entries)
 	PostJournalEntry(w http.ResponseWriter, r *http.Request, slug LedgerSlug, params PostJournalEntryParams)
@@ -494,17 +549,17 @@ func (siw *ServerInterfaceWrapper) GetAccount(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// ------------- Path parameter "account_ref" -------------
-	var accountRef AccountRef
+	// ------------- Path parameter "account_reference" -------------
+	var accountReference AccountReference
 
-	err = runtime.BindStyledParameterWithOptions("simple", "account_ref", r.PathValue("account_ref"), &accountRef, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	err = runtime.BindStyledParameterWithOptions("simple", "account_reference", r.PathValue("account_reference"), &accountReference, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
 	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "account_ref", Err: err})
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "account_reference", Err: err})
 		return
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetAccount(w, r, slug, accountRef)
+		siw.Handler.GetAccount(w, r, slug, accountReference)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -690,7 +745,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/health", wrapper.GetHealth)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/ledgers/{slug}/accounts", wrapper.CreatePayableAccount)
-	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/ledgers/{slug}/accounts/{account_ref}", wrapper.GetAccount)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/ledgers/{slug}/accounts/{account_reference}", wrapper.GetAccount)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/ledgers/{slug}/entries", wrapper.PostJournalEntry)
 
 	return m
@@ -813,8 +868,8 @@ func (response CreatePayableAccount500JSONResponse) VisitCreatePayableAccountRes
 }
 
 type GetAccountRequestObject struct {
-	Slug       LedgerSlug `json:"slug"`
-	AccountRef AccountRef `json:"account_ref"`
+	Slug             LedgerSlug       `json:"slug"`
+	AccountReference AccountReference `json:"account_reference"`
 }
 
 type GetAccountResponseObject interface {
@@ -980,7 +1035,7 @@ type StrictServerInterface interface {
 	// (POST /ledgers/{slug}/accounts)
 	CreatePayableAccount(ctx context.Context, request CreatePayableAccountRequestObject) (CreatePayableAccountResponseObject, error)
 	// GetAccount Get a payable account and its balance
-	// (GET /ledgers/{slug}/accounts/{account_ref})
+	// (GET /ledgers/{slug}/accounts/{account_reference})
 	GetAccount(ctx context.Context, request GetAccountRequestObject) (GetAccountResponseObject, error)
 	// PostJournalEntry Post a journal entry to a ledger
 	// (POST /ledgers/{slug}/entries)
@@ -1084,11 +1139,11 @@ func (sh *strictHandler) CreatePayableAccount(w http.ResponseWriter, r *http.Req
 }
 
 // GetAccount operation middleware
-func (sh *strictHandler) GetAccount(w http.ResponseWriter, r *http.Request, slug LedgerSlug, accountRef AccountRef) {
+func (sh *strictHandler) GetAccount(w http.ResponseWriter, r *http.Request, slug LedgerSlug, accountReference AccountReference) {
 	var request GetAccountRequestObject
 
 	request.Slug = slug
-	request.AccountRef = accountRef
+	request.AccountReference = accountReference
 
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.GetAccount(ctx, request.(GetAccountRequestObject))
@@ -1149,53 +1204,55 @@ func (sh *strictHandler) PostJournalEntry(w http.ResponseWriter, r *http.Request
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
-	"kX6x+F8AAAD//w==",
+	"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",
+	"WebJVlXkLxb/CwAA//8=",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

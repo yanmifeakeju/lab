@@ -14,7 +14,7 @@ import (
 
 func TestStore_CreatePayableAccount(t *testing.T) {
 	tx := newTestTx(t)
-	ledgerID := seedLedger(t, tx, "ngn_ng", "NGN")
+	seedLedger(t, tx, "ngn_ng", "NGN")
 	store := postgres.New(tx)
 
 	result, err := store.CreatePayableAccount(t.Context(), account.CreatePayableInput{
@@ -31,23 +31,11 @@ func TestStore_CreatePayableAccount(t *testing.T) {
 	}
 
 	got := result.Account
-	if got.ID == 0 {
-		t.Error("CreatePayableAccount() Account.ID = 0, want generated ID")
-	}
 	if !strings.HasPrefix(got.Reference, "acct_") {
 		t.Errorf("CreatePayableAccount() Account.Reference = %q, want acct_ prefix", got.Reference)
 	}
-	if got.LedgerID != ledgerID {
-		t.Errorf("CreatePayableAccount() Account.LedgerID = %d, want %d", got.LedgerID, ledgerID)
-	}
-	if got.Kind != account.KindPayable {
-		t.Errorf("CreatePayableAccount() Account.Kind = %q, want %q", got.Kind, account.KindPayable)
-	}
-	if got.HolderID == nil {
-		t.Fatal("CreatePayableAccount() Account.HolderID = nil, want generated ID")
-	}
-	if *got.HolderID == 0 {
-		t.Error("CreatePayableAccount() Account.HolderID = 0, want generated ID")
+	if got.LedgerSlug != "ngn_ng" {
+		t.Errorf("CreatePayableAccount() Account.LedgerSlug = %q, want %q", got.LedgerSlug, "ngn_ng")
 	}
 	if !strings.HasPrefix(got.HolderReference, "hld_") {
 		t.Errorf(
@@ -58,23 +46,13 @@ func TestStore_CreatePayableAccount(t *testing.T) {
 	if got.HolderName != "Acme Ltd" {
 		t.Errorf("CreatePayableAccount() Account.HolderName = %q, want %q", got.HolderName, "Acme Ltd")
 	}
-	if got.Description != nil {
-		t.Errorf("CreatePayableAccount() Account.Description = %q, want nil", *got.Description)
-	}
-	if !got.DebitsMustNotExceedCredits {
-		t.Error("CreatePayableAccount() Account.DebitsMustNotExceedCredits = false, want true")
-	}
-	if got.CreditsMustNotExceedDebits {
-		t.Error("CreatePayableAccount() Account.CreditsMustNotExceedDebits = true, want false")
-	}
 	if got.IsClosed {
 		t.Error("CreatePayableAccount() Account.IsClosed = true, want false")
 	}
 	if got.CreatedAt.IsZero() {
 		t.Error("CreatePayableAccount() Account.CreatedAt is zero, want database timestamp")
 	}
-	if got.DebitsPending != 0 || got.CreditsPending != 0 ||
-		got.DebitsPosted != 0 || got.CreditsPosted != 0 {
+	if got.Balances != (account.BalanceCounters{}) {
 		t.Errorf("CreatePayableAccount() account counters are not zero: %+v", got)
 	}
 }
@@ -108,31 +86,11 @@ func TestStore_CreatePayableAccount_IdempotentRetry(t *testing.T) {
 		t.Error("retry CreatePayableAccount() Created = true, want false")
 	}
 
-	if second.Account.ID != first.Account.ID {
-		t.Errorf(
-			"retry CreatePayableAccount() Account.ID = %d, want %d",
-			second.Account.ID,
-			first.Account.ID,
-		)
-	}
 	if second.Account.Reference != first.Account.Reference {
 		t.Errorf(
 			"retry CreatePayableAccount() Account.Reference = %q, want %q",
 			second.Account.Reference,
 			first.Account.Reference,
-		)
-	}
-	if first.Account.HolderID == nil {
-		t.Fatal("first CreatePayableAccount() Account.HolderID = nil, want generated ID")
-	}
-	if second.Account.HolderID == nil {
-		t.Fatal("retry CreatePayableAccount() Account.HolderID = nil, want generated ID")
-	}
-	if *second.Account.HolderID != *first.Account.HolderID {
-		t.Errorf(
-			"retry CreatePayableAccount() Account.HolderID = %d, want %d",
-			*second.Account.HolderID,
-			*first.Account.HolderID,
 		)
 	}
 	if second.Account.HolderReference != first.Account.HolderReference {
@@ -148,8 +106,8 @@ func TestStore_CreatePayableAccount_IdempotentRetry(t *testing.T) {
 // holder receives distinct payable accounts in each ledger.
 func TestStore_CreatePayableAccount_SameHolderAcrossLedgers(t *testing.T) {
 	tx := newTestTx(t)
-	ngnLedgerID := seedLedger(t, tx, "ngn_ng", "NGN")
-	usdLedgerID := seedLedger(t, tx, "usd_ng", "USD")
+	seedLedger(t, tx, "ngn_ng", "NGN")
+	seedLedger(t, tx, "usd_ng", "USD")
 	store := postgres.New(tx)
 
 	ngnResult, err := store.CreatePayableAccount(t.Context(), account.CreatePayableInput{
@@ -163,11 +121,11 @@ func TestStore_CreatePayableAccount_SameHolderAcrossLedgers(t *testing.T) {
 	if !ngnResult.Created {
 		t.Error("NGN CreatePayableAccount() Created = false, want true")
 	}
-	if ngnResult.Account.LedgerID != ngnLedgerID {
+	if ngnResult.Account.LedgerSlug != "ngn_ng" {
 		t.Errorf(
-			"NGN CreatePayableAccount() Account.LedgerID = %d, want %d",
-			ngnResult.Account.LedgerID,
-			ngnLedgerID,
+			"NGN CreatePayableAccount() Account.LedgerSlug = %q, want %q",
+			ngnResult.Account.LedgerSlug,
+			"ngn_ng",
 		)
 	}
 
@@ -182,37 +140,17 @@ func TestStore_CreatePayableAccount_SameHolderAcrossLedgers(t *testing.T) {
 	if !usdResult.Created {
 		t.Error("USD CreatePayableAccount() Created = false, want true")
 	}
-	if usdResult.Account.LedgerID != usdLedgerID {
+	if usdResult.Account.LedgerSlug != "usd_ng" {
 		t.Errorf(
-			"USD CreatePayableAccount() Account.LedgerID = %d, want %d",
-			usdResult.Account.LedgerID,
-			usdLedgerID,
-		)
-	}
-
-	if usdResult.Account.ID == ngnResult.Account.ID {
-		t.Errorf(
-			"accounts share ID %d, want different accounts for different ledgers",
-			usdResult.Account.ID,
+			"USD CreatePayableAccount() Account.LedgerSlug = %q, want %q",
+			usdResult.Account.LedgerSlug,
+			"usd_ng",
 		)
 	}
 	if usdResult.Account.Reference == ngnResult.Account.Reference {
 		t.Errorf(
 			"accounts share reference %q, want different references for different ledgers",
 			usdResult.Account.Reference,
-		)
-	}
-	if ngnResult.Account.HolderID == nil {
-		t.Fatal("NGN CreatePayableAccount() Account.HolderID = nil, want generated ID")
-	}
-	if usdResult.Account.HolderID == nil {
-		t.Fatal("USD CreatePayableAccount() Account.HolderID = nil, want generated ID")
-	}
-	if *usdResult.Account.HolderID != *ngnResult.Account.HolderID {
-		t.Errorf(
-			"USD CreatePayableAccount() Account.HolderID = %d, want %d",
-			*usdResult.Account.HolderID,
-			*ngnResult.Account.HolderID,
 		)
 	}
 	if usdResult.Account.HolderReference != ngnResult.Account.HolderReference {
@@ -317,7 +255,7 @@ func TestStore_GetPayableAccount(t *testing.T) {
 	}
 
 	t.Run("account found with zero balances", func(t *testing.T) {
-		got, err := store.GetPayableAccount(t.Context(), account.GetPayableAccountInput{
+		got, err := store.GetPayableAccount(t.Context(), account.GetPayableInput{
 			LedgerSlug: "ngn_ng",
 			Reference:  created.Account.Reference,
 		})
@@ -328,14 +266,14 @@ func TestStore_GetPayableAccount(t *testing.T) {
 		if got.Reference != created.Account.Reference {
 			t.Errorf("GetPayableAccount() Reference = %q, want %q", got.Reference, created.Account.Reference)
 		}
-		if got.Kind != account.KindPayable {
-			t.Errorf("GetPayableAccount() Kind = %q, want %q", got.Kind, account.KindPayable)
-		}
 		if got.LedgerSlug != "ngn_ng" {
 			t.Errorf("GetPayableAccount() LedgerSlug = %q, want %q", got.LedgerSlug, "ngn_ng")
 		}
-		if got.HolderRef != created.Account.HolderReference {
-			t.Errorf("GetPayableAccount() HolderRef = %q, want %q", got.HolderRef, created.Account.HolderReference)
+		if got.HolderReference != created.Account.HolderReference {
+			t.Errorf("GetPayableAccount() HolderReference = %q, want %q", got.HolderReference, created.Account.HolderReference)
+		}
+		if got.HolderName != created.Account.HolderName {
+			t.Errorf("GetPayableAccount() HolderName = %q, want %q", got.HolderName, created.Account.HolderName)
 		}
 		if got.IsClosed {
 			t.Error("GetPayableAccount() IsClosed = true, want false")
@@ -347,8 +285,8 @@ func TestStore_GetPayableAccount(t *testing.T) {
 			got.Balances.DebitsPosted != 0 || got.Balances.CreditsPosted != 0 {
 			t.Errorf("GetPayableAccount() Balances = %+v, want all zeros", got.Balances)
 		}
-		if got.Balances.Available(got.Kind) != 0 {
-			t.Errorf("GetPayableAccount() Balances.Available() = %d, want 0", got.Balances.Available(got.Kind))
+		if got.Available() != 0 {
+			t.Errorf("GetPayableAccount() Available() = %d, want 0", got.Available())
 		}
 	})
 
@@ -372,7 +310,7 @@ func TestStore_GetPayableAccount(t *testing.T) {
 			t.Fatalf("update account balances: %v", err)
 		}
 
-		got, err := store.GetPayableAccount(t.Context(), account.GetPayableAccountInput{
+		got, err := store.GetPayableAccount(t.Context(), account.GetPayableInput{
 			LedgerSlug: "ngn_ng",
 			Reference:  funded.Account.Reference,
 		})
@@ -390,13 +328,13 @@ func TestStore_GetPayableAccount(t *testing.T) {
 			t.Errorf("GetPayableAccount() Balances = %+v, want %+v", got.Balances, wantBalances)
 		}
 		const wantAvailable = uint64(9700)
-		if got.Balances.Available(got.Kind) != wantAvailable {
-			t.Errorf("GetPayableAccount() Balances.Available() = %d, want %d", got.Balances.Available(got.Kind), wantAvailable)
+		if got.Available() != wantAvailable {
+			t.Errorf("GetPayableAccount() Available() = %d, want %d", got.Available(), wantAvailable)
 		}
 	})
 
 	t.Run("ledger not found", func(t *testing.T) {
-		_, err := store.GetPayableAccount(t.Context(), account.GetPayableAccountInput{
+		_, err := store.GetPayableAccount(t.Context(), account.GetPayableInput{
 			LedgerSlug: "missing",
 			Reference:  created.Account.Reference,
 		})
@@ -406,7 +344,7 @@ func TestStore_GetPayableAccount(t *testing.T) {
 	})
 
 	t.Run("account not found", func(t *testing.T) {
-		_, err := store.GetPayableAccount(t.Context(), account.GetPayableAccountInput{
+		_, err := store.GetPayableAccount(t.Context(), account.GetPayableInput{
 			LedgerSlug: "ngn_ng",
 			Reference:  "acct_01K00000000000000000000000",
 		})
@@ -418,7 +356,7 @@ func TestStore_GetPayableAccount(t *testing.T) {
 	t.Run("internal cash account reference returns account not found", func(t *testing.T) {
 		cash := seedPlatformAccount(t, tx, ledgerID, account.KindCash)
 
-		_, err := store.GetPayableAccount(t.Context(), account.GetPayableAccountInput{
+		_, err := store.GetPayableAccount(t.Context(), account.GetPayableInput{
 			LedgerSlug: "ngn_ng",
 			Reference:  cash.Reference,
 		})
@@ -430,7 +368,7 @@ func TestStore_GetPayableAccount(t *testing.T) {
 	t.Run("internal fee revenue account reference returns account not found", func(t *testing.T) {
 		feeRevenue := seedPlatformAccount(t, tx, ledgerID, account.KindFeeRevenue)
 
-		_, err := store.GetPayableAccount(t.Context(), account.GetPayableAccountInput{
+		_, err := store.GetPayableAccount(t.Context(), account.GetPayableInput{
 			LedgerSlug: "ngn_ng",
 			Reference:  feeRevenue.Reference,
 		})
@@ -442,7 +380,7 @@ func TestStore_GetPayableAccount(t *testing.T) {
 	t.Run("account in different ledger returns account not found", func(t *testing.T) {
 		seedLedger(t, tx, "usd_ng", "USD")
 
-		_, err := store.GetPayableAccount(t.Context(), account.GetPayableAccountInput{
+		_, err := store.GetPayableAccount(t.Context(), account.GetPayableInput{
 			LedgerSlug: "usd_ng",
 			Reference:  created.Account.Reference,
 		})
@@ -469,7 +407,7 @@ func TestStore_GetPayableAccount(t *testing.T) {
 			t.Fatalf("close account: %v", err)
 		}
 
-		got, err := store.GetPayableAccount(t.Context(), account.GetPayableAccountInput{
+		got, err := store.GetPayableAccount(t.Context(), account.GetPayableInput{
 			LedgerSlug: "ngn_ng",
 			Reference:  closed.Account.Reference,
 		})
