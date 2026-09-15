@@ -229,7 +229,6 @@ func TestStore_PostEntry_DefaultsEffectiveAt(t *testing.T) {
 	if got := readAccountBalances(t, fixture.tx, fixture.platform.FeeRevenue.ID); got != (accountBalances{CreditsPosted: 200}) {
 		t.Errorf("fee revenue balances = %+v, want CreditsPosted=200", got)
 	}
-
 }
 
 // TestStore_PostEntry_IdempotentRetry verifies that retrying identical input
@@ -317,6 +316,85 @@ func TestStore_PostEntry_IdempotentRetry(t *testing.T) {
 
 	if got := readAccountBalances(t, fixture.tx, fixture.payable.ID); got != (accountBalances{DebitsPosted: 500, CreditsPosted: 50_000}) {
 		t.Errorf("payable balances = %+v, want DebitsPosted=500 CreditsPosted=50000", got)
+	}
+}
+
+// TestStore_PostEntry_IdempotencyAcrossLedgers verifies that posting with the same
+// Idempotency-Key (request ID) to two different ledgers creates two entries, and
+// repeating it within one ledger returns the original entry.
+func TestStore_PostEntry_IdempotencyAcrossLedgers(t *testing.T) {
+	fixture := newPostEntryFixture(t)
+	desc := "Payment across ledgers"
+	reqID := "shared_idempotency_key"
+
+	ngnInput := journal.PostInput{
+		LedgerSlug:  "ngn_ng",
+		RequestID:   reqID,
+		Kind:        journal.KindPayment,
+		Description: &desc,
+		Lines: []journal.LineInput{
+			{
+				DebitAccountReference:  fixture.platform.Cash.Reference,
+				CreditAccountReference: fixture.payable.Reference,
+				Amount:                 10_000,
+			},
+		},
+	}
+	ngnPosted1 := fixture.mustPost(t, ngnInput)
+	if !ngnPosted1.Created {
+		t.Fatal("first NGN PostEntry() Created = false, want true")
+	}
+
+	otherLedgerID := seedLedger(t, fixture.tx, "usd_ng", "USD")
+	otherCash := seedPlatformAccount(t, fixture.tx, otherLedgerID, account.KindCash)
+	otherPayableResult, err := fixture.store.CreatePayableAccount(t.Context(), account.CreatePayableInput{
+		LedgerSlug: "usd_ng",
+		ExternalID: "merchant_usd",
+		Name:       "USD Merchant",
+	})
+	if err != nil {
+		t.Fatalf("create USD payable account: %v", err)
+	}
+
+	usdInput := journal.PostInput{
+		LedgerSlug:  "usd_ng",
+		RequestID:   reqID,
+		Kind:        journal.KindPayment,
+		Description: &desc,
+		Lines: []journal.LineInput{
+			{
+				DebitAccountReference:  otherCash.Reference,
+				CreditAccountReference: otherPayableResult.Account.Reference,
+				Amount:                 20_000,
+			},
+		},
+	}
+	usdPosted1 := fixture.mustPost(t, usdInput)
+	if !usdPosted1.Created {
+		t.Fatal("first USD PostEntry() Created = false, want true")
+	}
+
+	if ngnPosted1.Entry.ID == usdPosted1.Entry.ID {
+		t.Errorf("entries in different ledgers share the same ID: %d", ngnPosted1.Entry.ID)
+	}
+	if ngnPosted1.Entry.LedgerID == usdPosted1.Entry.LedgerID {
+		t.Errorf("entries have the same LedgerID: %d", ngnPosted1.Entry.LedgerID)
+	}
+
+	ngnPosted2 := fixture.mustPost(t, ngnInput)
+	if ngnPosted2.Created {
+		t.Error("repeated NGN PostEntry() Created = true, want false")
+	}
+	if ngnPosted2.Entry.ID != ngnPosted1.Entry.ID {
+		t.Errorf("repeated NGN entry ID = %d, want %d", ngnPosted2.Entry.ID, ngnPosted1.Entry.ID)
+	}
+
+	usdPosted2 := fixture.mustPost(t, usdInput)
+	if usdPosted2.Created {
+		t.Error("repeated USD PostEntry() Created = true, want false")
+	}
+	if usdPosted2.Entry.ID != usdPosted1.Entry.ID {
+		t.Errorf("repeated USD entry ID = %d, want %d", usdPosted2.Entry.ID, usdPosted1.Entry.ID)
 	}
 }
 
@@ -933,7 +1011,6 @@ func newPostEntryFixture(t *testing.T) postEntryFixture {
 		ExternalID: "merchant_1",
 		Name:       "Acme Ltd",
 	})
-
 	if err != nil {
 		t.Fatalf("create payable account: %v", err)
 	}

@@ -16,18 +16,15 @@ const statementBaseQuery = `
 WITH target_account AS (
 	SELECT
 		a.id,
-		l.id AS ledger_id,
+		a.ledger_id,
 		a.public_ref,
 		h.public_ref AS holder_ref,
 		h.name AS holder_name
-	FROM ledgers l
-	LEFT JOIN accounts a
-		ON a.ledger_id = l.id
-		AND a.public_ref = $2
-		AND a.kind = 'payable'
+	FROM accounts a
 	LEFT JOIN holders h
 		ON a.holder_id = h.id
-	WHERE l.slug = $1
+	WHERE a.public_ref = $1
+		AND a.kind = 'payable'
 ),
 account_lines AS (
 	SELECT line.journal_entry_id, line.line_number, 'debit'::text AS direction, line.amount, -line.amount AS signed_amount
@@ -54,15 +51,15 @@ all_movements AS (
 ),
 balances AS (
 	SELECT
-		coalesce(sum(CASE WHEN m.recorded_at < $3 THEN m.signed_amount ELSE 0 END), 0)::bigint AS opening_balance,
-		coalesce(sum(CASE WHEN m.recorded_at < $4 THEN m.signed_amount ELSE 0 END), 0)::bigint AS closing_balance
+		coalesce(sum(CASE WHEN m.recorded_at < $2 THEN m.signed_amount ELSE 0 END), 0)::bigint AS opening_balance,
+		coalesce(sum(CASE WHEN m.recorded_at < $3 THEN m.signed_amount ELSE 0 END), 0)::bigint AS closing_balance
 	FROM target_account target
 	LEFT JOIN all_movements m ON true
 ),
 period_movements AS (
 	SELECT m.*
 	FROM all_movements m
-	WHERE m.recorded_at >= $3 AND m.recorded_at < $4
+	WHERE m.recorded_at >= $2 AND m.recorded_at < $3
 ),
 sequenced AS (
 	SELECT
@@ -88,9 +85,9 @@ const statementPreviousSuffix = `,
 page_movements AS (
 	SELECT s.*
 	FROM sequenced s
-	WHERE (s.recorded_at, s.journal_reference, s.line_number) < ($5, $6, $7)
+	WHERE (s.recorded_at, s.journal_reference, s.line_number) < ($4, $5, $6)
 	ORDER BY s.recorded_at DESC, s.journal_reference DESC, s.line_number DESC
-	LIMIT $8
+	LIMIT $7
 )
 SELECT
 	target.public_ref,
@@ -115,9 +112,9 @@ const statementNextSuffix = `,
 page_movements AS (
 	SELECT s.*
 	FROM sequenced s
-	WHERE ($5::boolean IS FALSE OR (s.recorded_at, s.journal_reference, s.line_number) > ($6, $7, $8))
+	WHERE ($4::boolean IS FALSE OR (s.recorded_at, s.journal_reference, s.line_number) > ($5, $6, $7))
 	ORDER BY s.recorded_at ASC, s.journal_reference ASC, s.line_number ASC
-	LIMIT $9
+	LIMIT $8
 )
 SELECT
 	target.public_ref,
@@ -152,7 +149,6 @@ func (s *Store) GetStatement(
 	if isPrevious {
 		query = statementBaseQuery + statementPreviousSuffix
 		args = []any{
-			input.LedgerSlug,
 			input.AccountReference,
 			input.From,
 			input.To,
@@ -174,7 +170,6 @@ func (s *Store) GetStatement(
 		}
 
 		args = []any{
-			input.LedgerSlug,
 			input.AccountReference,
 			input.From,
 			input.To,
@@ -199,11 +194,9 @@ func (s *Store) GetStatement(
 		openingBalance int64
 		closingBalance int64
 		fetched        []statement.Movement
-		foundLedger    bool
 	)
 
 	for rows.Next() {
-		foundLedger = true
 		var (
 			jref         sql.NullString
 			lineNum      sql.NullInt64
@@ -252,10 +245,6 @@ func (s *Store) GetStatement(
 	}
 	if err := rows.Err(); err != nil {
 		return statement.Result{}, fmt.Errorf("iterate statement movements: %w", err)
-	}
-
-	if !foundLedger {
-		return statement.Result{}, fmt.Errorf("get statement: %w", account.ErrLedgerNotFound)
 	}
 
 	if !accountRef.Valid {

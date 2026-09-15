@@ -256,8 +256,7 @@ func TestStore_GetPayableAccount(t *testing.T) {
 
 	t.Run("account found with zero balances", func(t *testing.T) {
 		got, err := store.GetPayableAccount(t.Context(), account.GetPayableInput{
-			LedgerSlug: "ngn_ng",
-			Reference:  created.Account.Reference,
+			Reference: created.Account.Reference,
 		})
 		if err != nil {
 			t.Fatalf("GetPayableAccount() error = %v", err)
@@ -311,8 +310,7 @@ func TestStore_GetPayableAccount(t *testing.T) {
 		}
 
 		got, err := store.GetPayableAccount(t.Context(), account.GetPayableInput{
-			LedgerSlug: "ngn_ng",
-			Reference:  funded.Account.Reference,
+			Reference: funded.Account.Reference,
 		})
 		if err != nil {
 			t.Fatalf("GetPayableAccount() error = %v", err)
@@ -333,20 +331,9 @@ func TestStore_GetPayableAccount(t *testing.T) {
 		}
 	})
 
-	t.Run("ledger not found", func(t *testing.T) {
-		_, err := store.GetPayableAccount(t.Context(), account.GetPayableInput{
-			LedgerSlug: "missing",
-			Reference:  created.Account.Reference,
-		})
-		if !errors.Is(err, account.ErrLedgerNotFound) {
-			t.Errorf("GetPayableAccount() error = %v, want %v", err, account.ErrLedgerNotFound)
-		}
-	})
-
 	t.Run("account not found", func(t *testing.T) {
 		_, err := store.GetPayableAccount(t.Context(), account.GetPayableInput{
-			LedgerSlug: "ngn_ng",
-			Reference:  "acct_01K00000000000000000000000",
+			Reference: "acct_01K00000000000000000000000",
 		})
 		if !errors.Is(err, account.ErrAccountNotFound) {
 			t.Errorf("GetPayableAccount() error = %v, want %v", err, account.ErrAccountNotFound)
@@ -357,8 +344,7 @@ func TestStore_GetPayableAccount(t *testing.T) {
 		cash := seedPlatformAccount(t, tx, ledgerID, account.KindCash)
 
 		_, err := store.GetPayableAccount(t.Context(), account.GetPayableInput{
-			LedgerSlug: "ngn_ng",
-			Reference:  cash.Reference,
+			Reference: cash.Reference,
 		})
 		if !errors.Is(err, account.ErrAccountNotFound) {
 			t.Errorf("GetPayableAccount() error = %v, want %v", err, account.ErrAccountNotFound)
@@ -369,23 +355,31 @@ func TestStore_GetPayableAccount(t *testing.T) {
 		feeRevenue := seedPlatformAccount(t, tx, ledgerID, account.KindFeeRevenue)
 
 		_, err := store.GetPayableAccount(t.Context(), account.GetPayableInput{
-			LedgerSlug: "ngn_ng",
-			Reference:  feeRevenue.Reference,
+			Reference: feeRevenue.Reference,
 		})
 		if !errors.Is(err, account.ErrAccountNotFound) {
 			t.Errorf("GetPayableAccount() error = %v, want %v", err, account.ErrAccountNotFound)
 		}
 	})
 
-	t.Run("account in different ledger returns account not found", func(t *testing.T) {
+	t.Run("account in another ledger is found by reference", func(t *testing.T) {
 		seedLedger(t, tx, "usd_ng", "USD")
-
-		_, err := store.GetPayableAccount(t.Context(), account.GetPayableInput{
+		usdAcct, err := store.CreatePayableAccount(t.Context(), account.CreatePayableInput{
 			LedgerSlug: "usd_ng",
-			Reference:  created.Account.Reference,
+			ExternalID: "merchant_usd",
+			Name:       "USD Merchant",
 		})
-		if !errors.Is(err, account.ErrAccountNotFound) {
-			t.Errorf("GetPayableAccount() error = %v, want %v", err, account.ErrAccountNotFound)
+		if err != nil {
+			t.Fatalf("create USD account: %v", err)
+		}
+		got, err := store.GetPayableAccount(t.Context(), account.GetPayableInput{
+			Reference: usdAcct.Account.Reference,
+		})
+		if err != nil {
+			t.Fatalf("GetPayableAccount() error = %v", err)
+		}
+		if got.LedgerSlug != "usd_ng" {
+			t.Errorf("LedgerSlug = %q, want usd_ng", got.LedgerSlug)
 		}
 	})
 
@@ -408,8 +402,7 @@ func TestStore_GetPayableAccount(t *testing.T) {
 		}
 
 		got, err := store.GetPayableAccount(t.Context(), account.GetPayableInput{
-			LedgerSlug: "ngn_ng",
-			Reference:  closed.Account.Reference,
+			Reference: closed.Account.Reference,
 		})
 		if err != nil {
 			t.Fatalf("GetPayableAccount() error = %v", err)

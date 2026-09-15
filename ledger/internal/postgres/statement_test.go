@@ -47,7 +47,6 @@ func TestStore_GetStatement_HappyPath(t *testing.T) {
 	to := entry1.Entry.CreatedAt.Add(24 * time.Hour)
 
 	res, err := store.GetStatement(t.Context(), statement.ListInput{
-		LedgerSlug:       "ngn_ng",
 		AccountReference: fixture.payable.Reference,
 		From:             from,
 		To:               to,
@@ -147,7 +146,6 @@ func TestStore_GetStatement_TimelineStability(t *testing.T) {
 	})
 
 	res, err := store.GetStatement(t.Context(), statement.ListInput{
-		LedgerSlug:       "ngn_ng",
 		AccountReference: fixture.payable.Reference,
 		From:             entry1.Entry.CreatedAt.Add(-24 * time.Hour),
 		To:               entry2.Entry.CreatedAt.Add(24 * time.Hour),
@@ -203,7 +201,6 @@ func TestStore_GetStatement_BidirectionalPagination(t *testing.T) {
 
 	// Page 1: Should return entries 0 and 1
 	page1, err := store.GetStatement(t.Context(), statement.ListInput{
-		LedgerSlug:       "ngn_ng",
 		AccountReference: fixture.payable.Reference,
 		From:             from,
 		To:               to,
@@ -230,7 +227,6 @@ func TestStore_GetStatement_BidirectionalPagination(t *testing.T) {
 
 	// Page 2: Follow page1.Next -> should return entries 2 and 3
 	page2, err := store.GetStatement(t.Context(), statement.ListInput{
-		LedgerSlug:       "ngn_ng",
 		AccountReference: fixture.payable.Reference,
 		From:             from,
 		To:               to,
@@ -258,7 +254,6 @@ func TestStore_GetStatement_BidirectionalPagination(t *testing.T) {
 
 	// Page 3: Follow page2.Next -> should return entry 4
 	page3, err := store.GetStatement(t.Context(), statement.ListInput{
-		LedgerSlug:       "ngn_ng",
 		AccountReference: fixture.payable.Reference,
 		From:             from,
 		To:               to,
@@ -283,7 +278,6 @@ func TestStore_GetStatement_BidirectionalPagination(t *testing.T) {
 
 	// Backtrack: from Page 2, follow page2.Previous -> MUST return Page 1 exactly!
 	backToPage1, err := store.GetStatement(t.Context(), statement.ListInput{
-		LedgerSlug:       "ngn_ng",
 		AccountReference: fixture.payable.Reference,
 		From:             from,
 		To:               to,
@@ -312,7 +306,6 @@ func TestStore_GetStatement_EmptyPeriod(t *testing.T) {
 	store := postgres.New(fixture.tx)
 
 	res, err := store.GetStatement(t.Context(), statement.ListInput{
-		LedgerSlug:       "ngn_ng",
 		AccountReference: fixture.payable.Reference,
 		From:             time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC),
 		To:               time.Date(2025, time.February, 1, 0, 0, 0, 0, time.UTC),
@@ -340,22 +333,8 @@ func TestStore_GetStatement_Errors(t *testing.T) {
 	from := time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC)
 
-	t.Run("ledger not found", func(t *testing.T) {
-		_, err := store.GetStatement(t.Context(), statement.ListInput{
-			LedgerSlug:       "nonexistent_ledger",
-			AccountReference: fixture.payable.Reference,
-			From:             from,
-			To:               to,
-			Limit:            50,
-		})
-		if !errors.Is(err, account.ErrLedgerNotFound) {
-			t.Errorf("GetStatement() error = %v, want ErrLedgerNotFound", err)
-		}
-	})
-
 	t.Run("account not found", func(t *testing.T) {
 		_, err := store.GetStatement(t.Context(), statement.ListInput{
-			LedgerSlug:       "ngn_ng",
 			AccountReference: "acct_01K00000000000000000000000",
 			From:             from,
 			To:               to,
@@ -368,7 +347,6 @@ func TestStore_GetStatement_Errors(t *testing.T) {
 
 	t.Run("internal account returns account not found", func(t *testing.T) {
 		_, err := store.GetStatement(t.Context(), statement.ListInput{
-			LedgerSlug:       "ngn_ng",
 			AccountReference: fixture.platform.Cash.Reference,
 			From:             from,
 			To:               to,
@@ -379,12 +357,11 @@ func TestStore_GetStatement_Errors(t *testing.T) {
 		}
 	})
 
-	t.Run("cancelled context returns context error instead of ledger not found", func(t *testing.T) {
+	t.Run("cancelled context returns context error", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 
 		_, err := store.GetStatement(ctx, statement.ListInput{
-			LedgerSlug:       "ngn_ng",
 			AccountReference: fixture.payable.Reference,
 			From:             from,
 			To:               to,
@@ -393,8 +370,8 @@ func TestStore_GetStatement_Errors(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Errorf("GetStatement() error = %v, want context.Canceled", err)
 		}
-		if errors.Is(err, account.ErrLedgerNotFound) {
-			t.Errorf("GetStatement() incorrectly masked error as ErrLedgerNotFound")
+		if errors.Is(err, account.ErrAccountNotFound) {
+			t.Errorf("GetStatement() incorrectly masked error as ErrAccountNotFound")
 		}
 	})
 }

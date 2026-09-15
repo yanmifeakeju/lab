@@ -91,6 +91,10 @@ func TestRoutes(t *testing.T) {
 		{name: "health", method: http.MethodGet, target: "/health", wantStatus: http.StatusOK},
 		{name: "wrong method", method: http.MethodPost, target: "/health", wantStatus: http.StatusMethodNotAllowed},
 		{name: "unknown route", method: http.MethodGet, target: "/nope", wantStatus: http.StatusNotFound},
+		{name: "old create account route returns 404", method: http.MethodPost, target: "/ledgers/ngn_ng/accounts", wantStatus: http.StatusNotFound},
+		{name: "old get account route returns 404", method: http.MethodGet, target: "/ledgers/ngn_ng/accounts/acct_01K33YV8M82N9MXP4E7J6B1QWK", wantStatus: http.StatusNotFound},
+		{name: "old get statement route returns 404", method: http.MethodGet, target: "/ledgers/ngn_ng/accounts/acct_01K33YV8M82N9MXP4E7J6B1QWK/statement", wantStatus: http.StatusNotFound},
+		{name: "old post entry route returns 404", method: http.MethodPost, target: "/ledgers/ngn_ng/entries", wantStatus: http.StatusNotFound},
 	}
 
 	for _, tt := range tests {
@@ -117,24 +121,48 @@ func TestCreatePayableAccountValidation(t *testing.T) {
 	}{
 		{
 			name:       "valid request is created",
-			target:     "/ledgers/ngn_ng/accounts",
-			body:       `{"external_id":"merchant_1","name":"Acme Ltd"}`,
+			target:     "/accounts",
+			body:       `{"ledger":"ngn_ng","external_id":"merchant_1","name":"Acme Ltd"}`,
 			wantStatus: http.StatusCreated,
 		},
 		{
+			name:   "missing ledger",
+			target: "/accounts",
+			body:   `{"external_id":"merchant_1","name":"Acme Ltd"}`,
+			wantDetails: []api.ValidationErrorDetail{
+				{Location: api.Body, Field: "ledger", Code: api.Required},
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
 			name:   "all missing required fields",
-			target: "/ledgers/ngn_ng/accounts",
+			target: "/accounts",
 			body:   `{}`,
 			wantDetails: []api.ValidationErrorDetail{
 				{Location: api.Body, Field: "external_id", Code: api.Required},
+				{Location: api.Body, Field: "ledger", Code: api.Required},
 				{Location: api.Body, Field: "name", Code: api.Required},
 			},
 			wantStatus: http.StatusBadRequest,
 		},
 		{
+			name:   "non-string ledger",
+			target: "/accounts",
+			body:   `{"ledger":123,"external_id":"merchant_1","name":"Acme Ltd"}`,
+			wantDetails: []api.ValidationErrorDetail{
+				{
+					Location: api.Body,
+					Field:    "ledger",
+					Code:     api.InvalidType,
+					Message:  "ledger must be a string",
+				},
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
 			name:   "external ID has wrong type",
-			target: "/ledgers/ngn_ng/accounts",
-			body:   `{"external_id":2222222,"name":"Acme Ltd"}`,
+			target: "/accounts",
+			body:   `{"ledger":"ngn_ng","external_id":2222222,"name":"Acme Ltd"}`,
 			wantDetails: []api.ValidationErrorDetail{
 				{
 					Location: api.Body,
@@ -147,8 +175,8 @@ func TestCreatePayableAccountValidation(t *testing.T) {
 		},
 		{
 			name:   "whitespace-only name",
-			target: "/ledgers/ngn_ng/accounts",
-			body:   `{"external_id":"merchant_1","name":"   "}`,
+			target: "/accounts",
+			body:   `{"ledger":"ngn_ng","external_id":"merchant_1","name":"   "}`,
 			wantDetails: []api.ValidationErrorDetail{
 				{Location: api.Body, Field: "name", Code: api.InvalidFormat, Message: "name must not be blank"},
 			},
@@ -156,27 +184,41 @@ func TestCreatePayableAccountValidation(t *testing.T) {
 		},
 		{
 			name:       "unknown fields are ignored",
-			target:     "/ledgers/ngn_ng/accounts",
-			body:       `{"external_id":"merchant_1","name":"Acme Ltd","another":true,"extra":true}`,
+			target:     "/accounts",
+			body:       `{"ledger":"ngn_ng","external_id":"merchant_1","name":"Acme Ltd","another":true,"extra":true}`,
 			wantStatus: http.StatusCreated,
 		},
 		{
 			name:   "invalid ledger slug shape",
-			target: "/ledgers/bad__slug/accounts",
-			body:   `{"external_id":"merchant_1","name":"Acme Ltd"}`,
+			target: "/accounts",
+			body:   `{"ledger":"bad__slug","external_id":"merchant_1","name":"Acme Ltd"}`,
 			wantDetails: []api.ValidationErrorDetail{
 				{
-					Location: api.Path,
-					Field:    "slug",
+					Location: api.Body,
+					Field:    "ledger",
 					Code:     api.InvalidFormat,
-					Message:  "slug must contain lowercase letters and numbers separated by single underscores",
+					Message:  "ledger must contain lowercase letters and numbers separated by single underscores",
+				},
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:   "ledger slug too short",
+			target: "/accounts",
+			body:   `{"ledger":"ab","external_id":"merchant_1","name":"Acme Ltd"}`,
+			wantDetails: []api.ValidationErrorDetail{
+				{
+					Location: api.Body,
+					Field:    "ledger",
+					Code:     api.MinLength,
+					Message:  "ledger must contain at least 3 characters",
 				},
 			},
 			wantStatus: http.StatusBadRequest,
 		},
 		{
 			name:   "malformed JSON",
-			target: "/ledgers/ngn_ng/accounts",
+			target: "/accounts",
 			body:   `{"external_id":`,
 			wantDetails: []api.ValidationErrorDetail{
 				{Location: api.Body, Field: "body", Code: api.InvalidFormat},
@@ -196,7 +238,6 @@ func TestCreatePayableAccountValidation(t *testing.T) {
 			},
 		},
 	})
-
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -281,6 +322,7 @@ func TestCreatePayableAccountResponses(t *testing.T) {
 		wantStatus  int
 		wantCode    api.ErrorCode
 		wantMessage string
+		wantDetail  *api.ValidationErrorDetail
 	}{
 		{
 			name: "created",
@@ -290,6 +332,7 @@ func TestCreatePayableAccountResponses(t *testing.T) {
 					Reference:       accountRef,
 					HolderReference: holderRef,
 					HolderName:      "Acme Ltd",
+					LedgerSlug:      wantInput.LedgerSlug,
 					CreatedAt:       createdAt,
 				},
 			},
@@ -303,6 +346,7 @@ func TestCreatePayableAccountResponses(t *testing.T) {
 					Reference:       accountRef,
 					HolderReference: holderRef,
 					HolderName:      "Acme Ltd",
+					LedgerSlug:      wantInput.LedgerSlug,
 					IsClosed:        true,
 					Balances: account.BalanceCounters{
 						DebitsPending:  200,
@@ -316,11 +360,15 @@ func TestCreatePayableAccountResponses(t *testing.T) {
 			wantStatus: http.StatusOK,
 		},
 		{
-			name:        "ledger not found",
-			err:         fmt.Errorf("create payable account: %w", account.ErrLedgerNotFound),
-			wantStatus:  http.StatusNotFound,
-			wantCode:    api.LedgerNotFound,
-			wantMessage: "Ledger not found.",
+			name:       "ledger not found",
+			err:        fmt.Errorf("create payable account: %w", account.ErrLedgerNotFound),
+			wantStatus: http.StatusBadRequest,
+			wantDetail: &api.ValidationErrorDetail{
+				Location: api.Body,
+				Field:    "ledger",
+				Code:     api.InvalidValue,
+				Message:  "ledger must name an existing ledger",
+			},
 		},
 		{
 			name:        "ledger closed",
@@ -355,8 +403,8 @@ func TestCreatePayableAccountResponses(t *testing.T) {
 
 			req := httptest.NewRequest(
 				http.MethodPost,
-				"/ledgers/ngn_ng/accounts",
-				strings.NewReader(`{"external_id":"merchant_1","name":"Acme Ltd"}`),
+				"/accounts",
+				strings.NewReader(`{"ledger":"ngn_ng","external_id":"merchant_1","name":"Acme Ltd"}`),
 			)
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
@@ -371,6 +419,20 @@ func TestCreatePayableAccountResponses(t *testing.T) {
 			}
 			if creator.input != wantInput {
 				t.Errorf("CreatePayableAccount() input = %+v, want %+v", creator.input, wantInput)
+			}
+
+			if tt.wantDetail != nil {
+				var got api.ValidationErrorResponse
+				if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+					t.Fatalf("decode validation response: %v", err)
+				}
+				if got.Error.Code != api.ValidationErrorCodeValidationError || len(got.Error.Details) != 1 {
+					t.Fatalf("validation error = %+v", got.Error)
+				}
+				if got.Error.Details[0] != *tt.wantDetail {
+					t.Errorf("validation detail = %+v, want %+v", got.Error.Details[0], *tt.wantDetail)
+				}
+				return
 			}
 
 			if tt.wantCode == "" {
@@ -455,8 +517,8 @@ func TestCreatePayableAccountTrimsName(t *testing.T) {
 
 	req := httptest.NewRequest(
 		http.MethodPost,
-		"/ledgers/ngn_ng/accounts",
-		strings.NewReader(`{"external_id":"merchant_1","name":"  Acme Ltd  "}`),
+		"/accounts",
+		strings.NewReader(`{"ledger":"ngn_ng","external_id":"merchant_1","name":"  Acme Ltd  "}`),
 	)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -473,6 +535,7 @@ func TestCreatePayableAccountTrimsName(t *testing.T) {
 
 func TestPostJournalEntryValidation(t *testing.T) {
 	const validBody = `{
+		"ledger":"ngn_ng",
 		"kind":"payment",
 		"lines":[{
 			"debit_account_ref":"acct_cash",
@@ -495,17 +558,55 @@ func TestPostJournalEntryValidation(t *testing.T) {
 			},
 		},
 		{
+			name: "missing ledger",
+			body: `{
+				"kind":"payment",
+				"lines":[{
+					"debit_account_ref":"acct_cash",
+					"credit_account_ref":"acct_payable",
+					"amount":10000
+				}]
+			}`,
+			key: "payment_123",
+			wantDetails: []api.ValidationErrorDetail{
+				{Location: api.Body, Field: "ledger", Code: api.Required},
+			},
+		},
+		{
 			name: "missing body fields",
 			body: `{}`,
 			key:  "payment_123",
 			wantDetails: []api.ValidationErrorDetail{
 				{Location: api.Body, Field: "kind", Code: api.Required},
+				{Location: api.Body, Field: "ledger", Code: api.Required},
 				{Location: api.Body, Field: "lines", Code: api.Required},
+			},
+		},
+		{
+			name: "invalid ledger slug shape",
+			body: `{
+				"ledger":"bad__slug",
+				"kind":"payment",
+				"lines":[{
+					"debit_account_ref":"acct_cash",
+					"credit_account_ref":"acct_payable",
+					"amount":10000
+				}]
+			}`,
+			key: "payment_123",
+			wantDetails: []api.ValidationErrorDetail{
+				{
+					Location: api.Body,
+					Field:    "ledger",
+					Code:     api.InvalidFormat,
+					Message:  "ledger must contain lowercase letters and numbers separated by single underscores",
+				},
 			},
 		},
 		{
 			name: "unsupported kind",
 			body: `{
+				"ledger":"ngn_ng",
 				"kind":"refund",
 				"lines":[{
 					"debit_account_ref":"acct_cash",
@@ -525,7 +626,7 @@ func TestPostJournalEntryValidation(t *testing.T) {
 		},
 		{
 			name: "no lines",
-			body: `{"kind":"payment","lines":[]}`,
+			body: `{"ledger":"ngn_ng","kind":"payment","lines":[]}`,
 			key:  "payment_123",
 			wantDetails: []api.ValidationErrorDetail{
 				{Location: api.Body, Field: "lines", Code: api.InvalidValue},
@@ -534,6 +635,7 @@ func TestPostJournalEntryValidation(t *testing.T) {
 		{
 			name: "non-positive amount",
 			body: `{
+				"ledger":"ngn_ng",
 				"kind":"payment",
 				"lines":[{
 					"debit_account_ref":"acct_cash",
@@ -549,6 +651,7 @@ func TestPostJournalEntryValidation(t *testing.T) {
 		{
 			name: "self transfer",
 			body: `{
+				"ledger":"ngn_ng",
 				"kind":"payment",
 				"lines":[{
 					"debit_account_ref":"acct_same",
@@ -578,7 +681,7 @@ func TestPostJournalEntryValidation(t *testing.T) {
 
 			req := httptest.NewRequest(
 				http.MethodPost,
-				"/ledgers/ngn_ng/entries",
+				"/entries",
 				strings.NewReader(tt.body),
 			)
 			req.Header.Set("Content-Type", "application/json")
@@ -654,19 +757,59 @@ func TestPostJournalEntryResponses(t *testing.T) {
 		wantStatus  int
 		wantCode    api.ErrorCode
 		wantMessage string
-		validation  bool
+		wantDetail  *api.ValidationErrorDetail
 	}{
 		{name: "created", result: journal.PostResult{Entry: postedEntry, Created: true}, wantStatus: http.StatusCreated},
 		{name: "idempotent retry", result: journal.PostResult{Entry: postedEntry}, wantStatus: http.StatusOK},
-		{name: "ledger not found", err: journal.ErrLedgerNotFound, wantStatus: http.StatusNotFound, wantCode: api.LedgerNotFound, wantMessage: "Ledger not found."},
+		{
+			name:       "ledger not found",
+			err:        journal.ErrLedgerNotFound,
+			wantStatus: http.StatusBadRequest,
+			wantDetail: &api.ValidationErrorDetail{
+				Location: api.Body,
+				Field:    "ledger",
+				Code:     api.InvalidValue,
+				Message:  "ledger must name an existing ledger",
+			},
+		},
 		{name: "account not found", err: journal.ErrAccountNotFound, wantStatus: http.StatusNotFound, wantCode: api.AccountNotFound, wantMessage: "Account not found."},
 		{name: "ledger closed", err: journal.ErrLedgerClosed, wantStatus: http.StatusConflict, wantCode: api.LedgerClosed, wantMessage: "Ledger is closed."},
 		{name: "account closed", err: journal.ErrAccountClosed, wantStatus: http.StatusConflict, wantCode: api.AccountClosed, wantMessage: "Account is closed."},
 		{name: "insufficient funds", err: journal.ErrInsufficientFunds, wantStatus: http.StatusConflict, wantCode: api.InsufficientFunds, wantMessage: "Insufficient funds."},
 		{name: "idempotency conflict", err: journal.ErrIdempotencyConflict, wantStatus: http.StatusConflict, wantCode: api.IdempotencyConflict, wantMessage: "Idempotency key conflicts with a previous request."},
-		{name: "defensive no lines", err: journal.ErrNoLines, wantStatus: http.StatusBadRequest, validation: true},
-		{name: "defensive self transfer", err: journal.ErrNoSelfTransfer, wantStatus: http.StatusBadRequest, validation: true},
-		{name: "defensive non-positive amount", err: journal.ErrNonPositiveAmount, wantStatus: http.StatusBadRequest, validation: true},
+		{
+			name:       "defensive no lines",
+			err:        journal.ErrNoLines,
+			wantStatus: http.StatusBadRequest,
+			wantDetail: &api.ValidationErrorDetail{
+				Location: api.Body,
+				Field:    "lines",
+				Code:     api.InvalidValue,
+				Message:  "lines must contain at least one journal line",
+			},
+		},
+		{
+			name:       "defensive self transfer",
+			err:        journal.ErrNoSelfTransfer,
+			wantStatus: http.StatusBadRequest,
+			wantDetail: &api.ValidationErrorDetail{
+				Location: api.Body,
+				Field:    "lines",
+				Code:     api.InvalidValue,
+				Message:  "debit_account_ref and credit_account_ref must differ",
+			},
+		},
+		{
+			name:       "defensive non-positive amount",
+			err:        journal.ErrNonPositiveAmount,
+			wantStatus: http.StatusBadRequest,
+			wantDetail: &api.ValidationErrorDetail{
+				Location: api.Body,
+				Field:    "lines",
+				Code:     api.InvalidValue,
+				Message:  "line amounts must be greater than zero",
+			},
+		},
 		{name: "unexpected error", err: errors.New("database unavailable"), wantStatus: http.StatusInternalServerError, wantCode: api.InternalServerError, wantMessage: "The server could not complete the request."},
 	}
 
@@ -680,8 +823,9 @@ func TestPostJournalEntryResponses(t *testing.T) {
 
 			req := httptest.NewRequest(
 				http.MethodPost,
-				"/ledgers/ngn_ng/entries",
+				"/entries",
 				strings.NewReader(`{
+					"ledger":"ngn_ng",
 					"kind":"payment",
 					"description":"  Payment received  ",
 					"effective_at":"2026-09-08T10:30:00Z",
@@ -709,13 +853,16 @@ func TestPostJournalEntryResponses(t *testing.T) {
 			}
 
 			switch {
-			case tt.validation:
+			case tt.wantDetail != nil:
 				var got api.ValidationErrorResponse
 				if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 					t.Fatalf("decode validation response: %v", err)
 				}
 				if got.Error.Code != api.ValidationErrorCodeValidationError || len(got.Error.Details) != 1 {
-					t.Errorf("validation error = %+v", got.Error)
+					t.Fatalf("validation error = %+v", got.Error)
+				}
+				if got.Error.Details[0] != *tt.wantDetail {
+					t.Errorf("validation detail = %+v, want %+v", got.Error.Details[0], *tt.wantDetail)
 				}
 			case tt.wantCode != "":
 				var got api.ErrorResponse
@@ -804,13 +951,6 @@ func TestGetAccount(t *testing.T) {
 			wantAccountStatus: api.Closed,
 		},
 		{
-			name:        "ledger not found",
-			err:         fmt.Errorf("get payable account: %w", account.ErrLedgerNotFound),
-			wantStatus:  http.StatusNotFound,
-			wantCode:    api.LedgerNotFound,
-			wantMessage: "Ledger not found.",
-		},
-		{
 			name:        "account not found",
 			err:         fmt.Errorf("get payable account: %w", account.ErrAccountNotFound),
 			wantStatus:  http.StatusNotFound,
@@ -836,7 +976,7 @@ func TestGetAccount(t *testing.T) {
 
 			req := httptest.NewRequest(
 				http.MethodGet,
-				fmt.Sprintf("/ledgers/%s/accounts/%s", ledgerSlug, accountRef),
+				fmt.Sprintf("/accounts/%s", accountRef),
 				nil,
 			)
 			rec := httptest.NewRecorder()
@@ -848,9 +988,6 @@ func TestGetAccount(t *testing.T) {
 			}
 			if svc.getCalls != 1 {
 				t.Fatalf("GetPayableAccount() calls = %d, want 1", svc.getCalls)
-			}
-			if svc.getInput.LedgerSlug != ledgerSlug {
-				t.Errorf("GetPayableAccount() LedgerSlug = %q, want %q", svc.getInput.LedgerSlug, ledgerSlug)
 			}
 			if svc.getInput.Reference != accountRef {
 				t.Errorf("GetPayableAccount() Reference = %q, want %q", svc.getInput.Reference, accountRef)
@@ -918,28 +1055,8 @@ func TestGetAccountValidation(t *testing.T) {
 		wantDetail api.ValidationErrorDetail
 	}{
 		{
-			name:   "invalid ledger slug characters",
-			target: "/ledgers/invalid-slug!/accounts/acct_01K33YV8M82N9MXP4E7J6B1QWK",
-			wantDetail: api.ValidationErrorDetail{
-				Location: api.Path,
-				Field:    "slug",
-				Code:     api.InvalidFormat,
-				Message:  "slug must contain lowercase letters and numbers separated by single underscores",
-			},
-		},
-		{
-			name:   "ledger slug too short",
-			target: "/ledgers/ab/accounts/acct_01K33YV8M82N9MXP4E7J6B1QWK",
-			wantDetail: api.ValidationErrorDetail{
-				Location: api.Path,
-				Field:    "slug",
-				Code:     api.MinLength,
-				Message:  "slug must contain at least 3 characters",
-			},
-		},
-		{
 			name:   "account reference too long",
-			target: "/ledgers/ngn_ng/accounts/" + strings.Repeat("a", 65),
+			target: "/accounts/" + strings.Repeat("a", 65),
 			wantDetail: api.ValidationErrorDetail{
 				Location: api.Path,
 				Field:    "account_reference",
@@ -1043,7 +1160,7 @@ func TestGetAccountStatement_HappyPath(t *testing.T) {
 		t.Fatalf("NewHandler: %v", err)
 	}
 
-	target := "/ledgers/ngn_ng/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?from=2026-09-01T00:00:00Z&to=2026-10-01T00:00:00Z&limit=50"
+	target := "/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?from=2026-09-01T00:00:00Z&to=2026-10-01T00:00:00Z&limit=50"
 	req := httptest.NewRequest(http.MethodGet, target, nil)
 	rec := httptest.NewRecorder()
 
@@ -1115,7 +1232,7 @@ func TestGetAccountStatement_WithCursor(t *testing.T) {
 			t.Fatalf("NewHandler: %v", err)
 		}
 
-		target := "/ledgers/ngn_ng/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?cursor=" + *token + "&limit=25"
+		target := "/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?cursor=" + *token + "&limit=25"
 		req := httptest.NewRequest(http.MethodGet, target, nil)
 		rec := httptest.NewRecorder()
 
@@ -1159,7 +1276,7 @@ func TestGetAccountStatement_WithCursor(t *testing.T) {
 			t.Fatalf("NewHandler: %v", err)
 		}
 
-		target := "/ledgers/ngn_ng/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?cursor=" + *token
+		target := "/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?cursor=" + *token
 		req := httptest.NewRequest(http.MethodGet, target, nil)
 		rec := httptest.NewRecorder()
 
@@ -1183,19 +1300,19 @@ func TestGetAccountStatement_ValidationErrors(t *testing.T) {
 	}{
 		{
 			name:       "invalid cursor",
-			target:     "/ledgers/ngn_ng/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?cursor=bad-token",
+			target:     "/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?cursor=bad-token",
 			wantField:  "cursor",
 			wantMsgSub: "invalid pagination cursor",
 		},
 		{
 			name:       "from after to",
-			target:     "/ledgers/ngn_ng/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?from=2026-10-01T00:00:00Z&to=2026-09-01T00:00:00Z",
+			target:     "/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?from=2026-10-01T00:00:00Z&to=2026-09-01T00:00:00Z",
 			wantField:  "from",
 			wantMsgSub: "from must be before to",
 		},
 		{
 			name:       "period exceeds 90 days",
-			target:     "/ledgers/ngn_ng/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?from=2026-01-01T00:00:00Z&to=2026-06-01T00:00:00Z",
+			target:     "/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?from=2026-01-01T00:00:00Z&to=2026-06-01T00:00:00Z",
 			wantField:  "from",
 			wantMsgSub: "statement period must not exceed 90 days",
 		},
@@ -1214,7 +1331,7 @@ func TestGetAccountStatement_ValidationErrors(t *testing.T) {
 					From: time.Date(1970, time.January, 1, 0, 0, 0, 0, time.UTC),
 					To:   time.Date(2100, time.January, 1, 0, 0, 0, 0, time.UTC),
 				})
-				return "/ledgers/ngn_ng/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?cursor=" + *tok
+				return "/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?cursor=" + *tok
 			}(),
 			wantField:  "cursor",
 			wantMsgSub: "invalid pagination cursor",
@@ -1223,7 +1340,7 @@ func TestGetAccountStatement_ValidationErrors(t *testing.T) {
 			name: "cursor line number exceeds max int16",
 			target: func() string {
 				tok := base64.RawURLEncoding.EncodeToString([]byte(`{"nav":"next","rec":"2026-09-10T09:15:00Z","jref":"jrn_01M20J1QD2XB8K7G4N9CVF6T3A","ln":40000,"from":"2026-09-01T00:00:00Z","to":"2026-09-15T00:00:00Z"}`))
-				return "/ledgers/ngn_ng/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?cursor=" + tok
+				return "/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?cursor=" + tok
 			}(),
 			wantField:  "cursor",
 			wantMsgSub: "invalid pagination cursor",
@@ -1273,12 +1390,6 @@ func TestGetAccountStatement_ServiceErrors(t *testing.T) {
 		wantCode   api.ErrorCode
 	}{
 		{
-			name:       "ledger not found",
-			err:        account.ErrLedgerNotFound,
-			wantStatus: http.StatusNotFound,
-			wantCode:   api.LedgerNotFound,
-		},
-		{
 			name:       "account not found",
 			err:        account.ErrAccountNotFound,
 			wantStatus: http.StatusNotFound,
@@ -1300,7 +1411,7 @@ func TestGetAccountStatement_ServiceErrors(t *testing.T) {
 				t.Fatalf("NewHandler: %v", err)
 			}
 
-			target := "/ledgers/ngn_ng/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement"
+			target := "/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement"
 			req := httptest.NewRequest(http.MethodGet, target, nil)
 			rec := httptest.NewRecorder()
 

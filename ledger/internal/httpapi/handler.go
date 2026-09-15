@@ -48,6 +48,8 @@ const (
 	maxStatementPeriod     = 90 * 24 * time.Hour
 )
 
+const msgUnknownLedger = "ledger must name an existing ledger"
+
 // server implements the generated strict OpenAPI server interface. It stays
 // private because callers only need the fully configured http.Handler returned
 // by NewHandler.
@@ -108,7 +110,7 @@ func (s *server) CreatePayableAccount(
 	request api.CreatePayableAccountRequestObject,
 ) (api.CreatePayableAccountResponseObject, error) {
 	input := account.CreatePayableInput{
-		LedgerSlug: request.Slug,
+		LedgerSlug: request.Body.Ledger,
 		ExternalID: request.Body.ExternalID,
 		Name:       strings.TrimSpace(request.Body.Name),
 	}
@@ -120,7 +122,7 @@ func (s *server) CreatePayableAccount(
 	response := api.CreatePayableAccountResponse{
 		Reference:       result.Account.Reference,
 		HolderReference: result.Account.HolderReference,
-		LedgerSlug:      request.Slug,
+		LedgerSlug:      request.Body.Ledger,
 		ExternalID:      input.ExternalID,
 		Name:            result.Account.HolderName,
 		Kind:            api.Payable,
@@ -148,8 +150,7 @@ func (s *server) GetAccount(
 	request api.GetAccountRequestObject,
 ) (api.GetAccountResponseObject, error) {
 	result, err := s.service.GetPayableAccount(ctx, account.GetPayableInput{
-		LedgerSlug: request.Slug,
-		Reference:  request.AccountReference,
+		Reference: request.AccountReference,
 	})
 	if err != nil {
 		return mapGetAccountError(err), nil
@@ -211,7 +212,7 @@ func (s *server) PostJournalEntry(
 	}
 
 	result, err := s.service.PostEntry(ctx, journal.PostInput{
-		LedgerSlug:  request.Slug,
+		LedgerSlug:  request.Body.Ledger,
 		RequestID:   request.Params.IdempotencyKey,
 		Kind:        journal.Kind(request.Body.Kind),
 		Description: description,
@@ -224,7 +225,7 @@ func (s *server) PostJournalEntry(
 
 	response := api.PostJournalEntryResponse{
 		JournalRef:  result.Entry.Reference,
-		LedgerSlug:  request.Slug,
+		LedgerSlug:  request.Body.Ledger,
 		Kind:        api.JournalEntryKind(result.Entry.Kind),
 		State:       api.PostJournalEntryResponseState(result.Entry.State),
 		Description: result.Entry.Description,
@@ -241,12 +242,10 @@ func (s *server) PostJournalEntry(
 func mapCreatePayableAccountError(err error) api.CreatePayableAccountResponseObject {
 	switch {
 	case errors.Is(err, account.ErrLedgerNotFound):
-		return api.CreatePayableAccount404JSONResponse{
-			Message: "Ledger not found.",
-			Error: api.ErrorInfo{
-				Code: api.LedgerNotFound,
-			},
-		}
+		return createPayableAccountValidationResponse(
+			"ledger",
+			msgUnknownLedger,
+		)
 
 	case errors.Is(err, account.ErrLedgerClosed):
 		return api.CreatePayableAccount409JSONResponse{
@@ -274,16 +273,23 @@ func mapCreatePayableAccountError(err error) api.CreatePayableAccountResponseObj
 	}
 }
 
+func createPayableAccountValidationResponse(field, message string) api.CreatePayableAccount400JSONResponse {
+	return api.CreatePayableAccount400JSONResponse{
+		InvalidRequestJSONResponse: api.InvalidRequestJSONResponse(
+			newValidationResponse([]api.ValidationErrorDetail{
+				{
+					Location: api.Body,
+					Field:    field,
+					Code:     api.InvalidValue,
+					Message:  message,
+				},
+			}),
+		),
+	}
+}
+
 func mapGetAccountError(err error) api.GetAccountResponseObject {
 	switch {
-	case errors.Is(err, account.ErrLedgerNotFound):
-		return api.GetAccount404JSONResponse{
-			Message: "Ledger not found.",
-			Error: api.ErrorInfo{
-				Code: api.LedgerNotFound,
-			},
-		}
-
 	case errors.Is(err, account.ErrAccountNotFound):
 		return api.GetAccount404JSONResponse{
 			Message: "Account not found.",
@@ -305,10 +311,10 @@ func mapGetAccountError(err error) api.GetAccountResponseObject {
 func mapPostJournalEntryError(err error) api.PostJournalEntryResponseObject {
 	switch {
 	case errors.Is(err, journal.ErrLedgerNotFound):
-		return api.PostJournalEntry404JSONResponse{
-			Message: "Ledger not found.",
-			Error:   api.ErrorInfo{Code: api.LedgerNotFound},
-		}
+		return postJournalEntryValidationResponse(
+			"ledger",
+			msgUnknownLedger,
+		)
 	case errors.Is(err, journal.ErrAccountNotFound):
 		return api.PostJournalEntry404JSONResponse{
 			Message: "Account not found.",
@@ -422,7 +428,6 @@ func (s *server) GetAccountStatement(
 	}
 
 	result, err := s.service.GetStatement(ctx, statement.ListInput{
-		LedgerSlug:       request.Slug,
 		AccountReference: request.AccountReference,
 		From:             from,
 		To:               to,
@@ -488,13 +493,6 @@ func (s *server) GetAccountStatement(
 
 func mapGetAccountStatementError(err error) api.GetAccountStatementResponseObject {
 	switch {
-	case errors.Is(err, account.ErrLedgerNotFound):
-		return api.GetAccountStatement404JSONResponse{
-			Message: "Ledger not found.",
-			Error: api.ErrorInfo{
-				Code: api.LedgerNotFound,
-			},
-		}
 	case errors.Is(err, account.ErrAccountNotFound):
 		return api.GetAccountStatement404JSONResponse{
 			Message: "Account not found.",

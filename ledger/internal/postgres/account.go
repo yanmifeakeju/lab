@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/oklog/ulid/v2"
@@ -94,25 +95,22 @@ func (s *Store) GetPayableAccount(ctx context.Context, input account.GetPayableI
 		l.slug,
 		h.public_ref,
 		h.name
-	FROM ledgers l
-	LEFT JOIN accounts a
-		ON a.ledger_id = l.id
-		AND a.public_ref = $2
-		AND a.kind = 'payable'
-	LEFT JOIN holders h
-		ON a.holder_id = h.id
-	WHERE l.slug = $1;`
+	FROM accounts a
+	JOIN ledgers l ON l.id = a.ledger_id
+	LEFT JOIN holders h ON h.id = a.holder_id
+	WHERE a.public_ref = $1
+		AND a.kind = 'payable';`
 
-	row := s.db.QueryRowContext(ctx, q, input.LedgerSlug, input.Reference)
+	row := s.db.QueryRowContext(ctx, q, input.Reference)
 
 	var (
-		accountRef     sql.NullString
-		debitsPending  sql.NullInt64
-		creditsPending sql.NullInt64
-		debitsPosted   sql.NullInt64
-		creditsPosted  sql.NullInt64
-		isClosed       sql.NullBool
-		createdAt      sql.NullTime
+		accountRef     string
+		debitsPending  int64
+		creditsPending int64
+		debitsPosted   int64
+		creditsPosted  int64
+		isClosed       bool
+		createdAt      time.Time
 		ledgerSlug     string
 		holderRef      sql.NullString
 		holderName     sql.NullString
@@ -131,28 +129,24 @@ func (s *Store) GetPayableAccount(ctx context.Context, input account.GetPayableI
 		&holderName,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return account.Payable{}, fmt.Errorf("get payable account: %w", account.ErrLedgerNotFound)
+			return account.Payable{}, fmt.Errorf("get payable account: %w", account.ErrAccountNotFound)
 		}
 
 		return account.Payable{}, fmt.Errorf("get payable account: %w", err)
 	}
 
-	if !accountRef.Valid {
-		return account.Payable{}, fmt.Errorf("get payable account: %w", account.ErrAccountNotFound)
-	}
-
 	return account.Payable{
-		Reference:       accountRef.String,
+		Reference:       accountRef,
 		HolderReference: holderRef.String,
 		HolderName:      holderName.String,
 		LedgerSlug:      ledgerSlug,
-		IsClosed:        isClosed.Bool,
+		IsClosed:        isClosed,
 		Balances: account.BalanceCounters{
-			DebitsPending:  debitsPending.Int64,
-			CreditsPending: creditsPending.Int64,
-			DebitsPosted:   debitsPosted.Int64,
-			CreditsPosted:  creditsPosted.Int64,
+			DebitsPending:  debitsPending,
+			CreditsPending: creditsPending,
+			DebitsPosted:   debitsPosted,
+			CreditsPosted:  creditsPosted,
 		},
-		CreatedAt: createdAt.Time,
+		CreatedAt: createdAt,
 	}, nil
 }

@@ -42,7 +42,6 @@ type Cursor struct {
 
 // ListInput contains the parameters for listing a payable account's statement.
 type ListInput struct {
-	LedgerSlug       string
 	AccountReference string
 	From             time.Time
 	To               time.Time

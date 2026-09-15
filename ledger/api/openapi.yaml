@@ -17,16 +17,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
 
-  /ledgers/{slug}/accounts:
+  /accounts:
     post:
       operationId: createPayableAccount
       summary: Create a payable account in a ledger
-      parameters:
-        - name: slug
-          in: path
-          required: true
-          schema:
-            $ref: "#/components/schemas/LedgerSlug"
       requestBody:
         required: true
         content:
@@ -48,16 +42,6 @@ paths:
                 $ref: "#/components/schemas/CreatePayableAccountResponse"
         "400":
           $ref: "#/components/responses/InvalidRequest"
-        "404":
-          description: The requested ledger does not exist.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-              example:
-                message: Ledger not found.
-                error:
-                  code: ledger_not_found
         "409":
           description: The request conflicts with the ledger's current state.
           content:
@@ -88,17 +72,12 @@ paths:
                 error:
                   code: internal_server_error
 
-  /ledgers/{slug}/accounts/{account_reference}:
+  /accounts/{account_reference}:
     get:
       operationId: getAccount
       summary: Get a payable account and its balance
       description: Retrieves one payable account and exposes both its derived available amount and its underlying ledger counters. This API does not expose internal cash or revenue accounts.
       parameters:
-        - name: slug
-          in: path
-          required: true
-          schema:
-            $ref: "#/components/schemas/LedgerSlug"
         - name: account_reference
           in: path
           required: true
@@ -114,24 +93,15 @@ paths:
         "400":
           $ref: "#/components/responses/InvalidRequest"
         "404":
-          description: The requested ledger or payable account does not exist.
+          description: The requested payable account does not exist.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-              examples:
-                ledgerNotFound:
-                  summary: The ledger does not exist
-                  value:
-                    message: Ledger not found.
-                    error:
-                      code: ledger_not_found
-                accountNotFound:
-                  summary: The payable account does not exist in the ledger
-                  value:
-                    message: Account not found.
-                    error:
-                      code: account_not_found
+              example:
+                message: Account not found.
+                error:
+                  code: account_not_found
         "500":
           description: The server could not complete the request.
           content:
@@ -143,7 +113,7 @@ paths:
                 error:
                   code: internal_server_error
 
-  /ledgers/{slug}/accounts/{account_reference}/statement:
+  /accounts/{account_reference}/statement:
     get:
       operationId: getAccountStatement
       summary: Get a payable account statement
@@ -157,11 +127,6 @@ paths:
         | 2026-09-10 09:15 | `jrn_01M20J1QD2XB8K7G4N9CVF6T3A` | payment | Credit | 9,800 | 9,800 |
         | 2026-09-10 09:15 | `jrn_01M20J1QD2XB8K7G4N9CVF6T3A` | payment | Debit | 200 | 9,600 |
       parameters:
-        - name: slug
-          in: path
-          required: true
-          schema:
-            $ref: "#/components/schemas/LedgerSlug"
         - name: account_reference
           in: path
           required: true
@@ -237,24 +202,15 @@ paths:
         "400":
           $ref: "#/components/responses/InvalidRequest"
         "404":
-          description: The requested ledger or payable account does not exist.
+          description: The requested payable account does not exist.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-              examples:
-                ledgerNotFound:
-                  summary: The ledger does not exist
-                  value:
-                    message: Ledger not found.
-                    error:
-                      code: ledger_not_found
-                accountNotFound:
-                  summary: The payable account does not exist in the ledger
-                  value:
-                    message: Account not found.
-                    error:
-                      code: account_not_found
+              example:
+                message: Account not found.
+                error:
+                  code: account_not_found
         "500":
           description: The server could not complete the request.
           content:
@@ -266,16 +222,11 @@ paths:
                 error:
                   code: internal_server_error
 
-  /ledgers/{slug}/entries:
+  /entries:
     post:
       operationId: postJournalEntry
       summary: Post a journal entry to a ledger
       parameters:
-        - name: slug
-          in: path
-          required: true
-          schema:
-            $ref: "#/components/schemas/LedgerSlug"
         - name: Idempotency-Key
           in: header
           required: true
@@ -304,24 +255,15 @@ paths:
         "400":
           $ref: "#/components/responses/InvalidRequest"
         "404":
-          description: The ledger or one of the referenced accounts does not exist.
+          description: A referenced account does not exist in the ledger.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-              examples:
-                ledgerNotFound:
-                  summary: The ledger does not exist
-                  value:
-                    message: Ledger not found.
-                    error:
-                      code: ledger_not_found
-                accountNotFound:
-                  summary: A referenced account does not exist in the ledger
-                  value:
-                    message: Account not found.
-                    error:
-                      code: account_not_found
+              example:
+                message: Account not found.
+                error:
+                  code: account_not_found
         "409":
           description: The posting conflicts with existing ledger state.
           content:
@@ -374,6 +316,7 @@ components:
       pattern: '^[a-z0-9]+(?:_[a-z0-9]+)*$'
       example: ngn_ng
       x-validation-messages:
+        type: must be a string
         minLength: must contain at least 3 characters
         maxLength: must not exceed 63 characters
         pattern: must contain lowercase letters and numbers separated by single underscores
@@ -449,9 +392,12 @@ components:
     PostJournalEntryRequest:
       type: object
       required:
+        - ledger
         - kind
         - lines
       properties:
+        ledger:
+          $ref: "#/components/schemas/LedgerSlug"
         kind:
           $ref: "#/components/schemas/JournalEntryKind"
         description:
@@ -545,9 +491,12 @@ components:
     CreatePayableAccountRequest:
       type: object
       required:
+        - ledger
         - external_id
         - name
       properties:
+        ledger:
+          $ref: "#/components/schemas/LedgerSlug"
         external_id:
           type: string
           minLength: 1
@@ -788,7 +737,6 @@ components:
     ErrorCode:
       type: string
       enum:
-        - ledger_not_found
         - ledger_closed
         - holder_conflict
         - account_not_found

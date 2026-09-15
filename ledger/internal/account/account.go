@@ -52,8 +52,7 @@ type CreateResult struct {
 
 // GetPayableInput contains the query parameters for looking up a payable account.
 type GetPayableInput struct {
-	LedgerSlug string
-	Reference  string
+	Reference string
 }
 
 // BalanceCounters represents the persisted debit and credit counters for an account.
