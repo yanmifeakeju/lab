@@ -143,6 +143,129 @@ paths:
                 error:
                   code: internal_server_error
 
+  /ledgers/{slug}/accounts/{account_reference}/statement:
+    get:
+      operationId: getAccountStatement
+      summary: Get a payable account statement
+      description: |
+        Retrieves the journal movements affecting one payable account within a recorded-time period in deterministic chronological order (`recorded_at, journal entry identity, line_number`).
+
+        ### Example movements
+
+        | Recorded at | Journal reference | Kind | Direction | Amount | Balance |
+        | --- | --- | --- | --- | ---: | ---: |
+        | 2026-09-10 09:15 | `jrn_01M20J1QD2XB8K7G4N9CVF6T3A` | payment | Credit | 9,800 | 9,800 |
+        | 2026-09-10 09:15 | `jrn_01M20J1QD2XB8K7G4N9CVF6T3A` | payment | Debit | 200 | 9,600 |
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/LedgerSlug"
+        - name: account_reference
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/AccountReference"
+        - name: from
+          in: query
+          required: false
+          description: Inclusive recorded-time boundary.
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          description: Exclusive recorded-time boundary.
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          required: false
+          description: Bounded number of movements to return.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque token returned by a preceding request.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The payable account statement was successfully retrieved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetAccountStatementResponse"
+              example:
+                account:
+                  reference: acct_01M20H8704F1FDM1CFWSZDVJPV
+                  holder_reference: hld_01M20H7XK4A9Q2TZ8VG6BFP31R
+                  name: Acme Ltd
+                period:
+                  from: "2026-09-01T00:00:00Z"
+                  to: "2026-10-01T00:00:00Z"
+                opening_balance: 0
+                closing_balance: 9600
+                entries:
+                  - journal_reference: jrn_01M20J1QD2XB8K7G4N9CVF6T3A
+                    line_number: 1
+                    kind: payment
+                    direction: credit
+                    amount: 9800
+                    balance_after: 9800
+                    description: Payment received
+                    recorded_at: "2026-09-10T09:15:00Z"
+                  - journal_reference: jrn_01M20J1QD2XB8K7G4N9CVF6T3A
+                    line_number: 2
+                    kind: payment
+                    direction: debit
+                    amount: 200
+                    balance_after: 9600
+                    description: Payment received
+                    recorded_at: "2026-09-10T09:15:00Z"
+                page:
+                  limit: 50
+                  previous_cursor: null
+                  next_cursor: "opaque_next_cursor"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          description: The requested ledger or payable account does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                ledgerNotFound:
+                  summary: The ledger does not exist
+                  value:
+                    message: Ledger not found.
+                    error:
+                      code: ledger_not_found
+                accountNotFound:
+                  summary: The payable account does not exist in the ledger
+                  value:
+                    message: Account not found.
+                    error:
+                      code: account_not_found
+        "500":
+          description: The server could not complete the request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: The server could not complete the request.
+                error:
+                  code: internal_server_error
+
   /ledgers/{slug}/entries:
     post:
       operationId: postJournalEntry
@@ -673,6 +796,142 @@ components:
         - insufficient_funds
         - idempotency_conflict
         - internal_server_error
+
+    StatementDirection:
+      type: string
+      enum:
+        - debit
+        - credit
+      example: credit
+
+    StatementMovement:
+      type: object
+      additionalProperties: false
+      required:
+        - journal_reference
+        - line_number
+        - kind
+        - direction
+        - amount
+        - balance_after
+        - recorded_at
+      properties:
+        journal_reference:
+          $ref: "#/components/schemas/JournalRef"
+        line_number:
+          type: integer
+          minimum: 1
+          example: 1
+        kind:
+          $ref: "#/components/schemas/JournalEntryKind"
+        direction:
+          $ref: "#/components/schemas/StatementDirection"
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Positive amount expressed in the ledger's minor units.
+          example: 9800
+        balance_after:
+          type: integer
+          format: int64
+          description: Posted balance after this movement in minor units.
+          example: 9800
+        description:
+          type: string
+          minLength: 1
+          example: Payment received
+        recorded_at:
+          type: string
+          format: date-time
+          example: "2026-09-10T09:15:00Z"
+
+    StatementAccount:
+      type: object
+      additionalProperties: false
+      required:
+        - reference
+        - holder_reference
+        - name
+      properties:
+        reference:
+          $ref: "#/components/schemas/AccountReference"
+        holder_reference:
+          $ref: "#/components/schemas/HolderReference"
+        name:
+          type: string
+          minLength: 1
+          example: Acme Ltd
+
+    StatementPeriod:
+      type: object
+      additionalProperties: false
+      required:
+        - from
+        - to
+      properties:
+        from:
+          type: string
+          format: date-time
+          example: "2026-09-01T00:00:00Z"
+        to:
+          type: string
+          format: date-time
+          example: "2026-10-01T00:00:00Z"
+
+    StatementPage:
+      type: object
+      additionalProperties: false
+      required:
+        - limit
+        - previous_cursor
+        - next_cursor
+      properties:
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          example: 50
+        previous_cursor:
+          type: string
+          nullable: true
+          example: null
+        next_cursor:
+          type: string
+          nullable: true
+          example: "eyJ..."
+
+    GetAccountStatementResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - account
+        - period
+        - opening_balance
+        - closing_balance
+        - entries
+        - page
+      properties:
+        account:
+          $ref: "#/components/schemas/StatementAccount"
+        period:
+          $ref: "#/components/schemas/StatementPeriod"
+        opening_balance:
+          type: integer
+          format: int64
+          description: Posted balance before the requested period in minor units.
+          example: 0
+        closing_balance:
+          type: integer
+          format: int64
+          description: Posted balance at the end of the requested period in minor units.
+          example: 9600
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/StatementMovement"
+        page:
+          $ref: "#/components/schemas/StatementPage"
 
   responses:
     InvalidRequest:

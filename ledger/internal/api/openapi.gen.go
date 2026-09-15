@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -121,6 +122,24 @@ const (
 func (e PostJournalEntryResponseState) Valid() bool {
 	switch e {
 	case Posted:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for StatementDirection.
+const (
+	Credit StatementDirection = "credit"
+	Debit  StatementDirection = "debit"
+)
+
+// Valid indicates whether the value is a known member of the StatementDirection enum.
+func (e StatementDirection) Valid() bool {
+	switch e {
+	case Credit:
+		return true
+	case Debit:
 		return true
 	default:
 		return false
@@ -335,6 +354,24 @@ type GetAccountResponse struct {
 	Status AccountStatus `json:"status"`
 }
 
+// GetAccountStatementResponse defines model for GetAccountStatementResponse.
+type GetAccountStatementResponse struct {
+	Account StatementAccount `json:"account"`
+
+	// ClosingBalance Posted balance at the end of the requested period in minor units.
+	//
+	// Example: 9600
+	ClosingBalance int64               `json:"closing_balance"`
+	Entries        []StatementMovement `json:"entries"`
+
+	// OpeningBalance Posted balance before the requested period in minor units.
+	//
+	// Example: 0
+	OpeningBalance int64           `json:"opening_balance"`
+	Page           StatementPage   `json:"page"`
+	Period         StatementPeriod `json:"period"`
+}
+
 // HealthResponse defines model for HealthResponse.
 type HealthResponse struct {
 	// Status Example: ok
@@ -419,6 +456,77 @@ type PostJournalEntryResponse struct {
 // PostJournalEntryResponseState defines model for PostJournalEntryResponse.State.
 type PostJournalEntryResponseState string
 
+// StatementAccount defines model for StatementAccount.
+type StatementAccount struct {
+	// HolderReference Stable opaque reference assigned to a holder by the ledger.
+	//
+	// Example: hld_01K33YVADP5Z8B0T3X2Q91C6RH
+	HolderReference HolderReference `json:"holder_reference"`
+
+	// Name Example: Acme Ltd
+	Name string `json:"name"`
+
+	// Reference Stable opaque reference assigned to an account by the ledger.
+	//
+	// Example: acct_01K33YV8M82N9MXP4E7J6B1QWK
+	Reference AccountReference `json:"reference"`
+}
+
+// StatementDirection Example: credit
+type StatementDirection string
+
+// StatementMovement defines model for StatementMovement.
+type StatementMovement struct {
+	// Amount Positive amount expressed in the ledger's minor units.
+	//
+	// Example: 9800
+	Amount int64 `json:"amount"`
+
+	// BalanceAfter Posted balance after this movement in minor units.
+	//
+	// Example: 9800
+	BalanceAfter int64 `json:"balance_after"`
+
+	// Description Example: Payment received
+	Description *string `json:"description,omitempty"`
+
+	// Direction Example: credit
+	Direction StatementDirection `json:"direction"`
+
+	// JournalReference Stable opaque reference assigned to a journal entry by the ledger.
+	//
+	// Example: jrn_01K33YW0MDHJ9E4N7Z2QPV6R8K
+	JournalReference JournalRef `json:"journal_reference"`
+
+	// Kind Business classification of a journal entry.
+	Kind JournalEntryKind `json:"kind"`
+
+	// LineNumber Example: 1
+	LineNumber int `json:"line_number"`
+
+	// RecordedAt Example: 2026-09-10T09:15:00Z
+	RecordedAt time.Time `json:"recorded_at"`
+}
+
+// StatementPage defines model for StatementPage.
+type StatementPage struct {
+	// Limit Example: 50
+	Limit int `json:"limit"`
+
+	// NextCursor Example: eyJ...
+	NextCursor     *string `json:"next_cursor"`
+	PreviousCursor *string `json:"previous_cursor"`
+}
+
+// StatementPeriod defines model for StatementPeriod.
+type StatementPeriod struct {
+	// From Example: 2026-09-01T00:00:00Z
+	From time.Time `json:"from"`
+
+	// To Example: 2026-10-01T00:00:00Z
+	To time.Time `json:"to"`
+}
+
 // ValidationError defines model for ValidationError.
 type ValidationError struct {
 	Code    ValidationErrorCode     `json:"code"`
@@ -457,6 +565,21 @@ type ValidationErrorResponse struct {
 // InvalidRequest defines model for InvalidRequest.
 type InvalidRequest = ValidationErrorResponse
 
+// GetAccountStatementParams defines parameters for GetAccountStatement.
+type GetAccountStatementParams struct {
+	// From Inclusive recorded-time boundary.
+	From *time.Time `form:"from,omitempty" json:"from,omitempty"`
+
+	// To Exclusive recorded-time boundary.
+	To *time.Time `form:"to,omitempty" json:"to,omitempty"`
+
+	// Limit Bounded number of movements to return.
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor Opaque token returned by a preceding request.
+	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
 // PostJournalEntryParams defines parameters for PostJournalEntry.
 type PostJournalEntryParams struct {
 	// IdempotencyKey Caller-generated key that uniquely identifies this posting within the ledger.
@@ -480,6 +603,9 @@ type ServerInterface interface {
 	// GetAccount Get a payable account and its balance
 	// (GET /ledgers/{slug}/accounts/{account_reference})
 	GetAccount(w http.ResponseWriter, r *http.Request, slug LedgerSlug, accountReference AccountReference)
+	// GetAccountStatement Get a payable account statement
+	// (GET /ledgers/{slug}/accounts/{account_reference}/statement)
+	GetAccountStatement(w http.ResponseWriter, r *http.Request, slug LedgerSlug, accountReference AccountReference, params GetAccountStatementParams)
 	// PostJournalEntry Post a journal entry to a ledger
 	// (POST /ledgers/{slug}/entries)
 	PostJournalEntry(w http.ResponseWriter, r *http.Request, slug LedgerSlug, params PostJournalEntryParams)
@@ -560,6 +686,96 @@ func (siw *ServerInterfaceWrapper) GetAccount(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetAccount(w, r, slug, accountReference)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetAccountStatement operation middleware
+func (siw *ServerInterfaceWrapper) GetAccountStatement(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "slug" -------------
+	var slug LedgerSlug
+
+	err = runtime.BindStyledParameterWithOptions("simple", "slug", r.PathValue("slug"), &slug, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "slug", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "account_reference" -------------
+	var accountReference AccountReference
+
+	err = runtime.BindStyledParameterWithOptions("simple", "account_reference", r.PathValue("account_reference"), &accountReference, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "account_reference", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetAccountStatementParams
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", r.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "from"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "from", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", r.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "to"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "to", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", r.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cursor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetAccountStatement(w, r, slug, accountReference, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -746,6 +962,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/health", wrapper.GetHealth)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/ledgers/{slug}/accounts", wrapper.CreatePayableAccount)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/ledgers/{slug}/accounts/{account_reference}", wrapper.GetAccount)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/ledgers/{slug}/accounts/{account_reference}/statement", wrapper.GetAccountStatement)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/ledgers/{slug}/entries", wrapper.PostJournalEntry)
 
 	return m
@@ -932,6 +1149,72 @@ func (response GetAccount500JSONResponse) VisitGetAccountResponse(w http.Respons
 	return err
 }
 
+type GetAccountStatementRequestObject struct {
+	Slug             LedgerSlug       `json:"slug"`
+	AccountReference AccountReference `json:"account_reference"`
+	Params           GetAccountStatementParams
+}
+
+type GetAccountStatementResponseObject interface {
+	VisitGetAccountStatementResponse(w http.ResponseWriter) error
+}
+
+type GetAccountStatement200JSONResponse GetAccountStatementResponse
+
+func (response GetAccountStatement200JSONResponse) VisitGetAccountStatementResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetAccountStatement400JSONResponse struct{ InvalidRequestJSONResponse }
+
+func (response GetAccountStatement400JSONResponse) VisitGetAccountStatementResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetAccountStatement404JSONResponse ErrorResponse
+
+func (response GetAccountStatement404JSONResponse) VisitGetAccountStatementResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetAccountStatement500JSONResponse ErrorResponse
+
+func (response GetAccountStatement500JSONResponse) VisitGetAccountStatementResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type PostJournalEntryRequestObject struct {
 	Slug   LedgerSlug `json:"slug"`
 	Params PostJournalEntryParams
@@ -1037,6 +1320,9 @@ type StrictServerInterface interface {
 	// GetAccount Get a payable account and its balance
 	// (GET /ledgers/{slug}/accounts/{account_reference})
 	GetAccount(ctx context.Context, request GetAccountRequestObject) (GetAccountResponseObject, error)
+	// GetAccountStatement Get a payable account statement
+	// (GET /ledgers/{slug}/accounts/{account_reference}/statement)
+	GetAccountStatement(ctx context.Context, request GetAccountStatementRequestObject) (GetAccountStatementResponseObject, error)
 	// PostJournalEntry Post a journal entry to a ledger
 	// (POST /ledgers/{slug}/entries)
 	PostJournalEntry(ctx context.Context, request PostJournalEntryRequestObject) (PostJournalEntryResponseObject, error)
@@ -1165,6 +1451,34 @@ func (sh *strictHandler) GetAccount(w http.ResponseWriter, r *http.Request, slug
 	}
 }
 
+// GetAccountStatement operation middleware
+func (sh *strictHandler) GetAccountStatement(w http.ResponseWriter, r *http.Request, slug LedgerSlug, accountReference AccountReference, params GetAccountStatementParams) {
+	var request GetAccountStatementRequestObject
+
+	request.Slug = slug
+	request.AccountReference = accountReference
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetAccountStatement(ctx, request.(GetAccountStatementRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetAccountStatement")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetAccountStatementResponseObject); ok {
+		if err := validResponse.VisitGetAccountStatementResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // PostJournalEntry operation middleware
 func (sh *strictHandler) PostJournalEntry(w http.ResponseWriter, r *http.Request, slug LedgerSlug, params PostJournalEntryParams) {
 	var request PostJournalEntryRequestObject
@@ -1204,55 +1518,70 @@ func (sh *strictHandler) PostJournalEntry(w http.ResponseWriter, r *http.Request
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
-	"WebJVlXkLxb/CwAA//8=",
+	"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",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3filter"
 	nethttpmiddleware "github.com/oapi-codegen/nethttp-middleware"
@@ -15,6 +16,7 @@ import (
 	"yanmifeakeju.com/ledger/internal/account"
 	"yanmifeakeju.com/ledger/internal/api"
 	"yanmifeakeju.com/ledger/internal/journal"
+	"yanmifeakeju.com/ledger/internal/statement"
 )
 
 type PayableAccountCreator interface {
@@ -29,12 +31,22 @@ type JournalEntryPoster interface {
 	PostEntry(context.Context, journal.PostInput) (journal.PostResult, error)
 }
 
+type StatementGetter interface {
+	GetStatement(context.Context, statement.ListInput) (statement.Result, error)
+}
+
 // Service provides the application operations exposed by the HTTP API.
 type Service interface {
 	PayableAccountCreator
 	PayableAccountGetter
 	JournalEntryPoster
+	StatementGetter
 }
+
+const (
+	defaultStatementPeriod = 30 * 24 * time.Hour
+	maxStatementPeriod     = 90 * 24 * time.Hour
+)
 
 // server implements the generated strict OpenAPI server interface. It stays
 // private because callers only need the fully configured http.Handler returned
@@ -351,6 +363,161 @@ func postJournalEntryValidationResponse(field, message string) api.PostJournalEn
 			newValidationResponse([]api.ValidationErrorDetail{
 				{
 					Location: api.Body,
+					Field:    field,
+					Code:     api.InvalidValue,
+					Message:  message,
+				},
+			}),
+		),
+	}
+}
+
+// GetAccountStatement retrieves the journal movements affecting one payable account.
+func (s *server) GetAccountStatement(
+	ctx context.Context,
+	request api.GetAccountStatementRequestObject,
+) (api.GetAccountStatementResponseObject, error) {
+	var (
+		from   time.Time
+		to     time.Time
+		cursor *statement.Cursor
+	)
+
+	limit := 50
+	if request.Params.Limit != nil {
+		limit = *request.Params.Limit
+	}
+
+	if request.Params.Cursor != nil && *request.Params.Cursor != "" {
+		decCursor, boundPeriod, err := statement.DecodeCursor(*request.Params.Cursor)
+		if err != nil {
+			return statementValidationResponse(api.Query, "cursor", "invalid pagination cursor"), nil
+		}
+		if boundPeriod.To.Sub(boundPeriod.From) > maxStatementPeriod {
+			return statementValidationResponse(api.Query, "cursor", "invalid pagination cursor"), nil
+		}
+		cursor = decCursor
+		from = boundPeriod.From
+		to = boundPeriod.To
+	} else {
+		if request.Params.To != nil {
+			to = request.Params.To.UTC()
+		} else {
+			to = time.Now().UTC()
+		}
+
+		if request.Params.From != nil {
+			from = request.Params.From.UTC()
+		} else {
+			from = to.Add(-defaultStatementPeriod)
+		}
+
+		if !from.Before(to) {
+			return statementValidationResponse(api.Query, "from", "from must be before to"), nil
+		}
+
+		if to.Sub(from) > maxStatementPeriod {
+			return statementValidationResponse(api.Query, "from", "statement period must not exceed 90 days"), nil
+		}
+	}
+
+	result, err := s.service.GetStatement(ctx, statement.ListInput{
+		LedgerSlug:       request.Slug,
+		AccountReference: request.AccountReference,
+		From:             from,
+		To:               to,
+		Limit:            limit,
+		Cursor:           cursor,
+	})
+	if err != nil {
+		return mapGetAccountStatementError(err), nil
+	}
+
+	prevToken, err := statement.EncodeCursor(result.Page.Previous, result.Period)
+	if err != nil {
+		return api.GetAccountStatement500JSONResponse{
+			Message: "The server could not complete the request.",
+			Error:   api.ErrorInfo{Code: api.InternalServerError},
+		}, nil
+	}
+
+	nextToken, err := statement.EncodeCursor(result.Page.Next, result.Period)
+	if err != nil {
+		return api.GetAccountStatement500JSONResponse{
+			Message: "The server could not complete the request.",
+			Error:   api.ErrorInfo{Code: api.InternalServerError},
+		}, nil
+	}
+
+	entries := make([]api.StatementMovement, len(result.Movements))
+	for i, m := range result.Movements {
+		entries[i] = api.StatementMovement{
+			JournalReference: m.JournalReference,
+			LineNumber:       m.LineNumber,
+			Kind:             api.JournalEntryKind(m.Kind),
+			Direction:        api.StatementDirection(m.Direction),
+			Amount:           m.Amount,
+			BalanceAfter:     m.BalanceAfter,
+			Description:      m.Description,
+			RecordedAt:       m.RecordedAt,
+		}
+	}
+
+	response := api.GetAccountStatementResponse{
+		Account: api.StatementAccount{
+			Reference:       result.Account.Reference,
+			HolderReference: result.Account.HolderReference,
+			Name:            result.Account.Name,
+		},
+		Period: api.StatementPeriod{
+			From: result.Period.From,
+			To:   result.Period.To,
+		},
+		OpeningBalance: result.OpeningBalance,
+		ClosingBalance: result.ClosingBalance,
+		Entries:        entries,
+		Page: api.StatementPage{
+			Limit:          result.Page.Limit,
+			PreviousCursor: prevToken,
+			NextCursor:     nextToken,
+		},
+	}
+
+	return api.GetAccountStatement200JSONResponse(response), nil
+}
+
+func mapGetAccountStatementError(err error) api.GetAccountStatementResponseObject {
+	switch {
+	case errors.Is(err, account.ErrLedgerNotFound):
+		return api.GetAccountStatement404JSONResponse{
+			Message: "Ledger not found.",
+			Error: api.ErrorInfo{
+				Code: api.LedgerNotFound,
+			},
+		}
+	case errors.Is(err, account.ErrAccountNotFound):
+		return api.GetAccountStatement404JSONResponse{
+			Message: "Account not found.",
+			Error: api.ErrorInfo{
+				Code: api.AccountNotFound,
+			},
+		}
+	default:
+		return api.GetAccountStatement500JSONResponse{
+			Message: "The server could not complete the request.",
+			Error: api.ErrorInfo{
+				Code: api.InternalServerError,
+			},
+		}
+	}
+}
+
+func statementValidationResponse(location api.ValidationErrorDetailLocation, field, message string) api.GetAccountStatement400JSONResponse {
+	return api.GetAccountStatement400JSONResponse{
+		InvalidRequestJSONResponse: api.InvalidRequestJSONResponse(
+			newValidationResponse([]api.ValidationErrorDetail{
+				{
+					Location: location,
 					Field:    field,
 					Code:     api.InvalidValue,
 					Message:  message,

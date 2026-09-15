@@ -8,6 +8,7 @@ import (
 // DBTX is satisfied by *sql.DB and *sql.Tx.
 type DBTX interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
 // Store runs SQL routines against the ledger database.

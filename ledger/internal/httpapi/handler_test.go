@@ -2,6 +2,7 @@ package httpapi_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,21 +17,26 @@ import (
 	"yanmifeakeju.com/ledger/internal/api"
 	"yanmifeakeju.com/ledger/internal/httpapi"
 	"yanmifeakeju.com/ledger/internal/journal"
+	"yanmifeakeju.com/ledger/internal/statement"
 )
 
 type fakeService struct {
-	input      account.CreatePayableInput
-	result     account.CreateResult
-	err        error
-	calls      int
-	postInput  journal.PostInput
-	postResult journal.PostResult
-	postErr    error
-	postCalls  int
-	getInput   account.GetPayableInput
-	getResult  account.Payable
-	getErr     error
-	getCalls   int
+	input           account.CreatePayableInput
+	result          account.CreateResult
+	err             error
+	calls           int
+	postInput       journal.PostInput
+	postResult      journal.PostResult
+	postErr         error
+	postCalls       int
+	getInput        account.GetPayableInput
+	getResult       account.Payable
+	getErr          error
+	getCalls        int
+	statementInput  statement.ListInput
+	statementResult statement.Result
+	statementErr    error
+	statementCalls  int
 }
 
 func (f *fakeService) CreatePayableAccount(
@@ -58,6 +64,15 @@ func (f *fakeService) PostEntry(
 	f.postInput = input
 	f.postCalls++
 	return f.postResult, f.postErr
+}
+
+func (f *fakeService) GetStatement(
+	_ context.Context,
+	input statement.ListInput,
+) (statement.Result, error) {
+	f.statementInput = input
+	f.statementCalls++
+	return f.statementResult, f.statementErr
 }
 
 func TestRoutes(t *testing.T) {
@@ -963,6 +978,344 @@ func TestGetAccountValidation(t *testing.T) {
 			}
 			if detail := got.Error.Details[0]; detail != tt.wantDetail {
 				t.Errorf("detail = %+v, want %+v", detail, tt.wantDetail)
+			}
+		})
+	}
+}
+
+func TestGetAccountStatement_HappyPath(t *testing.T) {
+	recordedAt := time.Date(2026, time.September, 10, 9, 15, 0, 0, time.UTC)
+	from := time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC)
+	desc := "Payment received"
+
+	svc := &fakeService{
+		statementResult: statement.Result{
+			Account: statement.Account{
+				Reference:       "acct_01M20H8704F1FDM1CFWSZDVJPV",
+				HolderReference: "hld_01M20H7XK4A9Q2TZ8VG6BFP31R",
+				Name:            "Acme Ltd",
+			},
+			Period: statement.Period{
+				From: from,
+				To:   to,
+			},
+			OpeningBalance: 0,
+			ClosingBalance: 9600,
+			Movements: []statement.Movement{
+				{
+					JournalReference: "jrn_01M20J1QD2XB8K7G4N9CVF6T3A",
+					LineNumber:       1,
+					Kind:             journal.KindPayment,
+					Direction:        statement.DirectionCredit,
+					Amount:           9800,
+					BalanceAfter:     9800,
+					Description:      &desc,
+					RecordedAt:       recordedAt,
+				},
+				{
+					JournalReference: "jrn_01M20J1QD2XB8K7G4N9CVF6T3A",
+					LineNumber:       2,
+					Kind:             journal.KindPayment,
+					Direction:        statement.DirectionDebit,
+					Amount:           200,
+					BalanceAfter:     9600,
+					Description:      &desc,
+					RecordedAt:       recordedAt,
+				},
+			},
+			Page: statement.Page{
+				Limit: 50,
+				Next: &statement.Cursor{
+					Navigation: statement.NavigationNext,
+					Position: statement.Position{
+						RecordedAt:       recordedAt,
+						JournalReference: "jrn_01M20J1QD2XB8K7G4N9CVF6T3A",
+						LineNumber:       2,
+					},
+				},
+			},
+		},
+	}
+
+	handler, err := httpapi.NewHandler(svc)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	target := "/ledgers/ngn_ng/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?from=2026-09-01T00:00:00Z&to=2026-10-01T00:00:00Z&limit=50"
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if svc.statementCalls != 1 {
+		t.Fatalf("GetStatement calls = %d, want 1", svc.statementCalls)
+	}
+
+	var got api.GetAccountStatementResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if got.Account.Reference != "acct_01M20H8704F1FDM1CFWSZDVJPV" {
+		t.Errorf("Account.Reference = %q, want acct_01M20H8704F1FDM1CFWSZDVJPV", got.Account.Reference)
+	}
+	if got.OpeningBalance != 0 || got.ClosingBalance != 9600 {
+		t.Errorf("balances = (%d, %d), want (0, 9600)", got.OpeningBalance, got.ClosingBalance)
+	}
+	if len(got.Entries) != 2 {
+		t.Fatalf("len(Entries) = %d, want 2", len(got.Entries))
+	}
+	if got.Page.PreviousCursor != nil {
+		t.Errorf("Page.PreviousCursor = %v, want nil", got.Page.PreviousCursor)
+	}
+	if got.Page.NextCursor == nil || *got.Page.NextCursor == "" {
+		t.Errorf("Page.NextCursor = %v, want non-empty token", got.Page.NextCursor)
+	}
+}
+
+func TestGetAccountStatement_WithCursor(t *testing.T) {
+	recordedAt := time.Date(2026, time.September, 10, 9, 15, 0, 0, time.UTC)
+	from := time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC)
+
+	cursor := &statement.Cursor{
+		Navigation: statement.NavigationNext,
+		Position: statement.Position{
+			RecordedAt:       recordedAt,
+			JournalReference: "jrn_01M20J1QD2XB8K7G4N9CVF6T3A",
+			LineNumber:       2,
+		},
+	}
+	token, err := statement.EncodeCursor(cursor, statement.Period{From: from, To: to})
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+
+	t.Run("with explicit limit query param", func(t *testing.T) {
+		limit := 25
+		svc := &fakeService{
+			statementResult: statement.Result{
+				Account: statement.Account{
+					Reference:       "acct_01M20H8704F1FDM1CFWSZDVJPV",
+					HolderReference: "hld_01M20H7XK4A9Q2TZ8VG6BFP31R",
+					Name:            "Acme Ltd",
+				},
+				Period: statement.Period{From: from, To: to},
+				Page:   statement.Page{Limit: limit},
+			},
+		}
+
+		handler, err := httpapi.NewHandler(svc)
+		if err != nil {
+			t.Fatalf("NewHandler: %v", err)
+		}
+
+		target := "/ledgers/ngn_ng/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?cursor=" + *token + "&limit=25"
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		rec := httptest.NewRecorder()
+
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if svc.statementInput.Cursor == nil {
+			t.Fatal("svc.statementInput.Cursor is nil, want decoded cursor")
+		}
+		if svc.statementInput.Cursor.Navigation != statement.NavigationNext {
+			t.Errorf("Navigation = %q, want next", svc.statementInput.Cursor.Navigation)
+		}
+		if svc.statementInput.Cursor.Position.JournalReference != "jrn_01M20J1QD2XB8K7G4N9CVF6T3A" {
+			t.Errorf("JournalReference = %q, want jrn_01M20J1QD2XB8K7G4N9CVF6T3A", svc.statementInput.Cursor.Position.JournalReference)
+		}
+		if svc.statementInput.Limit != limit {
+			t.Errorf("Limit = %d, want %d", svc.statementInput.Limit, limit)
+		}
+		if !svc.statementInput.From.Equal(from) || !svc.statementInput.To.Equal(to) {
+			t.Errorf("period = (%v, %v), want (%v, %v)", svc.statementInput.From, svc.statementInput.To, from, to)
+		}
+	})
+
+	t.Run("defaults limit to 50 when omitted", func(t *testing.T) {
+		svc := &fakeService{
+			statementResult: statement.Result{
+				Account: statement.Account{
+					Reference:       "acct_01M20H8704F1FDM1CFWSZDVJPV",
+					HolderReference: "hld_01M20H7XK4A9Q2TZ8VG6BFP31R",
+					Name:            "Acme Ltd",
+				},
+				Period: statement.Period{From: from, To: to},
+				Page:   statement.Page{Limit: 50},
+			},
+		}
+
+		handler, err := httpapi.NewHandler(svc)
+		if err != nil {
+			t.Fatalf("NewHandler: %v", err)
+		}
+
+		target := "/ledgers/ngn_ng/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?cursor=" + *token
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		rec := httptest.NewRecorder()
+
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if svc.statementInput.Limit != 50 {
+			t.Errorf("Limit = %d, want 50", svc.statementInput.Limit)
+		}
+	})
+}
+
+func TestGetAccountStatement_ValidationErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		target     string
+		wantField  string
+		wantMsgSub string
+	}{
+		{
+			name:       "invalid cursor",
+			target:     "/ledgers/ngn_ng/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?cursor=bad-token",
+			wantField:  "cursor",
+			wantMsgSub: "invalid pagination cursor",
+		},
+		{
+			name:       "from after to",
+			target:     "/ledgers/ngn_ng/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?from=2026-10-01T00:00:00Z&to=2026-09-01T00:00:00Z",
+			wantField:  "from",
+			wantMsgSub: "from must be before to",
+		},
+		{
+			name:       "period exceeds 90 days",
+			target:     "/ledgers/ngn_ng/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?from=2026-01-01T00:00:00Z&to=2026-06-01T00:00:00Z",
+			wantField:  "from",
+			wantMsgSub: "statement period must not exceed 90 days",
+		},
+		{
+			name: "cursor exceeds 90-day limit",
+			target: func() string {
+				c := &statement.Cursor{
+					Navigation: statement.NavigationNext,
+					Position: statement.Position{
+						RecordedAt:       time.Date(2026, time.September, 10, 9, 15, 0, 0, time.UTC),
+						JournalReference: "jrn_01M20J1QD2XB8K7G4N9CVF6T3A",
+						LineNumber:       1,
+					},
+				}
+				tok, _ := statement.EncodeCursor(c, statement.Period{
+					From: time.Date(1970, time.January, 1, 0, 0, 0, 0, time.UTC),
+					To:   time.Date(2100, time.January, 1, 0, 0, 0, 0, time.UTC),
+				})
+				return "/ledgers/ngn_ng/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?cursor=" + *tok
+			}(),
+			wantField:  "cursor",
+			wantMsgSub: "invalid pagination cursor",
+		},
+		{
+			name: "cursor line number exceeds max int16",
+			target: func() string {
+				tok := base64.RawURLEncoding.EncodeToString([]byte(`{"nav":"next","rec":"2026-09-10T09:15:00Z","jref":"jrn_01M20J1QD2XB8K7G4N9CVF6T3A","ln":40000,"from":"2026-09-01T00:00:00Z","to":"2026-09-15T00:00:00Z"}`))
+				return "/ledgers/ngn_ng/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?cursor=" + tok
+			}(),
+			wantField:  "cursor",
+			wantMsgSub: "invalid pagination cursor",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &fakeService{}
+			handler, err := httpapi.NewHandler(svc)
+			if err != nil {
+				t.Fatalf("NewHandler: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, tt.target, nil)
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+
+			var got api.ValidationErrorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode validation response: %v", err)
+			}
+			if len(got.Error.Details) != 1 {
+				t.Fatalf("details = %+v, want one detail", got.Error.Details)
+			}
+			detail := got.Error.Details[0]
+			if detail.Field != tt.wantField {
+				t.Errorf("detail.Field = %q, want %q", detail.Field, tt.wantField)
+			}
+			if !strings.Contains(detail.Message, tt.wantMsgSub) {
+				t.Errorf("detail.Message = %q, want to contain %q", detail.Message, tt.wantMsgSub)
+			}
+		})
+	}
+}
+
+func TestGetAccountStatement_ServiceErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   api.ErrorCode
+	}{
+		{
+			name:       "ledger not found",
+			err:        account.ErrLedgerNotFound,
+			wantStatus: http.StatusNotFound,
+			wantCode:   api.LedgerNotFound,
+		},
+		{
+			name:       "account not found",
+			err:        account.ErrAccountNotFound,
+			wantStatus: http.StatusNotFound,
+			wantCode:   api.AccountNotFound,
+		},
+		{
+			name:       "unexpected internal error",
+			err:        errors.New("database connection failed"),
+			wantStatus: http.StatusInternalServerError,
+			wantCode:   api.InternalServerError,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &fakeService{statementErr: tt.err}
+			handler, err := httpapi.NewHandler(svc)
+			if err != nil {
+				t.Fatalf("NewHandler: %v", err)
+			}
+
+			target := "/ledgers/ngn_ng/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement"
+			req := httptest.NewRequest(http.MethodGet, target, nil)
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+
+			var got api.ErrorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode error response: %v", err)
+			}
+			if got.Error.Code != tt.wantCode {
+				t.Errorf("code = %q, want %q", got.Error.Code, tt.wantCode)
 			}
 		})
 	}
