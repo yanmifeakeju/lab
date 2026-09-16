@@ -7,6 +7,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/oklog/ulid/v2"
 
 	"yanmifeakeju.com/ledger/internal/account"
 	"yanmifeakeju.com/ledger/internal/postgres"
@@ -46,8 +49,8 @@ func TestStore_CreatePayableAccount(t *testing.T) {
 	if got.HolderName != "Acme Ltd" {
 		t.Errorf("CreatePayableAccount() Account.HolderName = %q, want %q", got.HolderName, "Acme Ltd")
 	}
-	if got.IsClosed {
-		t.Error("CreatePayableAccount() Account.IsClosed = true, want false")
+	if got.ClosedAt != nil {
+		t.Errorf("CreatePayableAccount() Account.ClosedAt = %v, want nil", got.ClosedAt)
 	}
 	if got.CreatedAt.IsZero() {
 		t.Error("CreatePayableAccount() Account.CreatedAt is zero, want database timestamp")
@@ -274,8 +277,8 @@ func TestStore_GetPayableAccount(t *testing.T) {
 		if got.HolderName != created.Account.HolderName {
 			t.Errorf("GetPayableAccount() HolderName = %q, want %q", got.HolderName, created.Account.HolderName)
 		}
-		if got.IsClosed {
-			t.Error("GetPayableAccount() IsClosed = true, want false")
+		if got.ClosedAt != nil {
+			t.Errorf("GetPayableAccount() ClosedAt = %v, want nil", got.ClosedAt)
 		}
 		if !got.CreatedAt.Equal(created.Account.CreatedAt) {
 			t.Errorf("GetPayableAccount() CreatedAt = %v, want %v", got.CreatedAt, created.Account.CreatedAt)
@@ -341,7 +344,7 @@ func TestStore_GetPayableAccount(t *testing.T) {
 	})
 
 	t.Run("internal cash account reference returns account not found", func(t *testing.T) {
-		cash := seedPlatformAccount(t, tx, ledgerID, account.KindCash)
+		cash := seedPlatformAccount(t, tx, ledgerID, "cash")
 
 		_, err := store.GetPayableAccount(t.Context(), account.GetPayableInput{
 			Reference: cash.Reference,
@@ -352,7 +355,7 @@ func TestStore_GetPayableAccount(t *testing.T) {
 	})
 
 	t.Run("internal fee revenue account reference returns account not found", func(t *testing.T) {
-		feeRevenue := seedPlatformAccount(t, tx, ledgerID, account.KindFeeRevenue)
+		feeRevenue := seedPlatformAccount(t, tx, ledgerID, "fee_revenue")
 
 		_, err := store.GetPayableAccount(t.Context(), account.GetPayableInput{
 			Reference: feeRevenue.Reference,
@@ -395,7 +398,7 @@ func TestStore_GetPayableAccount(t *testing.T) {
 
 		if _, err := tx.ExecContext(
 			t.Context(),
-			`UPDATE accounts SET is_closed = true WHERE public_ref = $1`,
+			`UPDATE accounts SET closed_at = clock_timestamp() WHERE public_ref = $1`,
 			closed.Account.Reference,
 		); err != nil {
 			t.Fatalf("close account: %v", err)
@@ -407,8 +410,520 @@ func TestStore_GetPayableAccount(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetPayableAccount() error = %v", err)
 		}
-		if !got.IsClosed {
-			t.Error("GetPayableAccount() IsClosed = false, want true")
+		if got.ClosedAt == nil {
+			t.Error("GetPayableAccount() ClosedAt = nil, want timestamp")
+		}
+	})
+}
+
+func TestAccountModel_RecordsMovements(t *testing.T) {
+	ctx := t.Context()
+
+	t.Run("create_payable_account sets records_movements to true", func(t *testing.T) {
+		tx := newTestTx(t)
+		seedLedger(t, tx, "ngn_ng", "NGN")
+		store := postgres.New(tx)
+
+		res, err := store.CreatePayableAccount(ctx, account.CreatePayableInput{
+			LedgerSlug: "ngn_ng",
+			ExternalID: "merchant_rm_test",
+			Name:       "RM Merchant Ltd",
+		})
+		if err != nil {
+			t.Fatalf("create payable account: %v", err)
+		}
+
+		var recordsMovements bool
+		if err := tx.QueryRowContext(
+			ctx,
+			`SELECT records_movements FROM accounts WHERE public_ref = $1`,
+			res.Account.Reference,
+		).Scan(&recordsMovements); err != nil {
+			t.Fatalf("query records_movements: %v", err)
+		}
+		if !recordsMovements {
+			t.Error("payable account records_movements = false, want true")
+		}
+	})
+
+	t.Run("payable account cannot be created with records_movements = false", func(t *testing.T) {
+		tx := newTestTx(t)
+		ledgerID := seedLedger(t, tx, "ngn_ng", "NGN")
+
+		holderRef := "hld_" + ulid.Make().String()
+		accountRef := "acct_" + ulid.Make().String()
+
+		var holderID int64
+		if err := tx.QueryRowContext(
+			ctx,
+			`INSERT INTO holders (public_ref, external_id, name) VALUES ($1, $2, $3) RETURNING id`,
+			holderRef, "holder_rm_false", "Holder RM False",
+		).Scan(&holderID); err != nil {
+			t.Fatalf("insert holder: %v", err)
+		}
+
+		_, err := tx.ExecContext(
+			ctx,
+			`INSERT INTO accounts (public_ref, ledger_id, kind, holder_id, records_movements)
+			 VALUES ($1, $2, 'payable', $3, false)`,
+			accountRef, ledgerID, holderID,
+		)
+		if err == nil {
+			t.Fatal("insert payable account with records_movements = false succeeded, want check constraint violation")
+		}
+	})
+
+	t.Run("updating payable records_movements to false is rejected", func(t *testing.T) {
+		tx := newTestTx(t)
+		seedLedger(t, tx, "ngn_ng", "NGN")
+		store := postgres.New(tx)
+
+		res, err := store.CreatePayableAccount(ctx, account.CreatePayableInput{
+			LedgerSlug: "ngn_ng",
+			ExternalID: "merchant_rm_upd",
+			Name:       "Upd Merchant Ltd",
+		})
+		if err != nil {
+			t.Fatalf("create payable account: %v", err)
+		}
+
+		_, err = tx.ExecContext(
+			ctx,
+			`UPDATE accounts SET records_movements = false WHERE public_ref = $1`,
+			res.Account.Reference,
+		)
+		if err == nil {
+			t.Fatal("updating payable records_movements to false succeeded, want trigger error")
+		}
+	})
+
+	t.Run("updating platform records_movements from false to true is rejected", func(t *testing.T) {
+		tx := newTestTx(t)
+		ledgerID := seedLedger(t, tx, "ngn_ng", "NGN")
+
+		platRef := "acct_" + ulid.Make().String()
+		if _, err := tx.ExecContext(
+			ctx,
+			`INSERT INTO accounts (public_ref, ledger_id, kind, label, records_movements)
+			 VALUES ($1, $2, 'platform', 'cash', false)`,
+			platRef, ledgerID,
+		); err != nil {
+			t.Fatalf("insert platform account: %v", err)
+		}
+
+		_, err := tx.ExecContext(
+			ctx,
+			`UPDATE accounts SET records_movements = true WHERE public_ref = $1`,
+			platRef,
+		)
+		if err == nil {
+			t.Fatal("updating platform records_movements from false to true succeeded, want trigger error")
+		}
+	})
+
+	t.Run("updating platform records_movements from true to false is rejected", func(t *testing.T) {
+		tx := newTestTx(t)
+		ledgerID := seedLedger(t, tx, "ngn_ng", "NGN")
+
+		platRef := "acct_" + ulid.Make().String()
+		if _, err := tx.ExecContext(
+			ctx,
+			`INSERT INTO accounts (public_ref, ledger_id, kind, label, records_movements)
+			 VALUES ($1, $2, 'platform', 'fee_revenue', true)`,
+			platRef, ledgerID,
+		); err != nil {
+			t.Fatalf("insert platform account with rm=true: %v", err)
+		}
+
+		_, err := tx.ExecContext(
+			ctx,
+			`UPDATE accounts SET records_movements = false WHERE public_ref = $1`,
+			platRef,
+		)
+		if err == nil {
+			t.Fatal("updating platform records_movements from true to false succeeded, want trigger error")
+		}
+	})
+}
+
+func TestAccountModel_ClosedAtTransitions(t *testing.T) {
+	ctx := t.Context()
+
+	t.Run("future closed_at can be scheduled, moved, or cleared", func(t *testing.T) {
+		tx := newTestTx(t)
+		seedLedger(t, tx, "ngn_ng", "NGN")
+		store := postgres.New(tx)
+
+		res, err := store.CreatePayableAccount(ctx, account.CreatePayableInput{
+			LedgerSlug: "ngn_ng",
+			ExternalID: "merchant_closed_at_sched",
+			Name:       "Closed At Merchant Ltd",
+		})
+		if err != nil {
+			t.Fatalf("create payable account: %v", err)
+		}
+		ref := res.Account.Reference
+
+		// Schedule close in 1 hour
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE accounts SET closed_at = clock_timestamp() + interval '1 hour' WHERE public_ref = $1`,
+			ref,
+		); err != nil {
+			t.Fatalf("schedule future closed_at: %v", err)
+		}
+
+		// Move future close to 2 hours
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE accounts SET closed_at = clock_timestamp() + interval '2 hours' WHERE public_ref = $1`,
+			ref,
+		); err != nil {
+			t.Fatalf("move future closed_at: %v", err)
+		}
+
+		// Clear future close
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE accounts SET closed_at = NULL WHERE public_ref = $1`,
+			ref,
+		); err != nil {
+			t.Fatalf("clear future closed_at: %v", err)
+		}
+	})
+
+	t.Run("updating other columns on reached closed account succeeds", func(t *testing.T) {
+		tx := newTestTx(t)
+		seedLedger(t, tx, "ngn_ng", "NGN")
+		store := postgres.New(tx)
+
+		res, err := store.CreatePayableAccount(ctx, account.CreatePayableInput{
+			LedgerSlug: "ngn_ng",
+			ExternalID: "merchant_closed_at_reached",
+			Name:       "Closed At Merchant Ltd",
+		})
+		if err != nil {
+			t.Fatalf("create payable account: %v", err)
+		}
+		ref := res.Account.Reference
+
+		// Close account now
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE accounts SET closed_at = clock_timestamp() WHERE public_ref = $1`,
+			ref,
+		); err != nil {
+			t.Fatalf("set reached closed_at: %v", err)
+		}
+
+		// Updating other columns on a reached-closed account is still allowed
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE accounts SET description = 'closed account desc' WHERE public_ref = $1`,
+			ref,
+		); err != nil {
+			t.Fatalf("updating description on reached closed account failed: %v", err)
+		}
+	})
+
+	t.Run("clearing reached closed_at fails", func(t *testing.T) {
+		tx := newTestTx(t)
+		seedLedger(t, tx, "ngn_ng", "NGN")
+		store := postgres.New(tx)
+		res, err := store.CreatePayableAccount(ctx, account.CreatePayableInput{
+			LedgerSlug: "ngn_ng",
+			ExternalID: "merchant_clear_fail",
+			Name:       "Clear Fail Ltd",
+		})
+		if err != nil {
+			t.Fatalf("create payable account: %v", err)
+		}
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE accounts SET closed_at = clock_timestamp() WHERE public_ref = $1`,
+			res.Account.Reference,
+		); err != nil {
+			t.Fatalf("set reached closed_at: %v", err)
+		}
+
+		_, err = tx.ExecContext(
+			ctx,
+			`UPDATE accounts SET closed_at = NULL WHERE public_ref = $1`,
+			res.Account.Reference,
+		)
+		if err == nil {
+			t.Fatal("clearing reached closed_at succeeded, want trigger error")
+		}
+	})
+
+	t.Run("moving reached closed_at fails", func(t *testing.T) {
+		tx := newTestTx(t)
+		seedLedger(t, tx, "ngn_ng", "NGN")
+		store := postgres.New(tx)
+		res, err := store.CreatePayableAccount(ctx, account.CreatePayableInput{
+			LedgerSlug: "ngn_ng",
+			ExternalID: "merchant_move_fail",
+			Name:       "Move Fail Ltd",
+		})
+		if err != nil {
+			t.Fatalf("create payable account: %v", err)
+		}
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE accounts SET closed_at = clock_timestamp() WHERE public_ref = $1`,
+			res.Account.Reference,
+		); err != nil {
+			t.Fatalf("set reached closed_at: %v", err)
+		}
+
+		_, err = tx.ExecContext(
+			ctx,
+			`UPDATE accounts SET closed_at = clock_timestamp() + interval '1 hour' WHERE public_ref = $1`,
+			res.Account.Reference,
+		)
+		if err == nil {
+			t.Fatal("moving reached closed_at to future succeeded, want trigger error")
+		}
+	})
+
+	t.Run("setting closed_at to a past time rounds up to current time on update", func(t *testing.T) {
+		tx := newTestTx(t)
+		seedLedger(t, tx, "ngn_ng", "NGN")
+		store := postgres.New(tx)
+
+		res, err := store.CreatePayableAccount(ctx, account.CreatePayableInput{
+			LedgerSlug: "ngn_ng",
+			ExternalID: "merchant_past_round",
+			Name:       "Past Round Ltd",
+		})
+		if err != nil {
+			t.Fatalf("create payable account: %v", err)
+		}
+		ref := res.Account.Reference
+
+		var dbNow time.Time
+		if err := tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&dbNow); err != nil {
+			t.Fatalf("query clock_timestamp: %v", err)
+		}
+
+		// Set closed_at to 1 hour in the past
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE accounts SET closed_at = clock_timestamp() - interval '1 hour' WHERE public_ref = $1`,
+			ref,
+		); err != nil {
+			t.Fatalf("update past closed_at: %v", err)
+		}
+
+		var closedAt time.Time
+		if err := tx.QueryRowContext(
+			ctx,
+			`SELECT closed_at FROM accounts WHERE public_ref = $1`,
+			ref,
+		).Scan(&closedAt); err != nil {
+			t.Fatalf("query closed_at: %v", err)
+		}
+
+		if closedAt.Before(dbNow) {
+			t.Errorf("closed_at = %v was not rounded up to current time (dbNow = %v)", closedAt, dbNow)
+		}
+	})
+
+	t.Run("pulling scheduled future closed_at into past rounds up to current time", func(t *testing.T) {
+		tx := newTestTx(t)
+		seedLedger(t, tx, "ngn_ng", "NGN")
+		store := postgres.New(tx)
+
+		res, err := store.CreatePayableAccount(ctx, account.CreatePayableInput{
+			LedgerSlug: "ngn_ng",
+			ExternalID: "merchant_pull_future_past",
+			Name:       "Pull Future Past Ltd",
+		})
+		if err != nil {
+			t.Fatalf("create payable account: %v", err)
+		}
+		ref := res.Account.Reference
+
+		// Schedule close in 2 hours
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE accounts SET closed_at = clock_timestamp() + interval '2 hours' WHERE public_ref = $1`,
+			ref,
+		); err != nil {
+			t.Fatalf("schedule future closed_at: %v", err)
+		}
+
+		var dbNow time.Time
+		if err := tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&dbNow); err != nil {
+			t.Fatalf("query clock_timestamp: %v", err)
+		}
+
+		// Pull scheduled close into the past
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE accounts SET closed_at = clock_timestamp() - interval '1 hour' WHERE public_ref = $1`,
+			ref,
+		); err != nil {
+			t.Fatalf("pull future closed_at to past: %v", err)
+		}
+
+		var closedAt time.Time
+		if err := tx.QueryRowContext(
+			ctx,
+			`SELECT closed_at FROM accounts WHERE public_ref = $1`,
+			ref,
+		).Scan(&closedAt); err != nil {
+			t.Fatalf("query closed_at: %v", err)
+		}
+
+		if closedAt.Before(dbNow) {
+			t.Errorf("closed_at = %v was not rounded up to current time (dbNow = %v)", closedAt, dbNow)
+		}
+	})
+
+	t.Run("inserting account with past closed_at rounds up to current time", func(t *testing.T) {
+		tx := newTestTx(t)
+		ledgerID := seedLedger(t, tx, "ngn_ng", "NGN")
+		ref := "acct_" + ulid.Make().String()
+
+		var dbNow time.Time
+		if err := tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&dbNow); err != nil {
+			t.Fatalf("query clock_timestamp: %v", err)
+		}
+
+		if _, err := tx.ExecContext(
+			ctx,
+			`INSERT INTO accounts (public_ref, ledger_id, kind, label, closed_at)
+			 VALUES ($1, $2, 'platform', 'cash', clock_timestamp() - interval '2 days')`,
+			ref, ledgerID,
+		); err != nil {
+			t.Fatalf("insert platform account with past closed_at: %v", err)
+		}
+
+		var closedAt time.Time
+		if err := tx.QueryRowContext(
+			ctx,
+			`SELECT closed_at FROM accounts WHERE public_ref = $1`,
+			ref,
+		).Scan(&closedAt); err != nil {
+			t.Fatalf("query closed_at: %v", err)
+		}
+
+		if closedAt.Before(dbNow) {
+			t.Errorf("closed_at = %v was not rounded up to current time (dbNow = %v)", closedAt, dbNow)
+		}
+	})
+}
+
+func TestAccountModel_PlatformAccountsAndLabels(t *testing.T) {
+	ctx := t.Context()
+
+	t.Run("multiple platform accounts with same label in same ledger succeed", func(t *testing.T) {
+		tx := newTestTx(t)
+		ledgerID := seedLedger(t, tx, "ngn_ng", "NGN")
+
+		ref1 := "acct_" + ulid.Make().String()
+		ref2 := "acct_" + ulid.Make().String()
+
+		if _, err := tx.ExecContext(
+			ctx,
+			`INSERT INTO accounts (public_ref, ledger_id, kind, label) VALUES ($1, $2, 'platform', 'cash')`,
+			ref1, ledgerID,
+		); err != nil {
+			t.Fatalf("insert first platform account: %v", err)
+		}
+
+		if _, err := tx.ExecContext(
+			ctx,
+			`INSERT INTO accounts (public_ref, ledger_id, kind, label) VALUES ($1, $2, 'platform', 'cash')`,
+			ref2, ledgerID,
+		); err != nil {
+			t.Fatalf("insert second platform account with same label: %v", err)
+		}
+	})
+
+	t.Run("platform account requires label", func(t *testing.T) {
+		tx := newTestTx(t)
+		ledgerID := seedLedger(t, tx, "ngn_ng", "NGN")
+
+		ref := "acct_" + ulid.Make().String()
+		_, err := tx.ExecContext(
+			ctx,
+			`INSERT INTO accounts (public_ref, ledger_id, kind, label) VALUES ($1, $2, 'platform', NULL)`,
+			ref, ledgerID,
+		)
+		if err == nil {
+			t.Fatal("insert platform account with NULL label succeeded, want check constraint violation")
+		}
+	})
+
+	t.Run("platform account label cannot be blank or exceed 64 characters", func(t *testing.T) {
+		tx1 := newTestTx(t)
+		ledgerID1 := seedLedger(t, tx1, "ngn_ng", "NGN")
+
+		ref1 := "acct_" + ulid.Make().String()
+		_, err := tx1.ExecContext(
+			ctx,
+			`INSERT INTO accounts (public_ref, ledger_id, kind, label) VALUES ($1, $2, 'platform', '   ')`,
+			ref1, ledgerID1,
+		)
+		if err == nil {
+			t.Fatal("insert platform account with blank label succeeded, want check constraint violation")
+		}
+
+		tx2 := newTestTx(t)
+		ledgerID2 := seedLedger(t, tx2, "ngn_ng", "NGN")
+		ref2 := "acct_" + ulid.Make().String()
+		longLabel := strings.Repeat("a", 65)
+		_, err = tx2.ExecContext(
+			ctx,
+			`INSERT INTO accounts (public_ref, ledger_id, kind, label) VALUES ($1, $2, 'platform', $3)`,
+			ref2, ledgerID2, longLabel,
+		)
+		if err == nil {
+			t.Fatal("insert platform account with > 64 char label succeeded, want check constraint violation")
+		}
+	})
+
+	t.Run("payable account cannot have a label", func(t *testing.T) {
+		tx := newTestTx(t)
+		ledgerID := seedLedger(t, tx, "ngn_ng", "NGN")
+
+		holderRef := "hld_" + ulid.Make().String()
+		accountRef := "acct_" + ulid.Make().String()
+
+		var holderID int64
+		if err := tx.QueryRowContext(
+			ctx,
+			`INSERT INTO holders (public_ref, external_id, name) VALUES ($1, $2, $3) RETURNING id`,
+			holderRef, "holder_label_test", "Holder Label Test",
+		).Scan(&holderID); err != nil {
+			t.Fatalf("insert holder: %v", err)
+		}
+
+		_, err := tx.ExecContext(
+			ctx,
+			`INSERT INTO accounts (public_ref, ledger_id, kind, holder_id, label, records_movements)
+			 VALUES ($1, $2, 'payable', $3, 'some_label', true)`,
+			accountRef, ledgerID, holderID,
+		)
+		if err == nil {
+			t.Fatal("insert payable account with label succeeded, want check constraint violation")
+		}
+	})
+
+	t.Run("invalid account kind is rejected", func(t *testing.T) {
+		tx := newTestTx(t)
+		ledgerID := seedLedger(t, tx, "ngn_ng", "NGN")
+
+		ref := "acct_" + ulid.Make().String()
+		_, err := tx.ExecContext(
+			ctx,
+			`INSERT INTO accounts (public_ref, ledger_id, kind) VALUES ($1, $2, 'cash')`,
+			ref, ledgerID,
+		)
+		if err == nil {
+			t.Fatal("insert account with old kind 'cash' succeeded, want check constraint violation")
 		}
 	})
 }

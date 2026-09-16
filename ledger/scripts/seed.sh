@@ -144,19 +144,20 @@ psql "$DATABASE_URL" \
 	-v ledger_id="$ledger_id" \
 	-v slug="$ledger_slug" \
 	<<'SQL'
-	WITH platform_accounts(kind, description) AS (
+	WITH platform_accounts(label, description) AS (
 		VALUES
 			('cash', 'Platform cash account'),
 			('fee_revenue', 'Platform fee revenue account')
 	)
-	INSERT INTO accounts (public_ref, ledger_id, kind, description)
+	INSERT INTO accounts (public_ref, ledger_id, kind, label, description)
 	SELECT
-		'acct_0' || upper(substr(md5(:'slug' || ':' || kind), 1, 25)),
+		'acct_0' || upper(substr(md5(:'slug' || ':' || label), 1, 25)),
 		:'ledger_id'::integer,
-		kind,
+		'platform',
+		label,
 		description
 	FROM platform_accounts
-	ON CONFLICT (ledger_id, kind) WHERE holder_id IS NULL
+	ON CONFLICT (public_ref)
 	DO NOTHING;
 SQL
 
@@ -168,12 +169,12 @@ psql "$DATABASE_URL" \
 	-F ' ' \
 	-v ledger_id="$ledger_id" \
 	<<'SQL' |
-	SELECT kind, public_ref
+	SELECT label, public_ref
 	FROM accounts
 	WHERE ledger_id = :'ledger_id'::integer
-		AND holder_id IS NULL
-	ORDER BY kind;
+		AND kind = 'platform'
+	ORDER BY label;
 SQL
-	while read -r kind reference; do
-		printf 'seeded platform account %s (%s)\n' "$kind" "$reference"
+	while read -r label reference; do
+		printf 'seeded platform account %s (%s)\n' "$label" "$reference"
 	done

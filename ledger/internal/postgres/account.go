@@ -20,8 +20,9 @@ func (s *Store) CreatePayableAccount(
 	input account.CreatePayableInput,
 ) (account.CreateResult, error) {
 	var (
-		a       account.Account
-		created bool
+		a        account.Account
+		closedAt sql.NullTime
+		created  bool
 	)
 	holderReference := "hld_" + ulid.Make().String()
 	accountReference := "acct_" + ulid.Make().String()
@@ -40,10 +41,13 @@ func (s *Store) CreatePayableAccount(
 		&a.HolderReference, &a.HolderName, &a.Description,
 		&a.DebitsPending, &a.CreditsPending, &a.DebitsPosted, &a.CreditsPosted,
 		&a.DebitsMustNotExceedCredits, &a.CreditsMustNotExceedDebits,
-		&a.IsClosed, &a.CreatedAt, &created,
+		&closedAt, &a.CreatedAt, &created,
 	)
 	if err != nil {
 		return account.CreateResult{}, mapCreatePayableAccountError(err)
+	}
+	if closedAt.Valid {
+		a.ClosedAt = &closedAt.Time
 	}
 	return account.CreateResult{
 		Account: payableFromAccount(a, input.LedgerSlug),
@@ -57,7 +61,7 @@ func payableFromAccount(a account.Account, ledgerSlug string) account.Payable {
 		HolderReference: a.HolderReference,
 		HolderName:      a.HolderName,
 		LedgerSlug:      ledgerSlug,
-		IsClosed:        a.IsClosed,
+		ClosedAt:        a.ClosedAt,
 		Balances: account.BalanceCounters{
 			DebitsPending:  a.DebitsPending,
 			CreditsPending: a.CreditsPending,
@@ -90,7 +94,7 @@ func (s *Store) GetPayableAccount(ctx context.Context, input account.GetPayableI
 		a.credits_pending,
 		a.debits_posted,
 		a.credits_posted,
-		a.is_closed,
+		a.closed_at,
 		a.created_at,
 		l.slug,
 		h.public_ref,
@@ -109,7 +113,7 @@ func (s *Store) GetPayableAccount(ctx context.Context, input account.GetPayableI
 		creditsPending int64
 		debitsPosted   int64
 		creditsPosted  int64
-		isClosed       bool
+		closedAt       sql.NullTime
 		createdAt      time.Time
 		ledgerSlug     string
 		holderRef      sql.NullString
@@ -122,7 +126,7 @@ func (s *Store) GetPayableAccount(ctx context.Context, input account.GetPayableI
 		&creditsPending,
 		&debitsPosted,
 		&creditsPosted,
-		&isClosed,
+		&closedAt,
 		&createdAt,
 		&ledgerSlug,
 		&holderRef,
@@ -135,12 +139,17 @@ func (s *Store) GetPayableAccount(ctx context.Context, input account.GetPayableI
 		return account.Payable{}, fmt.Errorf("get payable account: %w", err)
 	}
 
+	var pClosedAt *time.Time
+	if closedAt.Valid {
+		pClosedAt = &closedAt.Time
+	}
+
 	return account.Payable{
 		Reference:       accountRef,
 		HolderReference: holderRef.String,
 		HolderName:      holderName.String,
 		LedgerSlug:      ledgerSlug,
-		IsClosed:        isClosed,
+		ClosedAt:        pClosedAt,
 		Balances: account.BalanceCounters{
 			DebitsPending:  debitsPending,
 			CreditsPending: creditsPending,

@@ -11,10 +11,8 @@ type Kind string
 const (
 	// KindPayable identifies an account belonging to an external entity or merchant.
 	KindPayable Kind = "payable"
-	// KindCash identifies the internal platform cash account.
-	KindCash Kind = "cash"
-	// KindFeeRevenue identifies the internal platform fee revenue account.
-	KindFeeRevenue Kind = "fee_revenue"
+	// KindPlatform identifies an internal platform account.
+	KindPlatform Kind = "platform"
 )
 
 // Account represents a ledger account and its associated holder details.
@@ -26,6 +24,7 @@ type Account struct {
 	HolderID                   *int64
 	HolderReference            string
 	HolderName                 string
+	Label                      *string
 	Description                *string
 	DebitsPending              int64
 	CreditsPending             int64
@@ -33,7 +32,8 @@ type Account struct {
 	CreditsPosted              int64
 	DebitsMustNotExceedCredits bool
 	CreditsMustNotExceedDebits bool
-	IsClosed                   bool
+	RecordsMovements           bool
+	ClosedAt                   *time.Time
 	CreatedAt                  time.Time
 }
 
@@ -88,7 +88,7 @@ type Payable struct {
 	HolderReference string
 	HolderName      string
 	LedgerSlug      string
-	IsClosed        bool
+	ClosedAt        *time.Time
 	Balances        BalanceCounters
 	CreatedAt       time.Time
 }

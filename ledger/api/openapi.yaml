@@ -548,6 +548,7 @@ components:
         - name
         - kind
         - status
+        - closed_at
         - available
         - balances
         - created_at
@@ -571,6 +572,11 @@ components:
           $ref: "#/components/schemas/PayableAccountKind"
         status:
           $ref: "#/components/schemas/AccountStatus"
+        closed_at:
+          type: string
+          format: date-time
+          nullable: true
+          example: null
         available:
           $ref: "#/components/schemas/AvailableBalance"
         balances:
@@ -589,6 +595,7 @@ components:
         - kind
         - name
         - status
+        - closed_at
         - available
         - balances
         - created_at
@@ -607,6 +614,11 @@ components:
           example: Acme Ltd
         status:
           $ref: "#/components/schemas/AccountStatus"
+        closed_at:
+          type: string
+          format: date-time
+          nullable: true
+          example: null
         available:
           $ref: "#/components/schemas/AvailableBalance"
         balances:
@@ -621,6 +633,7 @@ components:
         kind: payable
         name: Acme Ltd
         status: active
+        closed_at: null
         available: 9800
         balances:
           debits_pending: 200

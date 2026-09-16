@@ -366,7 +366,7 @@ func TestStore_PostEntry_IdempotencyAcrossLedgers(t *testing.T) {
 	}
 
 	otherLedgerID := seedLedger(t, fixture.tx, "usd_ng", "USD")
-	otherCash := seedPlatformAccount(t, fixture.tx, otherLedgerID, account.KindCash)
+	otherCash := seedPlatformAccount(t, fixture.tx, otherLedgerID, "cash")
 	otherPayableResult, err := fixture.store.CreatePayableAccount(t.Context(), account.CreatePayableInput{
 		LedgerSlug: "usd_ng",
 		ExternalID: "merchant_usd",
@@ -621,7 +621,7 @@ func TestStore_PostEntry_RetryAfterClosure(t *testing.T) {
 
 				result, err := fixture.tx.ExecContext(
 					t.Context(),
-					`UPDATE accounts SET is_closed = true WHERE id = $1`,
+					`UPDATE accounts SET closed_at = clock_timestamp() WHERE id = $1`,
 					fixture.payable.ID,
 				)
 				if err != nil {
@@ -768,7 +768,7 @@ func TestStore_PostEntry_Errors(t *testing.T) {
 					t,
 					fixture.tx,
 					otherLedgerID,
-					account.KindCash,
+					"cash",
 				)
 				input.Lines[0].DebitAccountReference = otherCash.Reference
 			},
@@ -781,7 +781,7 @@ func TestStore_PostEntry_Errors(t *testing.T) {
 
 				if _, err := fixture.tx.ExecContext(
 					t.Context(),
-					`UPDATE accounts SET is_closed = true WHERE id = $1`,
+					`UPDATE accounts SET closed_at = clock_timestamp() WHERE id = $1`,
 					fixture.platform.Cash.ID,
 				); err != nil {
 					t.Fatalf("close debit account: %v", err)
@@ -796,13 +796,28 @@ func TestStore_PostEntry_Errors(t *testing.T) {
 
 				if _, err := fixture.tx.ExecContext(
 					t.Context(),
-					`UPDATE accounts SET is_closed = true WHERE id = $1`,
+					`UPDATE accounts SET closed_at = clock_timestamp() WHERE id = $1`,
 					fixture.payable.ID,
 				); err != nil {
 					t.Fatalf("close credit account: %v", err)
 				}
 			},
 			wantErr: journal.ErrAccountClosed,
+		},
+		{
+			name: "account with future closed_at succeeds",
+			arrange: func(t *testing.T, fixture postEntryFixture, _ *journal.PostInput) {
+				t.Helper()
+
+				if _, err := fixture.tx.ExecContext(
+					t.Context(),
+					`UPDATE accounts SET closed_at = clock_timestamp() + interval '1 hour' WHERE id = $1`,
+					fixture.payable.ID,
+				); err != nil {
+					t.Fatalf("set future closed_at: %v", err)
+				}
+			},
+			wantErr: nil,
 		},
 		{
 			name: "debit restriction exceeded",
@@ -880,6 +895,20 @@ func TestStore_PostEntry_InvalidInputRollsBack(t *testing.T) {
 				pi.Lines = []journal.LineInput{}
 			},
 			err: journal.ErrNoLines,
+		},
+		{
+			name: "account closed",
+			mutate: func(t *testing.T, fixture postEntryFixture, _ *journal.PostInput) {
+				t.Helper()
+				if _, err := fixture.tx.ExecContext(
+					t.Context(),
+					`UPDATE accounts SET closed_at = clock_timestamp() WHERE id = $1`,
+					fixture.payable.ID,
+				); err != nil {
+					t.Fatalf("close account: %v", err)
+				}
+			},
+			err: journal.ErrAccountClosed,
 		},
 		{
 			name: "self transfer",
@@ -1274,13 +1303,8 @@ func seedPlatformAccounts(t *testing.T, tx *sql.Tx, ledgerID int) platformAccoun
 	t.Helper()
 
 	return platformAccounts{
-		Cash: seedPlatformAccount(t, tx, ledgerID, account.KindCash),
-		FeeRevenue: seedPlatformAccount(
-			t,
-			tx,
-			ledgerID,
-			account.KindFeeRevenue,
-		),
+		Cash:       seedPlatformAccount(t, tx, ledgerID, "cash"),
+		FeeRevenue: seedPlatformAccount(t, tx, ledgerID, "fee_revenue"),
 	}
 }
 
@@ -1288,19 +1312,19 @@ func seedPlatformAccount(
 	t *testing.T,
 	tx *sql.Tx,
 	ledgerID int,
-	kind account.Kind,
+	label string,
 ) seededAccount {
 	t.Helper()
 
 	reference := "acct_" + ulid.Make().String()
 	const query = `
-		INSERT INTO accounts (public_ref, ledger_id, kind)
-		VALUES ($1, $2, $3)
+		INSERT INTO accounts (public_ref, ledger_id, kind, label)
+		VALUES ($1, $2, 'platform', $3)
 		RETURNING id`
 
 	var id int64
-	if err := tx.QueryRowContext(t.Context(), query, reference, ledgerID, kind).Scan(&id); err != nil {
-		t.Fatalf("seed %q account: %v", kind, err)
+	if err := tx.QueryRowContext(t.Context(), query, reference, ledgerID, label).Scan(&id); err != nil {
+		t.Fatalf("seed platform account %q: %v", label, err)
 	}
 
 	return seededAccount{ID: id, Reference: reference}

@@ -87,13 +87,13 @@ func TestBalanceCounters_Available(t *testing.T) {
 		defer func() {
 			r := recover()
 			if r == nil {
-				t.Fatal("BalanceCounters.Available(KindCash) did not panic")
+				t.Fatal("BalanceCounters.Available(KindPlatform) did not panic")
 			}
 		}()
 
 		b := account.BalanceCounters{
 			CreditsPosted: 1000,
 		}
-		_ = b.Available(account.KindCash)
+		_ = b.Available(account.KindPlatform)
 	})
 }

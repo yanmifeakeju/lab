@@ -126,7 +126,8 @@ func (s *server) CreatePayableAccount(
 		ExternalID:      input.ExternalID,
 		Name:            result.Account.HolderName,
 		Kind:            api.Payable,
-		Status:          payableAccountStatus(result.Account.IsClosed),
+		Status:          payableAccountStatus(result.Account.ClosedAt),
+		ClosedAt:        result.Account.ClosedAt,
 		Available:       int64(result.Account.Available()),
 		Balances: api.AccountBalances{
 			DebitsPending:  result.Account.Balances.DebitsPending,
@@ -162,7 +163,8 @@ func (s *server) GetAccount(
 		LedgerSlug:      result.LedgerSlug,
 		Kind:            api.Payable,
 		Name:            result.HolderName,
-		Status:          payableAccountStatus(result.IsClosed),
+		Status:          payableAccountStatus(result.ClosedAt),
+		ClosedAt:        result.ClosedAt,
 		Available:       int64(result.Available()),
 		Balances: api.AccountBalances{
 			DebitsPending:  result.Balances.DebitsPending,
@@ -176,8 +178,8 @@ func (s *server) GetAccount(
 	return api.GetAccount200JSONResponse(response), nil
 }
 
-func payableAccountStatus(closed bool) api.AccountStatus {
-	if closed {
+func payableAccountStatus(closedAt *time.Time) api.AccountStatus {
+	if closedAt != nil && !closedAt.After(time.Now()) {
 		return api.Closed
 	}
 	return api.Active

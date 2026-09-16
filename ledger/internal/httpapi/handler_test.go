@@ -347,7 +347,7 @@ func TestCreatePayableAccountResponses(t *testing.T) {
 					HolderReference: holderRef,
 					HolderName:      "Acme Ltd",
 					LedgerSlug:      wantInput.LedgerSlug,
-					IsClosed:        true,
+					ClosedAt:        &createdAt,
 					Balances: account.BalanceCounters{
 						DebitsPending:  200,
 						CreditsPending: 500,
@@ -459,11 +459,16 @@ func TestCreatePayableAccountResponses(t *testing.T) {
 					t.Errorf("kind = %q, want %q", got.Kind, api.Payable)
 				}
 				wantAccountStatus := api.Active
-				if tt.result.Account.IsClosed {
+				if tt.result.Account.ClosedAt != nil && !tt.result.Account.ClosedAt.After(time.Now()) {
 					wantAccountStatus = api.Closed
 				}
 				if got.Status != wantAccountStatus {
 					t.Errorf("status = %q, want %q", got.Status, wantAccountStatus)
+				}
+				if (got.ClosedAt == nil) != (tt.result.Account.ClosedAt == nil) {
+					t.Errorf("closed_at = %v, want %v", got.ClosedAt, tt.result.Account.ClosedAt)
+				} else if got.ClosedAt != nil && !got.ClosedAt.Equal(*tt.result.Account.ClosedAt) {
+					t.Errorf("closed_at = %v, want %v", got.ClosedAt, tt.result.Account.ClosedAt)
 				}
 				wantBalances := api.AccountBalances{
 					DebitsPending:  tt.result.Account.Balances.DebitsPending,
@@ -1207,6 +1212,7 @@ func TestGetAccount(t *testing.T) {
 		ledgerSlug = "ngn_ng"
 	)
 	createdAt := time.Date(2026, time.September, 8, 10, 30, 0, 0, time.UTC)
+	futureTime := time.Now().Add(24 * time.Hour).Truncate(time.Second)
 
 	tests := []struct {
 		name              string
@@ -1242,7 +1248,7 @@ func TestGetAccount(t *testing.T) {
 				HolderReference: "hld_01K33YVADP5Z8B0T3X2Q91C6RH",
 				HolderName:      "Acme Ltd",
 				LedgerSlug:      ledgerSlug,
-				IsClosed:        true,
+				ClosedAt:        &createdAt,
 				Balances: account.BalanceCounters{
 					DebitsPending:  200,
 					CreditsPending: 0,
@@ -1253,6 +1259,25 @@ func TestGetAccount(t *testing.T) {
 			},
 			wantStatus:        http.StatusOK,
 			wantAccountStatus: api.Closed,
+		},
+		{
+			name: "scheduled close in future",
+			result: account.Payable{
+				Reference:       accountRef,
+				HolderReference: "hld_01K33YVADP5Z8B0T3X2Q91C6RH",
+				HolderName:      "Acme Ltd",
+				LedgerSlug:      ledgerSlug,
+				ClosedAt:        &futureTime,
+				Balances: account.BalanceCounters{
+					DebitsPending:  200,
+					CreditsPending: 0,
+					DebitsPosted:   0,
+					CreditsPosted:  10000,
+				},
+				CreatedAt: createdAt,
+			},
+			wantStatus:        http.StatusOK,
+			wantAccountStatus: api.Active,
 		},
 		{
 			name:        "account not found",
@@ -1346,6 +1371,11 @@ func TestGetAccount(t *testing.T) {
 				}
 				if !got.CreatedAt.Equal(createdAt) {
 					t.Errorf("created_at = %v, want %v", got.CreatedAt, createdAt)
+				}
+				if (got.ClosedAt == nil) != (tt.result.ClosedAt == nil) {
+					t.Errorf("closed_at = %v, want %v", got.ClosedAt, tt.result.ClosedAt)
+				} else if got.ClosedAt != nil && !got.ClosedAt.Equal(*tt.result.ClosedAt) {
+					t.Errorf("closed_at = %v, want %v", got.ClosedAt, tt.result.ClosedAt)
 				}
 			}
 		})
