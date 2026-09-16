@@ -96,6 +96,7 @@ RETURNS TABLE (
   out_holder_id     bigint,
   out_holder_ref    text,
   out_holder_name   text,
+  out_label         text,
   out_description   text,
   out_debits_pending             bigint,
   out_credits_pending            bigint,
@@ -103,6 +104,7 @@ RETURNS TABLE (
   out_credits_posted             bigint,
   out_debits_must_not_exceed_credits  boolean,
   out_credits_must_not_exceed_debits boolean,
+  out_records_movements boolean,
   out_closed_at     timestamp with time zone,
   out_created_at    timestamp with time zone,
   out_created       boolean
@@ -159,11 +161,11 @@ BEGIN
 
   RETURN QUERY
   SELECT a.id, a.public_ref, a.ledger_id, a.kind, a.holder_id,
-         h.public_ref, h.name, a.description,
+         h.public_ref, h.name, a.label, a.description,
          a.debits_pending, a.credits_pending,
          a.debits_posted, a.credits_posted,
          a.debits_must_not_exceed_credits, a.credits_must_not_exceed_debits,
-         a.closed_at, a.created_at, v_created
+         a.records_movements, a.closed_at, a.created_at, v_created
   FROM accounts a
   JOIN holders h ON h.id = a.holder_id
   WHERE a.holder_id = v_holder.id AND a.ledger_id = v_ledger.id AND a.kind = 'payable';

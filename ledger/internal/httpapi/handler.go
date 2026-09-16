@@ -213,7 +213,7 @@ func (s *server) PostJournalEntry(
 	result, err := s.service.PostEntry(ctx, journal.PostInput{
 		LedgerSlug:  request.Body.Ledger,
 		RequestID:   request.Params.IdempotencyKey,
-		Kind:        journal.Kind(strings.TrimSpace(request.Body.Kind)),
+		Kind:        strings.TrimSpace(request.Body.Kind),
 		Description: description,
 		EffectiveAt: request.Body.EffectiveAt,
 		Lines:       lines,
@@ -225,7 +225,7 @@ func (s *server) PostJournalEntry(
 	response := api.PostJournalEntryResponse{
 		JournalRef:  result.Entry.Reference,
 		LedgerSlug:  request.Body.Ledger,
-		Kind:        api.JournalEntryKind(result.Entry.Kind),
+		Kind:        result.Entry.Kind,
 		State:       api.PostJournalEntryResponseState(result.Entry.State),
 		Description: result.Entry.Description,
 		EffectiveAt: result.Entry.EffectiveAt,
@@ -488,7 +488,7 @@ func (s *server) GetAccountStatement(
 		entries[i] = api.StatementMovement{
 			JournalReference: m.JournalReference,
 			LineNumber:       m.LineNumber,
-			Kind:             api.JournalEntryKind(m.Kind),
+			Kind:             m.Kind,
 			Direction:        api.StatementDirection(m.Direction),
 			Amount:           m.Amount,
 			BalanceAfter:     m.BalanceAfter,

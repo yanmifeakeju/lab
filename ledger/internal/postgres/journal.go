@@ -2,15 +2,45 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/oklog/ulid/v2"
 
 	"yanmifeakeju.com/ledger/internal/journal"
 )
+
+// journalEntryRow is a journal_entries row.
+type journalEntryRow struct {
+	ID             int64
+	Reference      string
+	LedgerID       int
+	RequestID      string
+	Kind           string
+	State          string
+	Description    string
+	ExpiresAt      sql.NullTime
+	PendingEntryID sql.NullInt64
+	EffectiveAt    time.Time
+	CreatedAt      time.Time
+}
+
+func (r journalEntryRow) entry() journal.Entry {
+	return journal.Entry{
+		RequestID:   r.RequestID,
+		Reference:   r.Reference,
+		Kind:        r.Kind,
+		State:       journal.State(r.State),
+		Description: r.Description,
+		ExpiresAt:   timePtr(r.ExpiresAt),
+		EffectiveAt: r.EffectiveAt,
+		CreatedAt:   r.CreatedAt,
+	}
+}
 
 type postEntryLine struct {
 	DebitAccountReference  string `json:"debit_account_ref"`
@@ -23,7 +53,7 @@ type postEntryLine struct {
 // existing entry when the request is an idempotent retry.
 func (s *Store) PostEntry(ctx context.Context, input journal.PostInput) (journal.PostResult, error) {
 	var (
-		e       journal.Entry
+		row     journalEntryRow
 		created bool
 	)
 	const q = `SELECT * FROM post_entry($1, $2, $3, $4, $5, $6, $7::jsonb)`
@@ -54,17 +84,17 @@ func (s *Store) PostEntry(ctx context.Context, input journal.PostInput) (journal
 		input.EffectiveAt,
 		string(encodedLines),
 	).Scan(
-		&e.ID,
-		&e.Reference,
-		&e.LedgerID,
-		&e.RequestID,
-		&e.Kind,
-		&e.State,
-		&e.Description,
-		&e.ExpiresAt,
-		&e.PendingEntryID,
-		&e.EffectiveAt,
-		&e.CreatedAt,
+		&row.ID,
+		&row.Reference,
+		&row.LedgerID,
+		&row.RequestID,
+		&row.Kind,
+		&row.State,
+		&row.Description,
+		&row.ExpiresAt,
+		&row.PendingEntryID,
+		&row.EffectiveAt,
+		&row.CreatedAt,
 		&created,
 	)
 
@@ -72,7 +102,7 @@ func (s *Store) PostEntry(ctx context.Context, input journal.PostInput) (journal
 		return journal.PostResult{}, mapPostEntryError(err)
 	}
 
-	return journal.PostResult{Entry: e, Created: created}, nil
+	return journal.PostResult{Entry: row.entry(), Created: created}, nil
 }
 
 func mapPostEntryError(err error) error {

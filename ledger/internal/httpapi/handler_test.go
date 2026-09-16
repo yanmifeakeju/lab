@@ -912,7 +912,7 @@ func TestPostJournalEntryAcceptsClientDefinedKind(t *testing.T) {
 				postResult: journal.PostResult{
 					Entry: journal.Entry{
 						Reference:   "jrn_01K33YW0MDHJ9E4N7Z2QPV6R8K",
-						Kind:        journal.Kind(kind),
+						Kind:        kind,
 						State:       journal.StatePosted,
 						Description: "Payment received",
 					},
@@ -948,7 +948,7 @@ func TestPostJournalEntryAcceptsClientDefinedKind(t *testing.T) {
 			if rec.Code != http.StatusCreated {
 				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusCreated, rec.Body.String())
 			}
-			if service.postInput.Kind != journal.Kind(kind) {
+			if service.postInput.Kind != kind {
 				t.Errorf("PostEntry() input kind = %q, want %q", service.postInput.Kind, kind)
 			}
 

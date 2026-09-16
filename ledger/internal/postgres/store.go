@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"time"
 )
 
 // DBTX is satisfied by *sql.DB and *sql.Tx.
@@ -19,4 +20,12 @@ type Store struct {
 // New returns a Store backed by the given DBTX.
 func New(db DBTX) *Store {
 	return &Store{db: db}
+}
+
+// timePtr converts a nullable timestamp column to the domain's optional time.
+func timePtr(t sql.NullTime) *time.Time {
+	if !t.Valid {
+		return nil
+	}
+	return &t.Time
 }

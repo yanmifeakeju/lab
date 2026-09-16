@@ -48,22 +48,21 @@ func TestStore_PostEntry(t *testing.T) {
 		t.Error("PostEntry() Created = false, want true")
 	}
 
-	assertPostedEntry(t, result.Entry, postedEntryExpectation{
+	assertPostedEntry(t, fixture.tx, result.Entry, postedEntryExpectation{
 		LedgerID:    fixture.ledgerID,
 		RequestID:   "request_1",
 		Kind:        "payment",
 		Description: description,
 		EffectiveAt: effectiveAt,
 	})
-	assertJournalLines(t, fixture.tx, result.Entry.ID, []journal.Line{
+	assertJournalLines(t, fixture.tx, result.Entry.Reference, []journalLineRow{
 		{
-			EntryID:         result.Entry.ID,
 			LedgerID:        fixture.ledgerID,
 			Amount:          amount,
 			DebitAccountID:  fixture.platform.Cash.ID,
 			CreditAccountID: fixture.payable.ID,
 			LineNumber:      1,
-			Effect:          journal.EffectPosted,
+			Effect:          "posted",
 			Purpose:         "Card payment",
 		},
 	})
@@ -112,29 +111,27 @@ func TestStore_PostEntry_MultipleLines(t *testing.T) {
 		t.Error("PostEntry() Created = false, want true")
 	}
 
-	wantLines := []journal.Line{
+	wantLines := []journalLineRow{
 		{
-			EntryID:         result.Entry.ID,
 			LedgerID:        fixture.ledgerID,
 			DebitAccountID:  fixture.platform.Cash.ID,
 			CreditAccountID: fixture.payable.ID,
 			Amount:          10_000,
 			LineNumber:      1,
-			Effect:          journal.EffectPosted,
+			Effect:          "posted",
 			Purpose:         "Card payment",
 		},
 		{
-			EntryID:         result.Entry.ID,
 			LedgerID:        fixture.ledgerID,
 			DebitAccountID:  fixture.payable.ID,
 			CreditAccountID: fixture.platform.FeeRevenue.ID,
 			Amount:          200,
 			LineNumber:      2,
-			Effect:          journal.EffectPosted,
+			Effect:          "posted",
 			Purpose:         "Processing fee",
 		},
 	}
-	assertJournalLines(t, fixture.tx, result.Entry.ID, wantLines)
+	assertJournalLines(t, fixture.tx, result.Entry.Reference, wantLines)
 
 	if got := readAccountBalances(t, fixture.tx, fixture.platform.Cash.ID); got != (accountBalances{DebitsPosted: 10_000}) {
 		t.Errorf("cash balances = %+v, want DebitsPosted=10000", got)
@@ -208,29 +205,27 @@ func TestStore_PostEntry_DefaultsEffectiveAt(t *testing.T) {
 		t.Error("PostEntry() Created = true, want false")
 	}
 
-	wantLines := []journal.Line{
+	wantLines := []journalLineRow{
 		{
-			EntryID:         posted1.Entry.ID,
 			LedgerID:        fixture.ledgerID,
 			DebitAccountID:  fixture.platform.Cash.ID,
 			CreditAccountID: fixture.payable.ID,
 			Amount:          10_000,
 			LineNumber:      1,
-			Effect:          journal.EffectPosted,
+			Effect:          "posted",
 			Purpose:         "Card payment",
 		},
 		{
-			EntryID:         posted1.Entry.ID,
 			LedgerID:        fixture.ledgerID,
 			DebitAccountID:  fixture.payable.ID,
 			CreditAccountID: fixture.platform.FeeRevenue.ID,
 			Amount:          200,
 			LineNumber:      2,
-			Effect:          journal.EffectPosted,
+			Effect:          "posted",
 			Purpose:         "Processing fee",
 		},
 	}
-	assertJournalLines(t, fixture.tx, posted1.Entry.ID, wantLines)
+	assertJournalLines(t, fixture.tx, posted1.Entry.Reference, wantLines)
 
 	if got := readAccountBalances(t, fixture.tx, fixture.platform.Cash.ID); got != (accountBalances{DebitsPosted: 10_000}) {
 		t.Errorf("cash balances = %+v, want DebitsPosted=10000", got)
@@ -305,29 +300,27 @@ func TestStore_PostEntry_IdempotentRetry(t *testing.T) {
 		t.Errorf("want posted1 == posted2, got posted1 =  %#v, posted2 %#v", posted1.Entry, posted2.Entry)
 	}
 
-	wantLines := []journal.Line{
+	wantLines := []journalLineRow{
 		{
-			EntryID:         posted1.Entry.ID,
 			LedgerID:        fixture.ledgerID,
 			DebitAccountID:  fixture.platform.Cash.ID,
 			CreditAccountID: fixture.payable.ID,
 			Amount:          50_000,
 			LineNumber:      1,
-			Effect:          journal.EffectPosted,
+			Effect:          "posted",
 			Purpose:         "Card payment",
 		},
 		{
-			EntryID:         posted1.Entry.ID,
 			LedgerID:        fixture.ledgerID,
 			DebitAccountID:  fixture.payable.ID,
 			CreditAccountID: fixture.platform.FeeRevenue.ID,
 			Amount:          500,
 			LineNumber:      2,
-			Effect:          journal.EffectPosted,
+			Effect:          "posted",
 			Purpose:         "Processing fee",
 		},
 	}
-	assertJournalLines(t, fixture.tx, posted1.Entry.ID, wantLines)
+	assertJournalLines(t, fixture.tx, posted1.Entry.Reference, wantLines)
 
 	if got := readAccountBalances(t, fixture.tx, fixture.platform.Cash.ID); got != (accountBalances{DebitsPosted: 50_000}) {
 		t.Errorf("cash balances = %+v, want DebitsPosted=50000", got)
@@ -395,27 +388,29 @@ func TestStore_PostEntry_IdempotencyAcrossLedgers(t *testing.T) {
 		t.Fatal("first USD PostEntry() Created = false, want true")
 	}
 
-	if ngnPosted1.Entry.ID == usdPosted1.Entry.ID {
-		t.Errorf("entries in different ledgers share the same ID: %d", ngnPosted1.Entry.ID)
+	if ngnPosted1.Entry.Reference == usdPosted1.Entry.Reference {
+		t.Errorf("entries in different ledgers share the same reference: %s", ngnPosted1.Entry.Reference)
 	}
-	if ngnPosted1.Entry.LedgerID == usdPosted1.Entry.LedgerID {
-		t.Errorf("entries have the same LedgerID: %d", ngnPosted1.Entry.LedgerID)
+	ngnLedgerID := readEntryLedgerID(t, fixture.tx, ngnPosted1.Entry.Reference)
+	usdLedgerID := readEntryLedgerID(t, fixture.tx, usdPosted1.Entry.Reference)
+	if ngnLedgerID == usdLedgerID {
+		t.Errorf("entries have the same ledger ID: %d", ngnLedgerID)
 	}
 
 	ngnPosted2 := fixture.mustPost(t, ngnInput)
 	if ngnPosted2.Created {
 		t.Error("repeated NGN PostEntry() Created = true, want false")
 	}
-	if ngnPosted2.Entry.ID != ngnPosted1.Entry.ID {
-		t.Errorf("repeated NGN entry ID = %d, want %d", ngnPosted2.Entry.ID, ngnPosted1.Entry.ID)
+	if ngnPosted2.Entry.Reference != ngnPosted1.Entry.Reference {
+		t.Errorf("repeated NGN entry reference = %s, want %s", ngnPosted2.Entry.Reference, ngnPosted1.Entry.Reference)
 	}
 
 	usdPosted2 := fixture.mustPost(t, usdInput)
 	if usdPosted2.Created {
 		t.Error("repeated USD PostEntry() Created = true, want false")
 	}
-	if usdPosted2.Entry.ID != usdPosted1.Entry.ID {
-		t.Errorf("repeated USD entry ID = %d, want %d", usdPosted2.Entry.ID, usdPosted1.Entry.ID)
+	if usdPosted2.Entry.Reference != usdPosted1.Entry.Reference {
+		t.Errorf("repeated USD entry reference = %s, want %s", usdPosted2.Entry.Reference, usdPosted1.Entry.Reference)
 	}
 }
 
@@ -549,29 +544,27 @@ func TestStore_PostEntry_IdempotencyConflict(t *testing.T) {
 				t.Errorf("want posted == posted2, got posted =  %#v, posted2 %#v", posted.Entry, posted2.Entry)
 			}
 
-			wantLines := []journal.Line{
+			wantLines := []journalLineRow{
 				{
-					EntryID:         posted.Entry.ID,
 					LedgerID:        fixture.ledgerID,
 					DebitAccountID:  fixture.platform.Cash.ID,
 					CreditAccountID: fixture.payable.ID,
 					Amount:          50_000,
 					LineNumber:      1,
-					Effect:          journal.EffectPosted,
+					Effect:          "posted",
 					Purpose:         "Card payment",
 				},
 				{
-					EntryID:         posted.Entry.ID,
 					LedgerID:        fixture.ledgerID,
 					DebitAccountID:  fixture.payable.ID,
 					CreditAccountID: fixture.platform.FeeRevenue.ID,
 					Amount:          500,
 					LineNumber:      2,
-					Effect:          journal.EffectPosted,
+					Effect:          "posted",
 					Purpose:         "Processing fee",
 				},
 			}
-			assertJournalLines(t, fixture.tx, posted.Entry.ID, wantLines)
+			assertJournalLines(t, fixture.tx, posted.Entry.Reference, wantLines)
 
 			if got := readAccountBalances(t, fixture.tx, fixture.platform.Cash.ID); got != (accountBalances{DebitsPosted: 50_000}) {
 				t.Errorf("cash balances = %+v, want DebitsPosted=50000", got)
@@ -678,25 +671,23 @@ func TestStore_PostEntry_RetryAfterClosure(t *testing.T) {
 				t.Errorf("retry entry = %#v, want %#v", retried.Entry, posted.Entry)
 			}
 
-			assertJournalLines(t, fixture.tx, posted.Entry.ID, []journal.Line{
+			assertJournalLines(t, fixture.tx, posted.Entry.Reference, []journalLineRow{
 				{
-					EntryID:         posted.Entry.ID,
 					LedgerID:        fixture.ledgerID,
 					DebitAccountID:  fixture.platform.Cash.ID,
 					CreditAccountID: fixture.payable.ID,
 					Amount:          50_000,
 					LineNumber:      1,
-					Effect:          journal.EffectPosted,
+					Effect:          "posted",
 					Purpose:         "Card payment",
 				},
 				{
-					EntryID:         posted.Entry.ID,
 					LedgerID:        fixture.ledgerID,
 					DebitAccountID:  fixture.payable.ID,
 					CreditAccountID: fixture.platform.FeeRevenue.ID,
 					Amount:          500,
 					LineNumber:      2,
-					Effect:          journal.EffectPosted,
+					Effect:          "posted",
 					Purpose:         "Processing fee",
 				},
 			})
@@ -1129,7 +1120,7 @@ func TestStore_PostEntry_ConstraintViolations(t *testing.T) {
 		{
 			name: "overlong kind",
 			mutate: func(pi *journal.PostInput) {
-				pi.Kind = journal.Kind(strings.Repeat("k", 65))
+				pi.Kind = strings.Repeat("k", 65)
 			},
 			wantErr: journal.ErrKindTooLong,
 		},
@@ -1187,11 +1178,11 @@ func TestStore_PostEntry_ConstraintViolations(t *testing.T) {
 func TestStore_PostEntry_ClientDefinedKind(t *testing.T) {
 	fixture := newPostEntryFixture(t)
 
-	customKinds := []journal.Kind{
+	customKinds := []string{
 		"invoice_settlement",
 		"payroll_distribution",
 		"tax_withholding",
-		journal.Kind(strings.Repeat("k", 64)),
+		strings.Repeat("k", 64),
 	}
 
 	for i, kind := range customKinds {
@@ -1354,22 +1345,16 @@ func readAccountBalances(t *testing.T, db postgres.DBTX, accountID int64) accoun
 type postedEntryExpectation struct {
 	LedgerID    int
 	RequestID   string
-	Kind        journal.Kind
+	Kind        string
 	Description string
 	EffectiveAt time.Time
 }
 
-func assertPostedEntry(t *testing.T, got journal.Entry, want postedEntryExpectation) {
+func assertPostedEntry(t *testing.T, tx *sql.Tx, got journal.Entry, want postedEntryExpectation) {
 	t.Helper()
 
-	if got.ID == 0 {
-		t.Error("entry ID = 0, want generated ID")
-	}
 	if !strings.HasPrefix(got.Reference, "jrn_") {
 		t.Errorf("entry reference = %q, want jrn_ prefix", got.Reference)
-	}
-	if got.LedgerID != want.LedgerID {
-		t.Errorf("entry LedgerID = %d, want %d", got.LedgerID, want.LedgerID)
 	}
 	if got.RequestID != want.RequestID {
 		t.Errorf("entry RequestID = %q, want %q", got.RequestID, want.RequestID)
@@ -1386,15 +1371,45 @@ func assertPostedEntry(t *testing.T, got journal.Entry, want postedEntryExpectat
 	if got.ExpiresAt != nil {
 		t.Errorf("entry ExpiresAt = %v, want nil", got.ExpiresAt)
 	}
-	if got.PendingEntryID != nil {
-		t.Errorf("entry PendingEntryID = %v, want nil", got.PendingEntryID)
-	}
 	if !got.EffectiveAt.Equal(want.EffectiveAt) {
 		t.Errorf("entry EffectiveAt = %v, want %v", got.EffectiveAt, want.EffectiveAt)
 	}
 	if got.CreatedAt.IsZero() {
 		t.Error("entry CreatedAt is zero, want database timestamp")
 	}
+
+	const query = `
+		SELECT ledger_id, pending_entry_id IS NULL
+		FROM journal_entries
+		WHERE public_ref = $1`
+
+	var (
+		ledgerID           int
+		pendingEntryIsNull bool
+	)
+	if err := tx.QueryRowContext(t.Context(), query, got.Reference).Scan(&ledgerID, &pendingEntryIsNull); err != nil {
+		t.Fatalf("read journal entry %s: %v", got.Reference, err)
+	}
+	if ledgerID != want.LedgerID {
+		t.Errorf("entry ledger_id = %d, want %d", ledgerID, want.LedgerID)
+	}
+	if !pendingEntryIsNull {
+		t.Error("entry pending_entry_id is set, want NULL")
+	}
+}
+
+func readEntryLedgerID(t *testing.T, tx *sql.Tx, reference string) int {
+	t.Helper()
+
+	var ledgerID int
+	if err := tx.QueryRowContext(
+		t.Context(),
+		`SELECT ledger_id FROM journal_entries WHERE public_ref = $1`,
+		reference,
+	).Scan(&ledgerID); err != nil {
+		t.Fatalf("read journal entry %s ledger: %v", reference, err)
+	}
+	return ledgerID
 }
 
 func assertNoJournalEntry(t *testing.T, tx *sql.Tx, ledgerID int, requestID string) {
@@ -1431,27 +1446,39 @@ func assertNoJournalLines(t *testing.T, tx *sql.Tx, ledgerID int) {
 	}
 }
 
-func assertJournalLines(t *testing.T, tx *sql.Tx, entryID int64, want []journal.Line) {
+// journalLineRow is the part of a journal_lines row the tests assert on; the
+// entry is fixed by the lookup.
+type journalLineRow struct {
+	LedgerID        int
+	Amount          int64
+	DebitAccountID  int64
+	CreditAccountID int64
+	LineNumber      int
+	Effect          string
+	Purpose         string
+}
+
+func assertJournalLines(t *testing.T, tx *sql.Tx, entryReference string, want []journalLineRow) {
 	t.Helper()
 
 	const query = `
-		SELECT journal_entry_id, ledger_id, amount, debit_account_id,
-		       credit_account_id, line_number, effect, purpose
-		FROM journal_lines
-		WHERE journal_entry_id = $1
-		ORDER BY line_number`
+		SELECT line.ledger_id, line.amount, line.debit_account_id,
+		       line.credit_account_id, line.line_number, line.effect, line.purpose
+		FROM journal_lines line
+		JOIN journal_entries entry ON entry.id = line.journal_entry_id
+		WHERE entry.public_ref = $1
+		ORDER BY line.line_number`
 
-	rows, err := tx.QueryContext(t.Context(), query, entryID)
+	rows, err := tx.QueryContext(t.Context(), query, entryReference)
 	if err != nil {
 		t.Fatalf("query journal lines: %v", err)
 	}
 	defer rows.Close()
 
-	var got []journal.Line
+	var got []journalLineRow
 	for rows.Next() {
-		var line journal.Line
+		var line journalLineRow
 		if err := rows.Scan(
-			&line.EntryID,
 			&line.LedgerID,
 			&line.Amount,
 			&line.DebitAccountID,

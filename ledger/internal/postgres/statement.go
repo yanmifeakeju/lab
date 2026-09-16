@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"yanmifeakeju.com/ledger/internal/account"
-	"yanmifeakeju.com/ledger/internal/journal"
 	"yanmifeakeju.com/ledger/internal/statement"
 )
 
@@ -236,7 +235,7 @@ func (s *Store) GetStatement(
 			fetched = append(fetched, statement.Movement{
 				JournalReference: jref.String,
 				LineNumber:       int(lineNum.Int64),
-				Kind:             journal.Kind(kind.String),
+				Kind:             kind.String,
 				Direction:        statement.Direction(dir.String),
 				Amount:           amount.Int64,
 				BalanceAfter:     balanceAfter.Int64,

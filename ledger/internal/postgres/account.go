@@ -13,6 +13,58 @@ import (
 	"yanmifeakeju.com/ledger/internal/account"
 )
 
+// accountRow is an accounts row joined with its holder, whose columns are
+// NULL for platform accounts.
+type accountRow struct {
+	ID                         int64
+	Reference                  string
+	LedgerID                   int
+	Kind                       string
+	HolderID                   sql.NullInt64
+	HolderReference            sql.NullString
+	HolderName                 sql.NullString
+	Label                      sql.NullString
+	Description                sql.NullString
+	DebitsPending              int64
+	CreditsPending             int64
+	DebitsPosted               int64
+	CreditsPosted              int64
+	DebitsMustNotExceedCredits bool
+	CreditsMustNotExceedDebits bool
+	RecordsMovements           bool
+	ClosedAt                   sql.NullTime
+	CreatedAt                  time.Time
+}
+
+// scanTargets returns the row's fields in create_payable_account's column
+// order.
+func (r *accountRow) scanTargets() []any {
+	return []any{
+		&r.ID, &r.Reference, &r.LedgerID, &r.Kind, &r.HolderID,
+		&r.HolderReference, &r.HolderName, &r.Label, &r.Description,
+		&r.DebitsPending, &r.CreditsPending, &r.DebitsPosted, &r.CreditsPosted,
+		&r.DebitsMustNotExceedCredits, &r.CreditsMustNotExceedDebits,
+		&r.RecordsMovements, &r.ClosedAt, &r.CreatedAt,
+	}
+}
+
+func (r accountRow) payable(ledgerSlug string) account.Payable {
+	return account.Payable{
+		Reference:       r.Reference,
+		HolderReference: r.HolderReference.String,
+		HolderName:      r.HolderName.String,
+		LedgerSlug:      ledgerSlug,
+		ClosedAt:        timePtr(r.ClosedAt),
+		Balances: account.BalanceCounters{
+			DebitsPending:  r.DebitsPending,
+			CreditsPending: r.CreditsPending,
+			DebitsPosted:   r.DebitsPosted,
+			CreditsPosted:  r.CreditsPosted,
+		},
+		CreatedAt: r.CreatedAt,
+	}
+}
+
 // CreatePayableAccount creates a merchant's payable account, or returns the
 // existing account when the request is an idempotent retry.
 func (s *Store) CreatePayableAccount(
@@ -20,9 +72,8 @@ func (s *Store) CreatePayableAccount(
 	input account.CreatePayableInput,
 ) (account.CreateResult, error) {
 	var (
-		a        account.Account
-		closedAt sql.NullTime
-		created  bool
+		row     accountRow
+		created bool
 	)
 	holderReference := "hld_" + ulid.Make().String()
 	accountReference := "acct_" + ulid.Make().String()
@@ -36,40 +87,14 @@ func (s *Store) CreatePayableAccount(
 		input.LedgerSlug,
 		holderReference,
 		accountReference,
-	).Scan(
-		&a.ID, &a.Reference, &a.LedgerID, &a.Kind, &a.HolderID,
-		&a.HolderReference, &a.HolderName, &a.Description,
-		&a.DebitsPending, &a.CreditsPending, &a.DebitsPosted, &a.CreditsPosted,
-		&a.DebitsMustNotExceedCredits, &a.CreditsMustNotExceedDebits,
-		&closedAt, &a.CreatedAt, &created,
-	)
+	).Scan(append(row.scanTargets(), &created)...)
 	if err != nil {
 		return account.CreateResult{}, mapCreatePayableAccountError(err)
 	}
-	if closedAt.Valid {
-		a.ClosedAt = &closedAt.Time
-	}
 	return account.CreateResult{
-		Account: payableFromAccount(a, input.LedgerSlug),
+		Account: row.payable(input.LedgerSlug),
 		Created: created,
 	}, nil
-}
-
-func payableFromAccount(a account.Account, ledgerSlug string) account.Payable {
-	return account.Payable{
-		Reference:       a.Reference,
-		HolderReference: a.HolderReference,
-		HolderName:      a.HolderName,
-		LedgerSlug:      ledgerSlug,
-		ClosedAt:        a.ClosedAt,
-		Balances: account.BalanceCounters{
-			DebitsPending:  a.DebitsPending,
-			CreditsPending: a.CreditsPending,
-			DebitsPosted:   a.DebitsPosted,
-			CreditsPosted:  a.CreditsPosted,
-		},
-		CreatedAt: a.CreatedAt,
-	}
 }
 
 func mapCreatePayableAccountError(err error) error {
@@ -101,61 +126,34 @@ func (s *Store) GetPayableAccount(ctx context.Context, input account.GetPayableI
 		h.name
 	FROM accounts a
 	JOIN ledgers l ON l.id = a.ledger_id
-	LEFT JOIN holders h ON h.id = a.holder_id
+	JOIN holders h ON h.id = a.holder_id
 	WHERE a.public_ref = $1
 		AND a.kind = 'payable';`
 
-	row := s.db.QueryRowContext(ctx, q, input.Reference)
-
 	var (
-		accountRef     string
-		debitsPending  int64
-		creditsPending int64
-		debitsPosted   int64
-		creditsPosted  int64
-		closedAt       sql.NullTime
-		createdAt      time.Time
-		ledgerSlug     string
-		holderRef      sql.NullString
-		holderName     sql.NullString
+		p        account.Payable
+		closedAt sql.NullTime
 	)
-
-	if err := row.Scan(
-		&accountRef,
-		&debitsPending,
-		&creditsPending,
-		&debitsPosted,
-		&creditsPosted,
+	err := s.db.QueryRowContext(ctx, q, input.Reference).Scan(
+		&p.Reference,
+		&p.Balances.DebitsPending,
+		&p.Balances.CreditsPending,
+		&p.Balances.DebitsPosted,
+		&p.Balances.CreditsPosted,
 		&closedAt,
-		&createdAt,
-		&ledgerSlug,
-		&holderRef,
-		&holderName,
-	); err != nil {
+		&p.CreatedAt,
+		&p.LedgerSlug,
+		&p.HolderReference,
+		&p.HolderName,
+	)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return account.Payable{}, fmt.Errorf("get payable account: %w", account.ErrAccountNotFound)
 		}
 
 		return account.Payable{}, fmt.Errorf("get payable account: %w", err)
 	}
+	p.ClosedAt = timePtr(closedAt)
 
-	var pClosedAt *time.Time
-	if closedAt.Valid {
-		pClosedAt = &closedAt.Time
-	}
-
-	return account.Payable{
-		Reference:       accountRef,
-		HolderReference: holderRef.String,
-		HolderName:      holderName.String,
-		LedgerSlug:      ledgerSlug,
-		ClosedAt:        pClosedAt,
-		Balances: account.BalanceCounters{
-			DebitsPending:  debitsPending,
-			CreditsPending: creditsPending,
-			DebitsPosted:   debitsPosted,
-			CreditsPosted:  creditsPosted,
-		},
-		CreatedAt: createdAt,
-	}, nil
+	return p, nil
 }

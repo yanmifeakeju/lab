@@ -15,28 +15,6 @@ const (
 	KindPlatform Kind = "platform"
 )
 
-// Account represents a ledger account and its associated holder details.
-type Account struct {
-	ID                         int64
-	Reference                  string
-	LedgerID                   int
-	Kind                       Kind
-	HolderID                   *int64
-	HolderReference            string
-	HolderName                 string
-	Label                      *string
-	Description                *string
-	DebitsPending              int64
-	CreditsPending             int64
-	DebitsPosted               int64
-	CreditsPosted              int64
-	DebitsMustNotExceedCredits bool
-	CreditsMustNotExceedDebits bool
-	RecordsMovements           bool
-	ClosedAt                   *time.Time
-	CreatedAt                  time.Time
-}
-
 // CreatePayableInput contains the parameters required to onboard a payable account.
 type CreatePayableInput struct {
 	LedgerSlug string
@@ -82,7 +60,7 @@ func (b BalanceCounters) Available(kind Kind) uint64 {
 	}
 }
 
-// Payable represents a merchant payable account exposed by account operations.
+// Payable represents a payable account exposed by account operations.
 type Payable struct {
 	Reference       string
 	HolderReference string

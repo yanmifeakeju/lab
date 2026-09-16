@@ -94,12 +94,10 @@ func TestStore_PostEntry_ConcurrentIdempotentRetry(t *testing.T) {
 		t.Error("second PostEntry() Created = true, want false")
 	}
 
-	if first.Entry.ID != second.result.Entry.ID ||
-		first.Entry.Reference != second.result.Entry.Reference {
+	if first.Entry.Reference != second.result.Entry.Reference {
 		t.Errorf(
-			"entries differ: (%d, %s) vs (%d, %s)",
-			first.Entry.ID, first.Entry.Reference,
-			second.result.Entry.ID, second.result.Entry.Reference,
+			"entries differ: %s vs %s",
+			first.Entry.Reference, second.result.Entry.Reference,
 		)
 	}
 	if first.Entry.State != journal.StatePosted {

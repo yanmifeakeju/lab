@@ -3,8 +3,6 @@ package statement
 
 import (
 	"time"
-
-	"yanmifeakeju.com/ledger/internal/journal"
 )
 
 // Direction describes how a movement changes a payable account's balance.
@@ -26,19 +24,6 @@ const (
 	// NavigationPrevious requests movements before the cursor position.
 	NavigationPrevious Navigation = "previous"
 )
-
-// Position identifies one movement in the stable statement order.
-type Position struct {
-	RecordedAt       time.Time
-	JournalReference string
-	LineNumber       int
-}
-
-// Cursor identifies where and in which direction statement pagination resumes.
-type Cursor struct {
-	Navigation Navigation
-	Position   Position
-}
 
 // ListInput contains the parameters for listing a payable account's statement.
 type ListInput struct {
@@ -66,7 +51,7 @@ type Period struct {
 type Movement struct {
 	JournalReference string
 	LineNumber       int
-	Kind             journal.Kind
+	Kind             string
 	Direction        Direction
 	Amount           int64
 	BalanceAfter     int64

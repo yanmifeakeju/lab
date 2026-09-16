@@ -9,6 +9,19 @@ import (
 	"time"
 )
 
+// Position identifies one movement in the stable statement order.
+type Position struct {
+	RecordedAt       time.Time
+	JournalReference string
+	LineNumber       int
+}
+
+// Cursor identifies where and in which direction statement pagination resumes.
+type Cursor struct {
+	Navigation Navigation
+	Position   Position
+}
+
 type cursorPayload struct {
 	Navigation       Navigation `json:"nav"`
 	RecordedAt       time.Time  `json:"rec"`

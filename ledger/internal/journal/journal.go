@@ -4,8 +4,6 @@ import (
 	"time"
 )
 
-type Kind string
-
 type State string
 
 const (
@@ -17,38 +15,14 @@ const (
 )
 
 type Entry struct {
-	ID             int64
-	RequestID      string
-	Reference      string
-	LedgerID       int
-	Kind           Kind
-	State          State
-	Description    string
-	ExpiresAt      *time.Time
-	PendingEntryID *int64
-	EffectiveAt    time.Time
-	CreatedAt      time.Time
-}
-
-type Effect string
-
-const (
-	EffectPending       Effect = "pending"
-	EffectPosted        Effect = "posted"
-	EffectPendingPosted Effect = "pending_posted"
-	EffectPendingVoided Effect = "pending_voided"
-)
-
-type Line struct {
-	ID              int64
-	EntryID         int64
-	LedgerID        int
-	Amount          int64
-	DebitAccountID  int64
-	CreditAccountID int64
-	LineNumber      int
-	Effect          Effect
-	Purpose         string
+	RequestID   string
+	Reference   string
+	Kind        string
+	State       State
+	Description string
+	ExpiresAt   *time.Time
+	EffectiveAt time.Time
+	CreatedAt   time.Time
 }
 
 type LineInput struct {
@@ -61,7 +35,7 @@ type LineInput struct {
 type PostInput struct {
 	LedgerSlug  string
 	RequestID   string
-	Kind        Kind
+	Kind        string
 	Description string
 	EffectiveAt *time.Time
 	Lines       []LineInput
