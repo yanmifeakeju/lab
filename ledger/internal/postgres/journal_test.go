@@ -5,6 +5,7 @@ package postgres_test
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -30,14 +31,15 @@ func TestStore_PostEntry(t *testing.T) {
 	result := fixture.mustPost(t, journal.PostInput{
 		LedgerSlug:  "ngn_ng",
 		RequestID:   "request_1",
-		Kind:        journal.KindPayment,
-		Description: &description,
+		Kind:        "payment",
+		Description: description,
 		EffectiveAt: &effectiveAt,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
 				CreditAccountReference: fixture.payable.Reference,
 				Amount:                 amount,
+				Purpose:                "Card payment",
 			},
 		},
 	})
@@ -49,8 +51,8 @@ func TestStore_PostEntry(t *testing.T) {
 	assertPostedEntry(t, result.Entry, postedEntryExpectation{
 		LedgerID:    fixture.ledgerID,
 		RequestID:   "request_1",
-		Kind:        journal.KindPayment,
-		Description: &description,
+		Kind:        "payment",
+		Description: description,
 		EffectiveAt: effectiveAt,
 	})
 	assertJournalLines(t, fixture.tx, result.Entry.ID, []journal.Line{
@@ -62,6 +64,7 @@ func TestStore_PostEntry(t *testing.T) {
 			CreditAccountID: fixture.payable.ID,
 			LineNumber:      1,
 			Effect:          journal.EffectPosted,
+			Purpose:         "Card payment",
 		},
 	})
 
@@ -86,19 +89,21 @@ func TestStore_PostEntry_MultipleLines(t *testing.T) {
 	result := fixture.mustPost(t, journal.PostInput{
 		LedgerSlug:  "ngn_ng",
 		RequestID:   "request_1",
-		Kind:        journal.KindPayment,
-		Description: &description,
+		Kind:        "payment",
+		Description: description,
 		EffectiveAt: &effectiveAt,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
 				CreditAccountReference: fixture.payable.Reference,
 				Amount:                 10_000,
+				Purpose:                "Card payment",
 			},
 			{
 				DebitAccountReference:  fixture.payable.Reference,
 				CreditAccountReference: fixture.platform.FeeRevenue.Reference,
 				Amount:                 200,
+				Purpose:                "Processing fee",
 			},
 		},
 	})
@@ -116,6 +121,7 @@ func TestStore_PostEntry_MultipleLines(t *testing.T) {
 			Amount:          10_000,
 			LineNumber:      1,
 			Effect:          journal.EffectPosted,
+			Purpose:         "Card payment",
 		},
 		{
 			EntryID:         result.Entry.ID,
@@ -125,6 +131,7 @@ func TestStore_PostEntry_MultipleLines(t *testing.T) {
 			Amount:          200,
 			LineNumber:      2,
 			Effect:          journal.EffectPosted,
+			Purpose:         "Processing fee",
 		},
 	}
 	assertJournalLines(t, fixture.tx, result.Entry.ID, wantLines)
@@ -150,18 +157,20 @@ func TestStore_PostEntry_DefaultsEffectiveAt(t *testing.T) {
 	posted1 := fixture.mustPost(t, journal.PostInput{
 		LedgerSlug:  "ngn_ng",
 		RequestID:   "request_1",
-		Kind:        journal.KindPayment,
-		Description: &description,
+		Kind:        "payment",
+		Description: description,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
 				CreditAccountReference: fixture.payable.Reference,
 				Amount:                 10_000,
+				Purpose:                "Card payment",
 			},
 			{
 				DebitAccountReference:  fixture.payable.Reference,
 				CreditAccountReference: fixture.platform.FeeRevenue.Reference,
 				Amount:                 200,
+				Purpose:                "Processing fee",
 			},
 		},
 	})
@@ -173,18 +182,20 @@ func TestStore_PostEntry_DefaultsEffectiveAt(t *testing.T) {
 	posted2 := fixture.mustPost(t, journal.PostInput{
 		LedgerSlug:  "ngn_ng",
 		RequestID:   "request_1",
-		Kind:        journal.KindPayment,
-		Description: &description,
+		Kind:        "payment",
+		Description: description,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
 				CreditAccountReference: fixture.payable.Reference,
 				Amount:                 10_000,
+				Purpose:                "Card payment",
 			},
 			{
 				DebitAccountReference:  fixture.payable.Reference,
 				CreditAccountReference: fixture.platform.FeeRevenue.Reference,
 				Amount:                 200,
+				Purpose:                "Processing fee",
 			},
 		},
 	})
@@ -206,6 +217,7 @@ func TestStore_PostEntry_DefaultsEffectiveAt(t *testing.T) {
 			Amount:          10_000,
 			LineNumber:      1,
 			Effect:          journal.EffectPosted,
+			Purpose:         "Card payment",
 		},
 		{
 			EntryID:         posted1.Entry.ID,
@@ -215,6 +227,7 @@ func TestStore_PostEntry_DefaultsEffectiveAt(t *testing.T) {
 			Amount:          200,
 			LineNumber:      2,
 			Effect:          journal.EffectPosted,
+			Purpose:         "Processing fee",
 		},
 	}
 	assertJournalLines(t, fixture.tx, posted1.Entry.ID, wantLines)
@@ -241,18 +254,20 @@ func TestStore_PostEntry_IdempotentRetry(t *testing.T) {
 	posted1 := fixture.mustPost(t, journal.PostInput{
 		LedgerSlug:  "ngn_ng",
 		RequestID:   "request_1",
-		Kind:        journal.KindPayment,
-		Description: &description,
+		Kind:        "payment",
+		Description: description,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
 				CreditAccountReference: fixture.payable.Reference,
 				Amount:                 50_000,
+				Purpose:                "Card payment",
 			},
 			{
 				DebitAccountReference:  fixture.payable.Reference,
 				CreditAccountReference: fixture.platform.FeeRevenue.Reference,
 				Amount:                 500,
+				Purpose:                "Processing fee",
 			},
 		},
 	})
@@ -264,18 +279,20 @@ func TestStore_PostEntry_IdempotentRetry(t *testing.T) {
 	posted2 := fixture.mustPost(t, journal.PostInput{
 		LedgerSlug:  "ngn_ng",
 		RequestID:   "request_1",
-		Kind:        journal.KindPayment,
-		Description: &description,
+		Kind:        "payment",
+		Description: description,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
 				CreditAccountReference: fixture.payable.Reference,
 				Amount:                 50_000,
+				Purpose:                "Card payment",
 			},
 			{
 				DebitAccountReference:  fixture.payable.Reference,
 				CreditAccountReference: fixture.platform.FeeRevenue.Reference,
 				Amount:                 500,
+				Purpose:                "Processing fee",
 			},
 		},
 	})
@@ -297,6 +314,7 @@ func TestStore_PostEntry_IdempotentRetry(t *testing.T) {
 			Amount:          50_000,
 			LineNumber:      1,
 			Effect:          journal.EffectPosted,
+			Purpose:         "Card payment",
 		},
 		{
 			EntryID:         posted1.Entry.ID,
@@ -306,6 +324,7 @@ func TestStore_PostEntry_IdempotentRetry(t *testing.T) {
 			Amount:          500,
 			LineNumber:      2,
 			Effect:          journal.EffectPosted,
+			Purpose:         "Processing fee",
 		},
 	}
 	assertJournalLines(t, fixture.tx, posted1.Entry.ID, wantLines)
@@ -330,13 +349,14 @@ func TestStore_PostEntry_IdempotencyAcrossLedgers(t *testing.T) {
 	ngnInput := journal.PostInput{
 		LedgerSlug:  "ngn_ng",
 		RequestID:   reqID,
-		Kind:        journal.KindPayment,
-		Description: &desc,
+		Kind:        "payment",
+		Description: desc,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
 				CreditAccountReference: fixture.payable.Reference,
 				Amount:                 10_000,
+				Purpose:                "Card payment",
 			},
 		},
 	}
@@ -359,13 +379,14 @@ func TestStore_PostEntry_IdempotencyAcrossLedgers(t *testing.T) {
 	usdInput := journal.PostInput{
 		LedgerSlug:  "usd_ng",
 		RequestID:   reqID,
-		Kind:        journal.KindPayment,
-		Description: &desc,
+		Kind:        "payment",
+		Description: desc,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  otherCash.Reference,
 				CreditAccountReference: otherPayableResult.Account.Reference,
 				Amount:                 20_000,
+				Purpose:                "Card payment",
 			},
 		},
 	}
@@ -418,9 +439,15 @@ func TestStore_PostEntry_IdempotencyConflict(t *testing.T) {
 		{
 			name: "description",
 			mutate: func(_ *testing.T, _ postEntryFixture, input *journal.PostInput) {
-				desc := *input.Description
-				desc += desc
-				input.Description = &desc
+				input.Description += " changed"
+			},
+		},
+		{
+			name: "purpose",
+			mutate: func(_ *testing.T, _ postEntryFixture, input *journal.PostInput) {
+				lines := slices.Clone(input.Lines)
+				lines[0].Purpose = "Different purpose"
+				input.Lines = lines
 			},
 		},
 		{
@@ -434,7 +461,7 @@ func TestStore_PostEntry_IdempotencyConflict(t *testing.T) {
 		{
 			name: "kind",
 			mutate: func(_ *testing.T, _ postEntryFixture, input *journal.PostInput) {
-				input.Kind = journal.KindTransfer
+				input.Kind = "transfer"
 			},
 		},
 		{
@@ -472,19 +499,21 @@ func TestStore_PostEntry_IdempotencyConflict(t *testing.T) {
 			input := journal.PostInput{
 				LedgerSlug:  "ngn_ng",
 				RequestID:   "request_1",
-				Kind:        journal.KindPayment,
+				Kind:        "payment",
 				EffectiveAt: &effectiveAt,
-				Description: &description,
+				Description: description,
 				Lines: []journal.LineInput{
 					{
 						DebitAccountReference:  fixture.platform.Cash.Reference,
 						CreditAccountReference: fixture.payable.Reference,
 						Amount:                 50_000,
+						Purpose:                "Card payment",
 					},
 					{
 						DebitAccountReference:  fixture.payable.Reference,
 						CreditAccountReference: fixture.platform.FeeRevenue.Reference,
 						Amount:                 500,
+						Purpose:                "Processing fee",
 					},
 				},
 			}
@@ -529,6 +558,7 @@ func TestStore_PostEntry_IdempotencyConflict(t *testing.T) {
 					Amount:          50_000,
 					LineNumber:      1,
 					Effect:          journal.EffectPosted,
+					Purpose:         "Card payment",
 				},
 				{
 					EntryID:         posted.Entry.ID,
@@ -538,6 +568,7 @@ func TestStore_PostEntry_IdempotencyConflict(t *testing.T) {
 					Amount:          500,
 					LineNumber:      2,
 					Effect:          journal.EffectPosted,
+					Purpose:         "Processing fee",
 				},
 			}
 			assertJournalLines(t, fixture.tx, posted.Entry.ID, wantLines)
@@ -613,19 +644,21 @@ func TestStore_PostEntry_RetryAfterClosure(t *testing.T) {
 			input := journal.PostInput{
 				LedgerSlug:  fixture.slug,
 				RequestID:   "request_1",
-				Kind:        journal.KindPayment,
+				Kind:        "payment",
 				EffectiveAt: &effectiveAt,
-				Description: &description,
+				Description: description,
 				Lines: []journal.LineInput{
 					{
 						DebitAccountReference:  fixture.platform.Cash.Reference,
 						CreditAccountReference: fixture.payable.Reference,
 						Amount:                 50_000,
+						Purpose:                "Card payment",
 					},
 					{
 						DebitAccountReference:  fixture.payable.Reference,
 						CreditAccountReference: fixture.platform.FeeRevenue.Reference,
 						Amount:                 500,
+						Purpose:                "Processing fee",
 					},
 				},
 			}
@@ -654,6 +687,7 @@ func TestStore_PostEntry_RetryAfterClosure(t *testing.T) {
 					Amount:          50_000,
 					LineNumber:      1,
 					Effect:          journal.EffectPosted,
+					Purpose:         "Card payment",
 				},
 				{
 					EntryID:         posted.Entry.ID,
@@ -663,6 +697,7 @@ func TestStore_PostEntry_RetryAfterClosure(t *testing.T) {
 					Amount:          500,
 					LineNumber:      2,
 					Effect:          journal.EffectPosted,
+					Purpose:         "Processing fee",
 				},
 			})
 
@@ -776,6 +811,7 @@ func TestStore_PostEntry_Errors(t *testing.T) {
 					DebitAccountReference:  fixture.payable.Reference,
 					CreditAccountReference: fixture.platform.FeeRevenue.Reference,
 					Amount:                 100,
+					Purpose:                "Processing fee",
 				}
 			},
 			wantErr: journal.ErrInsufficientFunds,
@@ -796,6 +832,7 @@ func TestStore_PostEntry_Errors(t *testing.T) {
 					DebitAccountReference:  fixture.platform.FeeRevenue.Reference,
 					CreditAccountReference: fixture.platform.Cash.Reference,
 					Amount:                 100,
+					Purpose:                "Platform fee",
 				}
 			},
 			wantErr: journal.ErrInsufficientFunds,
@@ -806,14 +843,16 @@ func TestStore_PostEntry_Errors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fixture := newPostEntryFixture(t)
 			input := journal.PostInput{
-				LedgerSlug: fixture.slug,
-				RequestID:  "request_1",
-				Kind:       journal.KindPayment,
+				LedgerSlug:  fixture.slug,
+				RequestID:   "request_1",
+				Kind:        "payment",
+				Description: "Payment",
 				Lines: []journal.LineInput{
 					{
 						DebitAccountReference:  fixture.platform.Cash.Reference,
 						CreditAccountReference: fixture.payable.Reference,
 						Amount:                 100,
+						Purpose:                "Card payment",
 					},
 				},
 			}
@@ -880,19 +919,21 @@ func TestStore_PostEntry_InvalidInputRollsBack(t *testing.T) {
 			input := journal.PostInput{
 				LedgerSlug:  "ngn_ng",
 				RequestID:   "request_1",
-				Kind:        journal.KindPayment,
+				Kind:        "payment",
 				EffectiveAt: &effectiveAt,
-				Description: &description,
+				Description: description,
 				Lines: []journal.LineInput{
 					{
 						DebitAccountReference:  fixture.platform.Cash.Reference,
 						CreditAccountReference: fixture.payable.Reference,
 						Amount:                 50_000,
+						Purpose:                "Card payment",
 					},
 					{
 						DebitAccountReference:  fixture.payable.Reference,
 						CreditAccountReference: fixture.platform.FeeRevenue.Reference,
 						Amount:                 500,
+						Purpose:                "Processing fee",
 					},
 				},
 			}
@@ -942,18 +983,21 @@ func TestStore_PostEntry_UnresolvedLineRollsBackEntireEntry(t *testing.T) {
 	input := journal.PostInput{
 		LedgerSlug:  "ngn_ng",
 		RequestID:   "request_1",
-		Kind:        journal.KindPayment,
+		Kind:        "payment",
+		Description: "Payment received",
 		EffectiveAt: &effectiveAt,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
 				CreditAccountReference: fixture.payable.Reference,
 				Amount:                 50_000,
+				Purpose:                "Card payment",
 			},
 			{
 				DebitAccountReference:  "acc_invalid_account",
 				CreditAccountReference: fixture.platform.FeeRevenue.Reference,
 				Amount:                 500,
+				Purpose:                "Processing fee",
 			},
 		},
 	}
@@ -985,6 +1029,164 @@ func TestStore_PostEntry_UnresolvedLineRollsBackEntireEntry(t *testing.T) {
 	for _, id := range accountIDs {
 		if got := readAccountBalances(t, fixture.tx, id); got != before[id] {
 			t.Errorf("account %d balances = %+v, want %+v", id, got, before[id])
+		}
+	}
+}
+
+// TestStore_PostEntry_ConstraintViolations verifies that invalid description,
+// purpose, or kind values are rejected by database constraints and roll back atomically.
+func TestStore_PostEntry_ConstraintViolations(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*journal.PostInput)
+		wantErr error
+	}{
+		{
+			name: "empty description",
+			mutate: func(pi *journal.PostInput) {
+				pi.Description = ""
+			},
+			wantErr: journal.ErrBlankDescription,
+		},
+		{
+			name: "blank description",
+			mutate: func(pi *journal.PostInput) {
+				pi.Description = "   "
+			},
+			wantErr: journal.ErrBlankDescription,
+		},
+		{
+			name: "overlong description",
+			mutate: func(pi *journal.PostInput) {
+				pi.Description = strings.Repeat("d", 501)
+			},
+			wantErr: journal.ErrDescriptionTooLong,
+		},
+		{
+			name: "empty purpose",
+			mutate: func(pi *journal.PostInput) {
+				pi.Lines[0].Purpose = ""
+			},
+			wantErr: journal.ErrBlankPurpose,
+		},
+		{
+			name: "blank purpose",
+			mutate: func(pi *journal.PostInput) {
+				pi.Lines[0].Purpose = "   "
+			},
+			wantErr: journal.ErrBlankPurpose,
+		},
+		{
+			name: "overlong purpose",
+			mutate: func(pi *journal.PostInput) {
+				pi.Lines[0].Purpose = strings.Repeat("p", 101)
+			},
+			wantErr: journal.ErrPurposeTooLong,
+		},
+		{
+			name: "empty kind",
+			mutate: func(pi *journal.PostInput) {
+				pi.Kind = ""
+			},
+			wantErr: journal.ErrBlankKind,
+		},
+		{
+			name: "blank kind",
+			mutate: func(pi *journal.PostInput) {
+				pi.Kind = "   "
+			},
+			wantErr: journal.ErrBlankKind,
+		},
+		{
+			name: "overlong kind",
+			mutate: func(pi *journal.PostInput) {
+				pi.Kind = journal.Kind(strings.Repeat("k", 65))
+			},
+			wantErr: journal.ErrKindTooLong,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newPostEntryFixture(t)
+			input := journal.PostInput{
+				LedgerSlug:  fixture.slug,
+				RequestID:   "req_constraint_" + tt.name,
+				Kind:        "payment",
+				Description: "Payment received",
+				Lines: []journal.LineInput{
+					{
+						DebitAccountReference:  fixture.platform.Cash.Reference,
+						CreditAccountReference: fixture.payable.Reference,
+						Amount:                 10_000,
+						Purpose:                "Card payment",
+					},
+				},
+			}
+			tt.mutate(&input)
+
+			accountIDs := []int64{
+				fixture.platform.Cash.ID,
+				fixture.payable.ID,
+			}
+			before := make(map[int64]accountBalances, len(accountIDs))
+			for _, id := range accountIDs {
+				before[id] = readAccountBalances(t, fixture.tx, id)
+			}
+
+			postErr := runWithRollbackSavepoint(t, fixture.tx, func() error {
+				_, err := fixture.store.PostEntry(t.Context(), input)
+				return err
+			})
+			if !errors.Is(postErr, tt.wantErr) {
+				t.Fatalf("PostEntry() err = %v, want %v", postErr, tt.wantErr)
+			}
+
+			assertNoJournalEntry(t, fixture.tx, fixture.ledgerID, input.RequestID)
+			assertNoJournalLines(t, fixture.tx, fixture.ledgerID)
+			for _, id := range accountIDs {
+				if got := readAccountBalances(t, fixture.tx, id); got != before[id] {
+					t.Errorf("account %d balances = %+v, want %+v", id, got, before[id])
+				}
+			}
+		})
+	}
+}
+
+// TestStore_PostEntry_ClientDefinedKind verifies that any valid non-blank kind
+// within the length limit is accepted and persisted.
+func TestStore_PostEntry_ClientDefinedKind(t *testing.T) {
+	fixture := newPostEntryFixture(t)
+
+	customKinds := []journal.Kind{
+		"invoice_settlement",
+		"payroll_distribution",
+		"tax_withholding",
+		journal.Kind(strings.Repeat("k", 64)),
+	}
+
+	for i, kind := range customKinds {
+		reqID := fmt.Sprintf("req_custom_%d", i)
+		result := fixture.mustPost(t, journal.PostInput{
+			LedgerSlug:  fixture.slug,
+			RequestID:   reqID,
+			Kind:        kind,
+			Description: "Custom kind entry",
+			Lines: []journal.LineInput{
+				{
+					DebitAccountReference:  fixture.platform.Cash.Reference,
+					CreditAccountReference: fixture.payable.Reference,
+					Amount:                 1_000,
+					Purpose:                "Custom line purpose",
+				},
+			},
+		})
+
+		if !result.Created {
+			t.Errorf("PostEntry() Created = false, want true for kind %q", kind)
+		}
+		if result.Entry.Kind != kind {
+			t.Errorf("Entry.Kind = %q, want %q", result.Entry.Kind, kind)
 		}
 	}
 }
@@ -1129,7 +1331,7 @@ type postedEntryExpectation struct {
 	LedgerID    int
 	RequestID   string
 	Kind        journal.Kind
-	Description *string
+	Description string
 	EffectiveAt time.Time
 }
 
@@ -1154,12 +1356,8 @@ func assertPostedEntry(t *testing.T, got journal.Entry, want postedEntryExpectat
 	if got.State != journal.StatePosted {
 		t.Errorf("entry State = %q, want %q", got.State, journal.StatePosted)
 	}
-	if want.Description == nil {
-		if got.Description != nil {
-			t.Errorf("entry Description = %q, want nil", *got.Description)
-		}
-	} else if got.Description == nil || *got.Description != *want.Description {
-		t.Errorf("entry Description = %v, want %q", got.Description, *want.Description)
+	if got.Description != want.Description {
+		t.Errorf("entry Description = %q, want %q", got.Description, want.Description)
 	}
 	if got.ExpiresAt != nil {
 		t.Errorf("entry ExpiresAt = %v, want nil", got.ExpiresAt)
@@ -1214,7 +1412,7 @@ func assertJournalLines(t *testing.T, tx *sql.Tx, entryID int64, want []journal.
 
 	const query = `
 		SELECT journal_entry_id, ledger_id, amount, debit_account_id,
-		       credit_account_id, line_number, effect
+		       credit_account_id, line_number, effect, purpose
 		FROM journal_lines
 		WHERE journal_entry_id = $1
 		ORDER BY line_number`
@@ -1236,6 +1434,7 @@ func assertJournalLines(t *testing.T, tx *sql.Tx, entryID int64, want []journal.
 			&line.CreditAccountID,
 			&line.LineNumber,
 			&line.Effect,
+			&line.Purpose,
 		); err != nil {
 			t.Fatalf("scan journal line: %v", err)
 		}

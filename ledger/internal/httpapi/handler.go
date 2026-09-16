@@ -202,19 +202,16 @@ func (s *server) PostJournalEntry(
 			DebitAccountReference:  line.DebitAccountRef,
 			CreditAccountReference: line.CreditAccountRef,
 			Amount:                 line.Amount,
+			Purpose:                strings.TrimSpace(line.Purpose),
 		}
 	}
 
-	description := request.Body.Description
-	if description != nil {
-		trimmed := strings.TrimSpace(*description)
-		description = &trimmed
-	}
+	description := strings.TrimSpace(request.Body.Description)
 
 	result, err := s.service.PostEntry(ctx, journal.PostInput{
 		LedgerSlug:  request.Body.Ledger,
 		RequestID:   request.Params.IdempotencyKey,
-		Kind:        journal.Kind(request.Body.Kind),
+		Kind:        journal.Kind(strings.TrimSpace(request.Body.Kind)),
 		Description: description,
 		EffectiveAt: request.Body.EffectiveAt,
 		Lines:       lines,
@@ -355,6 +352,36 @@ func mapPostJournalEntryError(err error) api.PostJournalEntryResponseObject {
 			"lines",
 			"line amounts must be greater than zero",
 		)
+	case errors.Is(err, journal.ErrBlankDescription):
+		return postJournalEntryValidationResponse(
+			"description",
+			"description must not be blank",
+		)
+	case errors.Is(err, journal.ErrDescriptionTooLong):
+		return postJournalEntryValidationResponse(
+			"description",
+			"description must not exceed 500 characters",
+		)
+	case errors.Is(err, journal.ErrBlankKind):
+		return postJournalEntryValidationResponse(
+			"kind",
+			"kind must not be blank",
+		)
+	case errors.Is(err, journal.ErrKindTooLong):
+		return postJournalEntryValidationResponse(
+			"kind",
+			"kind must not exceed 64 characters",
+		)
+	case errors.Is(err, journal.ErrBlankPurpose):
+		return postJournalEntryValidationResponse(
+			"lines",
+			"line purposes must not be blank",
+		)
+	case errors.Is(err, journal.ErrPurposeTooLong):
+		return postJournalEntryValidationResponse(
+			"lines",
+			"line purposes must not exceed 100 characters",
+		)
 	default:
 		return api.PostJournalEntry500JSONResponse{
 			Message: "The server could not complete the request.",
@@ -464,6 +491,7 @@ func (s *server) GetAccountStatement(
 			Amount:           m.Amount,
 			BalanceAfter:     m.BalanceAfter,
 			Description:      m.Description,
+			Purpose:          m.Purpose,
 			RecordedAt:       m.RecordedAt,
 		}
 	}

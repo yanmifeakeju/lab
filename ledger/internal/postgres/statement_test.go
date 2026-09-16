@@ -25,19 +25,21 @@ func TestStore_GetStatement_HappyPath(t *testing.T) {
 	entry1 := fixture.mustPost(t, journal.PostInput{
 		LedgerSlug:  "ngn_ng",
 		RequestID:   "req_1",
-		Kind:        journal.KindPayment,
-		Description: &desc1,
+		Kind:        "payment",
+		Description: desc1,
 		EffectiveAt: &eff1,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
 				CreditAccountReference: fixture.payable.Reference,
 				Amount:                 9_800,
+				Purpose:                "Card payment",
 			},
 			{
 				DebitAccountReference:  fixture.payable.Reference,
 				CreditAccountReference: fixture.platform.FeeRevenue.Reference,
 				Amount:                 200,
+				Purpose:                "Processing fee",
 			},
 		},
 	})
@@ -78,6 +80,9 @@ func TestStore_GetStatement_HappyPath(t *testing.T) {
 	if m1.LineNumber != 1 {
 		t.Errorf("m1.LineNumber = %d, want 1", m1.LineNumber)
 	}
+	if m1.Kind != "payment" {
+		t.Errorf("m1.Kind = %q, want payment", m1.Kind)
+	}
 	if m1.Direction != statement.DirectionCredit {
 		t.Errorf("m1.Direction = %q, want %q", m1.Direction, statement.DirectionCredit)
 	}
@@ -86,6 +91,12 @@ func TestStore_GetStatement_HappyPath(t *testing.T) {
 	}
 	if m1.BalanceAfter != 9800 {
 		t.Errorf("m1.BalanceAfter = %d, want 9800", m1.BalanceAfter)
+	}
+	if m1.Description != desc1 {
+		t.Errorf("m1.Description = %q, want %q", m1.Description, desc1)
+	}
+	if m1.Purpose != "Card payment" {
+		t.Errorf("m1.Purpose = %q, want Card payment", m1.Purpose)
 	}
 
 	// Line 2: Debit 200, balance_after = 9600
@@ -96,6 +107,9 @@ func TestStore_GetStatement_HappyPath(t *testing.T) {
 	if m2.LineNumber != 2 {
 		t.Errorf("m2.LineNumber = %d, want 2", m2.LineNumber)
 	}
+	if m2.Kind != "payment" {
+		t.Errorf("m2.Kind = %q, want payment", m2.Kind)
+	}
 	if m2.Direction != statement.DirectionDebit {
 		t.Errorf("m2.Direction = %q, want %q", m2.Direction, statement.DirectionDebit)
 	}
@@ -104,6 +118,12 @@ func TestStore_GetStatement_HappyPath(t *testing.T) {
 	}
 	if m2.BalanceAfter != 9600 {
 		t.Errorf("m2.BalanceAfter = %d, want 9600", m2.BalanceAfter)
+	}
+	if m2.Description != desc1 {
+		t.Errorf("m2.Description = %q, want %q", m2.Description, desc1)
+	}
+	if m2.Purpose != "Processing fee" {
+		t.Errorf("m2.Purpose = %q, want Processing fee", m2.Purpose)
 	}
 }
 
@@ -118,13 +138,15 @@ func TestStore_GetStatement_TimelineStability(t *testing.T) {
 	entry1 := fixture.mustPost(t, journal.PostInput{
 		LedgerSlug:  "ngn_ng",
 		RequestID:   "req_timeline_1",
-		Kind:        journal.KindPayment,
+		Kind:        "payment",
+		Description: "Timeline entry 1",
 		EffectiveAt: &eff1,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
 				CreditAccountReference: fixture.payable.Reference,
 				Amount:                 1_000,
+				Purpose:                "Timeline 1",
 			},
 		},
 	})
@@ -134,13 +156,15 @@ func TestStore_GetStatement_TimelineStability(t *testing.T) {
 	entry2 := fixture.mustPost(t, journal.PostInput{
 		LedgerSlug:  "ngn_ng",
 		RequestID:   "req_timeline_2",
-		Kind:        journal.KindPayment,
+		Kind:        "payment",
+		Description: "Timeline entry 2",
 		EffectiveAt: &eff2,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
 				CreditAccountReference: fixture.payable.Reference,
 				Amount:                 2_000,
+				Purpose:                "Timeline 2",
 			},
 		},
 	})
@@ -182,13 +206,15 @@ func TestStore_GetStatement_BidirectionalPagination(t *testing.T) {
 		res := fixture.mustPost(t, journal.PostInput{
 			LedgerSlug:  "ngn_ng",
 			RequestID:   "req_page_" + string(rune('0'+i)),
-			Kind:        journal.KindPayment,
+			Kind:        "payment",
+			Description: "Pagination entry",
 			EffectiveAt: &eff,
 			Lines: []journal.LineInput{
 				{
 					DebitAccountReference:  fixture.platform.Cash.Reference,
 					CreditAccountReference: fixture.payable.Reference,
 					Amount:                 int64(i * 100),
+					Purpose:                "Pagination movement",
 				},
 			},
 		})

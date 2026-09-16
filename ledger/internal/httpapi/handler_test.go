@@ -537,10 +537,12 @@ func TestPostJournalEntryValidation(t *testing.T) {
 	const validBody = `{
 		"ledger":"ngn_ng",
 		"kind":"payment",
+		"description":"Payment received",
 		"lines":[{
 			"debit_account_ref":"acct_cash",
 			"credit_account_ref":"acct_payable",
-			"amount":10000
+			"amount":10000,
+			"purpose":"Card payment"
 		}]
 	}`
 
@@ -561,10 +563,12 @@ func TestPostJournalEntryValidation(t *testing.T) {
 			name: "missing ledger",
 			body: `{
 				"kind":"payment",
+				"description":"Payment received",
 				"lines":[{
 					"debit_account_ref":"acct_cash",
 					"credit_account_ref":"acct_payable",
-					"amount":10000
+					"amount":10000,
+					"purpose":"Card payment"
 				}]
 			}`,
 			key: "payment_123",
@@ -577,9 +581,188 @@ func TestPostJournalEntryValidation(t *testing.T) {
 			body: `{}`,
 			key:  "payment_123",
 			wantDetails: []api.ValidationErrorDetail{
+				{Location: api.Body, Field: "description", Code: api.Required},
 				{Location: api.Body, Field: "kind", Code: api.Required},
 				{Location: api.Body, Field: "ledger", Code: api.Required},
 				{Location: api.Body, Field: "lines", Code: api.Required},
+			},
+		},
+		{
+			name: "missing description",
+			body: `{
+				"ledger":"ngn_ng",
+				"kind":"payment",
+				"lines":[{
+					"debit_account_ref":"acct_cash",
+					"credit_account_ref":"acct_payable",
+					"amount":10000,
+					"purpose":"Card payment"
+				}]
+			}`,
+			key: "payment_123",
+			wantDetails: []api.ValidationErrorDetail{
+				{Location: api.Body, Field: "description", Code: api.Required},
+			},
+		},
+		{
+			name: "blank description",
+			body: `{
+				"ledger":"ngn_ng",
+				"kind":"payment",
+				"description":"   ",
+				"lines":[{
+					"debit_account_ref":"acct_cash",
+					"credit_account_ref":"acct_payable",
+					"amount":10000,
+					"purpose":"Card payment"
+				}]
+			}`,
+			key: "payment_123",
+			wantDetails: []api.ValidationErrorDetail{
+				{
+					Location: api.Body,
+					Field:    "description",
+					Code:     api.InvalidFormat,
+					Message:  "description must not be blank",
+				},
+			},
+		},
+		{
+			name: "missing purpose",
+			body: `{
+				"ledger":"ngn_ng",
+				"kind":"payment",
+				"description":"Payment received",
+				"lines":[{
+					"debit_account_ref":"acct_cash",
+					"credit_account_ref":"acct_payable",
+					"amount":10000
+				}]
+			}`,
+			key: "payment_123",
+			wantDetails: []api.ValidationErrorDetail{
+				{Location: api.Body, Field: "lines[0].purpose", Code: api.Required},
+			},
+		},
+		{
+			name: "blank purpose",
+			body: `{
+				"ledger":"ngn_ng",
+				"kind":"payment",
+				"description":"Payment received",
+				"lines":[{
+					"debit_account_ref":"acct_cash",
+					"credit_account_ref":"acct_payable",
+					"amount":10000,
+					"purpose":"   "
+				}]
+			}`,
+			key: "payment_123",
+			wantDetails: []api.ValidationErrorDetail{
+				{
+					Location: api.Body,
+					Field:    "lines[0].purpose",
+					Code:     api.InvalidFormat,
+					Message:  "lines[0].purpose must not be blank",
+				},
+			},
+		},
+		{
+			name: "overlong kind",
+			body: fmt.Sprintf(`{
+				"ledger":"ngn_ng",
+				"kind":"%s",
+				"description":"Payment received",
+				"lines":[{
+					"debit_account_ref":"acct_cash",
+					"credit_account_ref":"acct_payable",
+					"amount":10000,
+					"purpose":"Card payment"
+				}]
+			}`, strings.Repeat("k", 65)),
+			key: "payment_123",
+			wantDetails: []api.ValidationErrorDetail{
+				{
+					Location: api.Body,
+					Field:    "kind",
+					Code:     api.MaxLength,
+					Message:  "kind must not exceed 64 characters",
+				},
+			},
+		},
+		{
+			name: "empty kind",
+			body: `{
+				"ledger":"ngn_ng",
+				"kind":"",
+				"description":"Payment received",
+				"lines":[{
+					"debit_account_ref":"acct_cash",
+					"credit_account_ref":"acct_payable",
+					"amount":10000,
+					"purpose":"Card payment"
+				}]
+			}`,
+			key: "payment_123",
+			wantDetails: []api.ValidationErrorDetail{
+				{
+					Location: api.Body,
+					Field:    "kind",
+					Code:     api.InvalidFormat,
+					Message:  "kind must not be blank",
+				},
+				{
+					Location: api.Body,
+					Field:    "kind",
+					Code:     api.MinLength,
+					Message:  "kind must not be empty",
+				},
+			},
+		},
+		{
+			name: "blank kind",
+			body: `{
+				"ledger":"ngn_ng",
+				"kind":"   ",
+				"description":"Payment received",
+				"lines":[{
+					"debit_account_ref":"acct_cash",
+					"credit_account_ref":"acct_payable",
+					"amount":10000,
+					"purpose":"Card payment"
+				}]
+			}`,
+			key: "payment_123",
+			wantDetails: []api.ValidationErrorDetail{
+				{
+					Location: api.Body,
+					Field:    "kind",
+					Code:     api.InvalidFormat,
+					Message:  "kind must not be blank",
+				},
+			},
+		},
+		{
+			name: "overlong purpose",
+			body: fmt.Sprintf(`{
+				"ledger":"ngn_ng",
+				"kind":"payment",
+				"description":"Payment received",
+				"lines":[{
+					"debit_account_ref":"acct_cash",
+					"credit_account_ref":"acct_payable",
+					"amount":10000,
+					"purpose":"%s"
+				}]
+			}`, strings.Repeat("p", 101)),
+			key: "payment_123",
+			wantDetails: []api.ValidationErrorDetail{
+				{
+					Location: api.Body,
+					Field:    "lines[0].purpose",
+					Code:     api.MaxLength,
+					Message:  "lines[0].purpose must not exceed 100 characters",
+				},
 			},
 		},
 		{
@@ -587,10 +770,12 @@ func TestPostJournalEntryValidation(t *testing.T) {
 			body: `{
 				"ledger":"bad__slug",
 				"kind":"payment",
+				"description":"Payment received",
 				"lines":[{
 					"debit_account_ref":"acct_cash",
 					"credit_account_ref":"acct_payable",
-					"amount":10000
+					"amount":10000,
+					"purpose":"Card payment"
 				}]
 			}`,
 			key: "payment_123",
@@ -604,29 +789,8 @@ func TestPostJournalEntryValidation(t *testing.T) {
 			},
 		},
 		{
-			name: "unsupported kind",
-			body: `{
-				"ledger":"ngn_ng",
-				"kind":"refund",
-				"lines":[{
-					"debit_account_ref":"acct_cash",
-					"credit_account_ref":"acct_payable",
-					"amount":10000
-				}]
-			}`,
-			key: "payment_123",
-			wantDetails: []api.ValidationErrorDetail{
-				{
-					Location: api.Body,
-					Field:    "kind",
-					Code:     api.InvalidValue,
-					Message:  "kind must be one of: payment, settlement, transfer",
-				},
-			},
-		},
-		{
 			name: "no lines",
-			body: `{"ledger":"ngn_ng","kind":"payment","lines":[]}`,
+			body: `{"ledger":"ngn_ng","kind":"payment","description":"Payment received","lines":[]}`,
 			key:  "payment_123",
 			wantDetails: []api.ValidationErrorDetail{
 				{Location: api.Body, Field: "lines", Code: api.InvalidValue},
@@ -637,10 +801,12 @@ func TestPostJournalEntryValidation(t *testing.T) {
 			body: `{
 				"ledger":"ngn_ng",
 				"kind":"payment",
+				"description":"Payment received",
 				"lines":[{
 					"debit_account_ref":"acct_cash",
 					"credit_account_ref":"acct_payable",
-					"amount":0
+					"amount":0,
+					"purpose":"Card payment"
 				}]
 			}`,
 			key: "payment_123",
@@ -653,10 +819,12 @@ func TestPostJournalEntryValidation(t *testing.T) {
 			body: `{
 				"ledger":"ngn_ng",
 				"kind":"payment",
+				"description":"Payment received",
 				"lines":[{
 					"debit_account_ref":"acct_same",
 					"credit_account_ref":"acct_same",
-					"amount":10000
+					"amount":10000,
+					"purpose":"Card payment"
 				}]
 			}`,
 			key: "payment_123",
@@ -722,6 +890,74 @@ func TestPostJournalEntryValidation(t *testing.T) {
 	}
 }
 
+// TestPostJournalEntryAcceptsClientDefinedKind guards the removal of the kind
+// enum: the schema bounds a kind's shape, not its vocabulary, so a value the
+// ledger has never heard of must reach the service unchanged.
+func TestPostJournalEntryAcceptsClientDefinedKind(t *testing.T) {
+	kinds := []string{
+		"refund",
+		"chargeback",
+		"payout_reversal",
+		strings.Repeat("k", 64),
+	}
+
+	for _, kind := range kinds {
+		t.Run(kind, func(t *testing.T) {
+			service := &fakeService{
+				postResult: journal.PostResult{
+					Entry: journal.Entry{
+						Reference:   "jrn_01K33YW0MDHJ9E4N7Z2QPV6R8K",
+						Kind:        journal.Kind(kind),
+						State:       journal.StatePosted,
+						Description: "Payment received",
+					},
+					Created: true,
+				},
+			}
+			handler, err := httpapi.NewHandler(service)
+			if err != nil {
+				t.Fatalf("NewHandler: %v", err)
+			}
+
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/entries",
+				strings.NewReader(fmt.Sprintf(`{
+					"ledger":"ngn_ng",
+					"kind":%q,
+					"description":"Payment received",
+					"lines":[{
+						"debit_account_ref":"acct_cash",
+						"credit_account_ref":"acct_payable",
+						"amount":10000,
+						"purpose":"Card payment"
+					}]
+				}`, kind)),
+			)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", "payment_123")
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusCreated, rec.Body.String())
+			}
+			if service.postInput.Kind != journal.Kind(kind) {
+				t.Errorf("PostEntry() input kind = %q, want %q", service.postInput.Kind, kind)
+			}
+
+			var got api.PostJournalEntryResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode success response: %v", err)
+			}
+			if got.Kind != kind {
+				t.Errorf("response kind = %q, want %q", got.Kind, kind)
+			}
+		})
+	}
+}
+
 func TestPostJournalEntryResponses(t *testing.T) {
 	effectiveAt := time.Date(2026, time.September, 8, 10, 30, 0, 0, time.UTC)
 	createdAt := effectiveAt.Add(time.Second)
@@ -730,22 +966,23 @@ func TestPostJournalEntryResponses(t *testing.T) {
 	wantInput := journal.PostInput{
 		LedgerSlug:  "ngn_ng",
 		RequestID:   "payment_123",
-		Kind:        journal.KindPayment,
-		Description: &description,
+		Kind:        "payment",
+		Description: description,
 		EffectiveAt: &effectiveAt,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  "acct_cash",
 				CreditAccountReference: "acct_payable",
 				Amount:                 10_000,
+				Purpose:                "Card payment",
 			},
 		},
 	}
 	postedEntry := journal.Entry{
 		Reference:   "jrn_01K33YW0MDHJ9E4N7Z2QPV6R8K",
-		Kind:        journal.KindPayment,
+		Kind:        "payment",
 		State:       journal.StatePosted,
-		Description: &description,
+		Description: description,
 		EffectiveAt: effectiveAt,
 		CreatedAt:   createdAt,
 	}
@@ -810,6 +1047,72 @@ func TestPostJournalEntryResponses(t *testing.T) {
 				Message:  "line amounts must be greater than zero",
 			},
 		},
+		{
+			name:       "defensive blank description",
+			err:        journal.ErrBlankDescription,
+			wantStatus: http.StatusBadRequest,
+			wantDetail: &api.ValidationErrorDetail{
+				Location: api.Body,
+				Field:    "description",
+				Code:     api.InvalidValue,
+				Message:  "description must not be blank",
+			},
+		},
+		{
+			name:       "defensive overlong description",
+			err:        journal.ErrDescriptionTooLong,
+			wantStatus: http.StatusBadRequest,
+			wantDetail: &api.ValidationErrorDetail{
+				Location: api.Body,
+				Field:    "description",
+				Code:     api.InvalidValue,
+				Message:  "description must not exceed 500 characters",
+			},
+		},
+		{
+			name:       "defensive blank kind",
+			err:        journal.ErrBlankKind,
+			wantStatus: http.StatusBadRequest,
+			wantDetail: &api.ValidationErrorDetail{
+				Location: api.Body,
+				Field:    "kind",
+				Code:     api.InvalidValue,
+				Message:  "kind must not be blank",
+			},
+		},
+		{
+			name:       "defensive overlong kind",
+			err:        journal.ErrKindTooLong,
+			wantStatus: http.StatusBadRequest,
+			wantDetail: &api.ValidationErrorDetail{
+				Location: api.Body,
+				Field:    "kind",
+				Code:     api.InvalidValue,
+				Message:  "kind must not exceed 64 characters",
+			},
+		},
+		{
+			name:       "defensive blank purpose",
+			err:        journal.ErrBlankPurpose,
+			wantStatus: http.StatusBadRequest,
+			wantDetail: &api.ValidationErrorDetail{
+				Location: api.Body,
+				Field:    "lines",
+				Code:     api.InvalidValue,
+				Message:  "line purposes must not be blank",
+			},
+		},
+		{
+			name:       "defensive overlong purpose",
+			err:        journal.ErrPurposeTooLong,
+			wantStatus: http.StatusBadRequest,
+			wantDetail: &api.ValidationErrorDetail{
+				Location: api.Body,
+				Field:    "lines",
+				Code:     api.InvalidValue,
+				Message:  "line purposes must not exceed 100 characters",
+			},
+		},
 		{name: "unexpected error", err: errors.New("database unavailable"), wantStatus: http.StatusInternalServerError, wantCode: api.InternalServerError, wantMessage: "The server could not complete the request."},
 	}
 
@@ -832,7 +1135,8 @@ func TestPostJournalEntryResponses(t *testing.T) {
 					"lines":[{
 						"debit_account_ref":"acct_cash",
 						"credit_account_ref":"acct_payable",
-						"amount":10000
+						"amount":10000,
+						"purpose":"Card payment"
 					}]
 				}`),
 			)
@@ -883,10 +1187,10 @@ func TestPostJournalEntryResponses(t *testing.T) {
 				if got.JournalRef != postedEntry.Reference {
 					t.Errorf("journal_ref = %q, want %q", got.JournalRef, postedEntry.Reference)
 				}
-				if got.LedgerSlug != "ngn_ng" || got.Kind != api.Payment || got.State != api.Posted {
+				if got.LedgerSlug != "ngn_ng" || got.Kind != "payment" || got.State != api.Posted {
 					t.Errorf("response identity = %+v", got)
 				}
-				if got.Description == nil || *got.Description != description {
+				if got.Description != description {
 					t.Errorf("description = %v, want %q", got.Description, description)
 				}
 				if !got.EffectiveAt.Equal(effectiveAt) || !got.CreatedAt.Equal(createdAt) {
@@ -1123,21 +1427,23 @@ func TestGetAccountStatement_HappyPath(t *testing.T) {
 				{
 					JournalReference: "jrn_01M20J1QD2XB8K7G4N9CVF6T3A",
 					LineNumber:       1,
-					Kind:             journal.KindPayment,
+					Kind:             "payment",
 					Direction:        statement.DirectionCredit,
 					Amount:           9800,
 					BalanceAfter:     9800,
-					Description:      &desc,
+					Description:      desc,
+					Purpose:          "Card payment",
 					RecordedAt:       recordedAt,
 				},
 				{
 					JournalReference: "jrn_01M20J1QD2XB8K7G4N9CVF6T3A",
 					LineNumber:       2,
-					Kind:             journal.KindPayment,
+					Kind:             "payment",
 					Direction:        statement.DirectionDebit,
 					Amount:           200,
 					BalanceAfter:     9600,
-					Description:      &desc,
+					Description:      desc,
+					Purpose:          "Processing fee",
 					RecordedAt:       recordedAt,
 				},
 			},
@@ -1186,6 +1492,12 @@ func TestGetAccountStatement_HappyPath(t *testing.T) {
 	}
 	if len(got.Entries) != 2 {
 		t.Fatalf("len(Entries) = %d, want 2", len(got.Entries))
+	}
+	if got.Entries[0].Description != desc || got.Entries[0].Purpose != "Card payment" || got.Entries[0].Kind != "payment" {
+		t.Errorf("Entries[0] = %+v", got.Entries[0])
+	}
+	if got.Entries[1].Description != desc || got.Entries[1].Purpose != "Processing fee" || got.Entries[1].Kind != "payment" {
+		t.Errorf("Entries[1] = %+v", got.Entries[1])
 	}
 	if got.Page.PreviousCursor != nil {
 		t.Errorf("Page.PreviousCursor = %v, want nil", got.Page.PreviousCursor)

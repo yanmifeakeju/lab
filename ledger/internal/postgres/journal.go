@@ -16,6 +16,7 @@ type postEntryLine struct {
 	DebitAccountReference  string `json:"debit_account_ref"`
 	CreditAccountReference string `json:"credit_account_ref"`
 	Amount                 int64  `json:"amount"`
+	Purpose                string `json:"purpose"`
 }
 
 // PostEntry records an immediately posted journal entry, or returns the
@@ -34,6 +35,7 @@ func (s *Store) PostEntry(ctx context.Context, input journal.PostInput) (journal
 			DebitAccountReference:  line.DebitAccountReference,
 			CreditAccountReference: line.CreditAccountReference,
 			Amount:                 line.Amount,
+			Purpose:                line.Purpose,
 		}
 	}
 	encodedLines, err := json.Marshal(entryLines)
@@ -96,6 +98,18 @@ func mapPostEntryError(err error) error {
 				return fmt.Errorf("%w: %s", journal.ErrNoSelfTransfer, pgErr.Message)
 			case "journal_lines_amount_positive":
 				return fmt.Errorf("%w: %s", journal.ErrNonPositiveAmount, pgErr.Message)
+			case "journal_entries_description_not_blank":
+				return fmt.Errorf("%w: %s", journal.ErrBlankDescription, pgErr.Message)
+			case "journal_entries_description_length":
+				return fmt.Errorf("%w: %s", journal.ErrDescriptionTooLong, pgErr.Message)
+			case "journal_entries_kind_not_blank":
+				return fmt.Errorf("%w: %s", journal.ErrBlankKind, pgErr.Message)
+			case "journal_entries_kind_length":
+				return fmt.Errorf("%w: %s", journal.ErrKindTooLong, pgErr.Message)
+			case "journal_lines_purpose_not_blank":
+				return fmt.Errorf("%w: %s", journal.ErrBlankPurpose, pgErr.Message)
+			case "journal_lines_purpose_length":
+				return fmt.Errorf("%w: %s", journal.ErrPurposeTooLong, pgErr.Message)
 			}
 		}
 	}

@@ -27,11 +27,11 @@ WITH target_account AS (
 		AND a.kind = 'payable'
 ),
 account_lines AS (
-	SELECT line.journal_entry_id, line.line_number, 'debit'::text AS direction, line.amount, -line.amount AS signed_amount
+	SELECT line.journal_entry_id, line.line_number, 'debit'::text AS direction, line.amount, -line.amount AS signed_amount, line.purpose
 	FROM target_account target
 	JOIN journal_lines line ON line.debit_account_id = target.id AND line.ledger_id = target.ledger_id AND line.effect = 'posted'
 	UNION ALL
-	SELECT line.journal_entry_id, line.line_number, 'credit'::text AS direction, line.amount, line.amount AS signed_amount
+	SELECT line.journal_entry_id, line.line_number, 'credit'::text AS direction, line.amount, line.amount AS signed_amount, line.purpose
 	FROM target_account target
 	JOIN journal_lines line ON line.credit_account_id = target.id AND line.ledger_id = target.ledger_id AND line.effect = 'posted'
 ),
@@ -41,6 +41,7 @@ all_movements AS (
 		line.line_number,
 		entry.kind,
 		entry.description,
+		line.purpose,
 		entry.created_at AS recorded_at,
 		line.direction,
 		line.amount,
@@ -69,6 +70,7 @@ sequenced AS (
 		m.direction,
 		m.amount,
 		m.description,
+		m.purpose,
 		m.recorded_at,
 		(
 			b.opening_balance
@@ -102,6 +104,7 @@ SELECT
 	p.amount,
 	p.balance_after,
 	p.description,
+	p.purpose,
 	p.recorded_at
 FROM target_account target
 CROSS JOIN balances b
@@ -129,6 +132,7 @@ SELECT
 	p.amount,
 	p.balance_after,
 	p.description,
+	p.purpose,
 	p.recorded_at
 FROM target_account target
 CROSS JOIN balances b
@@ -205,6 +209,7 @@ func (s *Store) GetStatement(
 			amount       sql.NullInt64
 			balanceAfter sql.NullInt64
 			desc         sql.NullString
+			purpose      sql.NullString
 			recAt        sql.NullTime
 		)
 
@@ -221,16 +226,13 @@ func (s *Store) GetStatement(
 			&amount,
 			&balanceAfter,
 			&desc,
+			&purpose,
 			&recAt,
 		); err != nil {
 			return statement.Result{}, fmt.Errorf("scan statement movement: %w", err)
 		}
 
 		if jref.Valid {
-			var d *string
-			if desc.Valid {
-				d = &desc.String
-			}
 			fetched = append(fetched, statement.Movement{
 				JournalReference: jref.String,
 				LineNumber:       int(lineNum.Int64),
@@ -238,7 +240,8 @@ func (s *Store) GetStatement(
 				Direction:        statement.Direction(dir.String),
 				Amount:           amount.Int64,
 				BalanceAfter:     balanceAfter.Int64,
-				Description:      d,
+				Description:      desc.String,
+				Purpose:          purpose.String,
 				RecordedAt:       recAt.Time,
 			})
 		}

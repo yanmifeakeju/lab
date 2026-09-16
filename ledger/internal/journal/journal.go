@@ -6,12 +6,6 @@ import (
 
 type Kind string
 
-const (
-	KindPayment    Kind = "payment"
-	KindTransfer   Kind = "transfer"
-	KindSettlement Kind = "settlement"
-)
-
 type State string
 
 const (
@@ -29,7 +23,7 @@ type Entry struct {
 	LedgerID       int
 	Kind           Kind
 	State          State
-	Description    *string
+	Description    string
 	ExpiresAt      *time.Time
 	PendingEntryID *int64
 	EffectiveAt    time.Time
@@ -54,19 +48,21 @@ type Line struct {
 	CreditAccountID int64
 	LineNumber      int
 	Effect          Effect
+	Purpose         string
 }
 
 type LineInput struct {
 	DebitAccountReference  string
 	CreditAccountReference string
 	Amount                 int64
+	Purpose                string
 }
 
 type PostInput struct {
 	LedgerSlug  string
 	RequestID   string
 	Kind        Kind
-	Description *string
+	Description string
 	EffectiveAt *time.Time
 	Lines       []LineInput
 }

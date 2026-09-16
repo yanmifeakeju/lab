@@ -186,6 +186,7 @@ paths:
                     amount: 9800
                     balance_after: 9800
                     description: Payment received
+                    purpose: Card payment
                     recorded_at: "2026-09-10T09:15:00Z"
                   - journal_reference: jrn_01M20J1QD2XB8K7G4N9CVF6T3A
                     line_number: 2
@@ -194,6 +195,7 @@ paths:
                     amount: 200
                     balance_after: 9600
                     description: Payment received
+                    purpose: Processing fee
                     recorded_at: "2026-09-10T09:15:00Z"
                 page:
                   limit: 50
@@ -382,18 +384,21 @@ components:
     JournalEntryKind:
       type: string
       description: Business classification of a journal entry.
-      enum:
-        - payment
-        - settlement
-        - transfer
+      minLength: 1
+      maxLength: 64
+      pattern: '.*\S.*'
       x-validation-messages:
-        enum: "must be one of: payment, settlement, transfer"
+        type: must be a string
+        minLength: must not be empty
+        maxLength: must not exceed 64 characters
+        pattern: must not be blank
 
     PostJournalEntryRequest:
       type: object
       required:
         - ledger
         - kind
+        - description
         - lines
       properties:
         ledger:
@@ -430,6 +435,7 @@ components:
         - debit_account_ref
         - credit_account_ref
         - amount
+        - purpose
       properties:
         debit_account_ref:
           $ref: "#/components/schemas/AccountReference"
@@ -446,6 +452,17 @@ components:
             type: must be an integer
             minimum: must be greater than zero
             maximum: must not exceed the maximum supported amount
+        purpose:
+          type: string
+          minLength: 1
+          maxLength: 100
+          pattern: '.*\S.*'
+          description: What this line's amount is for within the entry, such as a fee or tax. Client-defined.
+          x-validation-messages:
+            type: must be a string
+            minLength: must not be empty
+            maxLength: must not exceed 100 characters
+            pattern: must not be blank
 
     PostJournalEntryResponse:
       type: object
@@ -455,6 +472,7 @@ components:
         - ledger_slug
         - kind
         - state
+        - description
         - effective_at
         - created_at
       properties:
@@ -762,6 +780,8 @@ components:
         - direction
         - amount
         - balance_after
+        - description
+        - purpose
         - recorded_at
       properties:
         journal_reference:
@@ -789,6 +809,10 @@ components:
           type: string
           minLength: 1
           example: Payment received
+        purpose:
+          type: string
+          minLength: 1
+          example: Card payment
         recorded_at:
           type: string
           format: date-time

@@ -37,19 +37,21 @@ func TestStore_PostEntry_ConcurrentIdempotentRetry(t *testing.T) {
 	input := journal.PostInput{
 		LedgerSlug:  fixture.slug,
 		RequestID:   "request_1",
-		Kind:        journal.KindPayment,
-		Description: &description,
+		Kind:        "payment",
+		Description: description,
 		EffectiveAt: &effectiveAt,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
 				CreditAccountReference: fixture.payable.Reference,
 				Amount:                 amount,
+				Purpose:                "Card payment",
 			},
 			{
 				DebitAccountReference:  fixture.payable.Reference,
 				CreditAccountReference: fixture.platform.FeeRevenue.Reference,
 				Amount:                 fee,
+				Purpose:                "Processing fee",
 			},
 		},
 	}
@@ -162,25 +164,29 @@ func TestStore_PostEntry_ConcurrentInsufficientFunds(t *testing.T) {
 	// Fund the payable account with exactly one request's worth of spend.
 	const spend int64 = 50_000
 	fixture.mustPostCommitted(t, ctx, journal.PostInput{
-		LedgerSlug: fixture.slug,
-		RequestID:  "request_fund",
-		Kind:       journal.KindPayment,
+		LedgerSlug:  fixture.slug,
+		RequestID:   "request_fund",
+		Kind:        "payment",
+		Description: "Funding payable account",
 		Lines: []journal.LineInput{{
 			DebitAccountReference:  fixture.platform.Cash.Reference,
 			CreditAccountReference: fixture.payable.Reference,
 			Amount:                 spend,
+			Purpose:                "Funding",
 		}},
 	})
 
 	spendInput := func(requestID string) journal.PostInput {
 		return journal.PostInput{
-			LedgerSlug: fixture.slug,
-			RequestID:  requestID,
-			Kind:       journal.KindTransfer,
+			LedgerSlug:  fixture.slug,
+			RequestID:   requestID,
+			Kind:        "transfer",
+			Description: "Spending from payable",
 			Lines: []journal.LineInput{{
 				DebitAccountReference:  fixture.payable.Reference,
 				CreditAccountReference: fixture.platform.FeeRevenue.Reference,
 				Amount:                 spend,
+				Purpose:                "Fee payment",
 			}},
 		}
 	}

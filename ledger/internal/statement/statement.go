@@ -70,7 +70,8 @@ type Movement struct {
 	Direction        Direction
 	Amount           int64
 	BalanceAfter     int64
-	Description      *string
+	Description      string
+	Purpose          string
 	RecordedAt       time.Time
 }
 
