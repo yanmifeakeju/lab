@@ -25,11 +25,22 @@ const (
 	NavigationPrevious Navigation = "previous"
 )
 
+// A statement is historical, not a live view of the journal: its period ends at
+// least Margin before now, so every posting inside it has committed.
+const (
+	Margin        = 2 * time.Minute
+	DefaultPeriod = 30 * 24 * time.Hour
+	MaxPeriod     = 90 * 24 * time.Hour
+)
+
 // ListInput contains the parameters for listing a payable account's statement.
+//
+// To defaults to Margin before now, and a later To is reduced to it. From
+// defaults to DefaultPeriod before the resolved To.
 type ListInput struct {
 	AccountReference string
-	From             time.Time
-	To               time.Time
+	From             *time.Time
+	To               *time.Time
 	Limit            int
 	Cursor           *Cursor
 }
@@ -49,6 +60,7 @@ type Period struct {
 
 // Movement represents one journal line affecting the payable account.
 type Movement struct {
+	Sequence         int64
 	JournalReference string
 	LineNumber       int
 	Kind             string

@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
+	"yanmifeakeju.com/ledger/internal/database"
 	"yanmifeakeju.com/ledger/migrations"
 )
 
@@ -60,7 +60,7 @@ func runIntegrationTests(m *testing.M) (code int) {
 		return 1
 	}
 
-	testDB, err = sql.Open("pgx", dsn)
+	testDB, err = database.Open(setupCtx, dsn)
 	if err != nil {
 		log.Printf("open postgres: %v", err)
 		return 1
@@ -147,4 +147,17 @@ func runWithRollbackSavepoint(t *testing.T, tx *sql.Tx, fn func() error) error {
 	}
 
 	return fnErr
+}
+
+func TestConnection_TimezoneIsUTC(t *testing.T) {
+	t.Parallel()
+
+	var tz string
+	if err := testDB.QueryRowContext(t.Context(), "SHOW timezone").Scan(&tz); err != nil {
+		t.Fatalf("query timezone: %v", err)
+	}
+
+	if tz != "UTC" {
+		t.Errorf("timezone = %q, want %q", tz, "UTC")
+	}
 }

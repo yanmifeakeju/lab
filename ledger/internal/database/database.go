@@ -6,16 +6,28 @@ import (
 	"fmt"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // Open returns a [*sql.DB] for the given DSN. The caller owns its lifetime.
 // Use Close() on shutdown.
 func Open(ctx context.Context, dsn string) (*sql.DB, error) {
-	db, err := sql.Open("pgx", dsn)
+	connConfig, err := pgx.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
+		return nil, fmt.Errorf("parse dsn: %w", err)
 	}
+	if connConfig.RuntimeParams == nil {
+		connConfig.RuntimeParams = make(map[string]string)
+	}
+	connConfig.RuntimeParams["timezone"] = "UTC"
+	// Statements end statement.Margin before the database clock, which is
+	// safe only while no posting transaction outlives that margin. These cap
+	// a posting at one statement plus one idle wait before commit.
+	connConfig.RuntimeParams["statement_timeout"] = "30s"
+	connConfig.RuntimeParams["idle_in_transaction_session_timeout"] = "30s"
+
+	db := stdlib.OpenDB(*connConfig)
 
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(25)

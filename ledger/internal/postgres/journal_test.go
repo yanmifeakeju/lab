@@ -1503,3 +1503,373 @@ func assertJournalLines(t *testing.T, tx *sql.Tx, entryReference string, want []
 		}
 	}
 }
+
+type accountMovementRow struct {
+	Sequence     int64
+	LineNumber   int
+	Direction    string
+	Amount       int64
+	Purpose      string
+	BalanceAfter int64
+}
+
+func assertAccountMovements(t *testing.T, tx *sql.Tx, accountID int64, want []accountMovementRow) {
+	t.Helper()
+
+	const query = `
+		SELECT sequence, line_number, direction, amount, purpose, balance_after, recorded_at
+		FROM account_movements
+		WHERE account_id = $1
+		ORDER BY sequence`
+
+	rows, err := tx.QueryContext(t.Context(), query, accountID)
+	if err != nil {
+		t.Fatalf("query account movements: %v", err)
+	}
+	defer rows.Close()
+
+	var (
+		got      []accountMovementRow
+		recorded []time.Time
+	)
+	for rows.Next() {
+		var (
+			row   accountMovementRow
+			recAt time.Time
+		)
+		if err := rows.Scan(
+			&row.Sequence,
+			&row.LineNumber,
+			&row.Direction,
+			&row.Amount,
+			&row.Purpose,
+			&row.BalanceAfter,
+			&recAt,
+		); err != nil {
+			t.Fatalf("scan account movement: %v", err)
+		}
+		got = append(got, row)
+		recorded = append(recorded, recAt)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate account movements: %v", err)
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("account movement count = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("account movement %d = %+v, want %+v", i, got[i], want[i])
+		}
+		if i > 0 && recorded[i].Before(recorded[i-1]) {
+			t.Errorf("movement %d recorded_at (%v) < movement %d recorded_at (%v)", i, recorded[i], i-1, recorded[i-1])
+		}
+	}
+}
+
+// TestStore_PostEntry_AccountMovements verifies that an entry touching a payable
+// account on multiple lines writes running-balance movements in line_number order
+// with correct balance_after and sequence, while platform accounts without the
+// records_movements flag record none.
+func TestStore_PostEntry_AccountMovements(t *testing.T) {
+	fixture := newPostEntryFixture(t)
+
+	description := "Payment and processing fee"
+	effectiveAt := time.Date(2026, time.September, 15, 10, 0, 0, 0, time.UTC)
+	const (
+		grossAmount int64 = 10_000
+		feeAmount   int64 = 200
+	)
+
+	result := fixture.mustPost(t, journal.PostInput{
+		LedgerSlug:  "ngn_ng",
+		RequestID:   "req_movements_1",
+		Kind:        "payment",
+		Description: description,
+		EffectiveAt: &effectiveAt,
+		Lines: []journal.LineInput{
+			{
+				DebitAccountReference:  fixture.platform.Cash.Reference,
+				CreditAccountReference: fixture.payable.Reference,
+				Amount:                 grossAmount,
+				Purpose:                "Card payment",
+			},
+			{
+				DebitAccountReference:  fixture.payable.Reference,
+				CreditAccountReference: fixture.platform.FeeRevenue.Reference,
+				Amount:                 feeAmount,
+				Purpose:                "Processing fee",
+			},
+		},
+	})
+
+	if !result.Created {
+		t.Fatal("PostEntry() Created = false, want true")
+	}
+
+	// Payable account recorded 2 movements in line_number order:
+	// Line 1: credit 10000, balance_after = 10000
+	// Line 2: debit 200, balance_after = 9800
+	assertAccountMovements(t, fixture.tx, fixture.payable.ID, []accountMovementRow{
+		{
+			Sequence:     1,
+			LineNumber:   1,
+			Direction:    "credit",
+			Amount:       10_000,
+			Purpose:      "Card payment",
+			BalanceAfter: 10_000,
+		},
+		{
+			Sequence:     2,
+			LineNumber:   2,
+			Direction:    "debit",
+			Amount:       200,
+			Purpose:      "Processing fee",
+			BalanceAfter: 9_800,
+		},
+	})
+
+	// Check accounts table movement_count
+	var payableMovementCount, cashMovementCount, feeMovementCount int64
+	if err := fixture.tx.QueryRowContext(t.Context(),
+		`SELECT movement_count FROM accounts WHERE id = $1`, fixture.payable.ID,
+	).Scan(&payableMovementCount); err != nil {
+		t.Fatalf("query payable movement_count: %v", err)
+	}
+	if payableMovementCount != 2 {
+		t.Errorf("payable movement_count = %d, want 2", payableMovementCount)
+	}
+
+	if err := fixture.tx.QueryRowContext(t.Context(),
+		`SELECT movement_count FROM accounts WHERE id = $1`, fixture.platform.Cash.ID,
+	).Scan(&cashMovementCount); err != nil {
+		t.Fatalf("query cash movement_count: %v", err)
+	}
+	if cashMovementCount != 0 {
+		t.Errorf("cash movement_count = %d, want 0", cashMovementCount)
+	}
+
+	if err := fixture.tx.QueryRowContext(t.Context(),
+		`SELECT movement_count FROM accounts WHERE id = $1`, fixture.platform.FeeRevenue.ID,
+	).Scan(&feeMovementCount); err != nil {
+		t.Fatalf("query fee movement_count: %v", err)
+	}
+	if feeMovementCount != 0 {
+		t.Errorf("fee movement_count = %d, want 0", feeMovementCount)
+	}
+
+	// Verify both movements for the payable account share the exact same recorded_at
+	var rec1, rec2 time.Time
+	if err := fixture.tx.QueryRowContext(t.Context(),
+		`SELECT recorded_at FROM account_movements WHERE account_id = $1 AND sequence = 1`, fixture.payable.ID,
+	).Scan(&rec1); err != nil {
+		t.Fatalf("query sequence 1 recorded_at: %v", err)
+	}
+	if err := fixture.tx.QueryRowContext(t.Context(),
+		`SELECT recorded_at FROM account_movements WHERE account_id = $1 AND sequence = 2`, fixture.payable.ID,
+	).Scan(&rec2); err != nil {
+		t.Fatalf("query sequence 2 recorded_at: %v", err)
+	}
+	if !rec1.Equal(rec2) {
+		t.Errorf("movements in same entry have different recorded_at: %v vs %v", rec1, rec2)
+	}
+}
+
+// TestStore_PostEntry_ReconciliationIdentity verifies that after any posting,
+// the recorded account's latest balance_after equals credits_posted - debits_posted.
+func TestStore_PostEntry_ReconciliationIdentity(t *testing.T) {
+	fixture := newPostEntryFixture(t)
+
+	operations := []struct {
+		desc    string
+		lines   []journal.LineInput
+		wantBal int64
+	}{
+		{
+			desc: "initial payment",
+			lines: []journal.LineInput{
+				{
+					DebitAccountReference:  fixture.platform.Cash.Reference,
+					CreditAccountReference: fixture.payable.Reference,
+					Amount:                 50_000,
+					Purpose:                "Initial card payment",
+				},
+			},
+			wantBal: 50_000,
+		},
+		{
+			desc: "fee debit",
+			lines: []journal.LineInput{
+				{
+					DebitAccountReference:  fixture.payable.Reference,
+					CreditAccountReference: fixture.platform.FeeRevenue.Reference,
+					Amount:                 1_500,
+					Purpose:                "Monthly fee",
+				},
+			},
+			wantBal: 48_500,
+		},
+		{
+			desc: "payout debit and processing fee",
+			lines: []journal.LineInput{
+				{
+					DebitAccountReference:  fixture.payable.Reference,
+					CreditAccountReference: fixture.platform.Cash.Reference,
+					Amount:                 20_000,
+					Purpose:                "Merchant withdrawal",
+				},
+				{
+					DebitAccountReference:  fixture.payable.Reference,
+					CreditAccountReference: fixture.platform.FeeRevenue.Reference,
+					Amount:                 500,
+					Purpose:                "Withdrawal fee",
+				},
+			},
+			wantBal: 28_000,
+		},
+	}
+
+	for i, op := range operations {
+		eff := time.Date(2026, time.September, 15+i, 12, 0, 0, 0, time.UTC)
+		fixture.mustPost(t, journal.PostInput{
+			LedgerSlug:  "ngn_ng",
+			RequestID:   fmt.Sprintf("req_recon_%d", i+1),
+			Kind:        "payment",
+			Description: op.desc,
+			EffectiveAt: &eff,
+			Lines:       op.lines,
+		})
+
+		var (
+			creditsPosted int64
+			debitsPosted  int64
+			latestBalance int64
+		)
+		if err := fixture.tx.QueryRowContext(t.Context(),
+			`SELECT credits_posted, debits_posted FROM accounts WHERE id = $1`, fixture.payable.ID,
+		).Scan(&creditsPosted, &debitsPosted); err != nil {
+			t.Fatalf("op %d query account counters: %v", i, err)
+		}
+
+		if err := fixture.tx.QueryRowContext(t.Context(),
+			`SELECT balance_after FROM account_movements WHERE account_id = $1 ORDER BY sequence DESC LIMIT 1`,
+			fixture.payable.ID,
+		).Scan(&latestBalance); err != nil {
+			t.Fatalf("op %d query latest balance_after: %v", i, err)
+		}
+
+		expectedPosted := creditsPosted - debitsPosted
+		if latestBalance != expectedPosted {
+			t.Errorf("op %d: latest balance_after = %d != (credits_posted - debits_posted = %d)",
+				i, latestBalance, expectedPosted)
+		}
+		if latestBalance != op.wantBal {
+			t.Errorf("op %d: latest balance_after = %d, want %d", i, latestBalance, op.wantBal)
+		}
+	}
+}
+
+// TestStore_PostEntry_SequenceGaplessAfterRollback verifies that sequence starts at 1
+// and has no gaps even after a rolled-back posting attempt.
+func TestStore_PostEntry_SequenceGaplessAfterRollback(t *testing.T) {
+	fixture := newCommittedPostEntryFixture(t)
+
+	// Posting 1: succeeds (sequence 1)
+	eff1 := time.Date(2026, time.September, 15, 10, 0, 0, 0, time.UTC)
+	fixture.mustPostCommitted(t, t.Context(), journal.PostInput{
+		LedgerSlug:  fixture.slug,
+		RequestID:   "req_gapless_1",
+		Kind:        "payment",
+		Description: "First successful payment",
+		EffectiveAt: &eff1,
+		Lines: []journal.LineInput{
+			{
+				DebitAccountReference:  fixture.platform.Cash.Reference,
+				CreditAccountReference: fixture.payable.Reference,
+				Amount:                 5_000,
+				Purpose:                "Credit line",
+			},
+		},
+	})
+
+	// Posting 2: attempts to debit 10,000 (balance is 5,000) -> fails with insufficient funds!
+	eff2 := time.Date(2026, time.September, 15, 11, 0, 0, 0, time.UTC)
+	tx2, err := testDB.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("begin tx2: %v", err)
+	}
+	store2 := postgres.New(tx2)
+	_, err = store2.PostEntry(t.Context(), journal.PostInput{
+		LedgerSlug:  fixture.slug,
+		RequestID:   "req_gapless_2",
+		Kind:        "payment",
+		Description: "Failing debit payment",
+		EffectiveAt: &eff2,
+		Lines: []journal.LineInput{
+			{
+				DebitAccountReference:  fixture.payable.Reference,
+				CreditAccountReference: fixture.platform.Cash.Reference,
+				Amount:                 10_000,
+				Purpose:                "Excessive debit",
+			},
+		},
+	})
+	if !errors.Is(err, journal.ErrInsufficientFunds) {
+		t.Fatalf("expected ErrInsufficientFunds, got %v", err)
+	}
+	_ = tx2.Rollback()
+
+	// Posting 3: succeeds (must receive sequence 2, NOT 3!)
+	eff3 := time.Date(2026, time.September, 15, 12, 0, 0, 0, time.UTC)
+	fixture.mustPostCommitted(t, t.Context(), journal.PostInput{
+		LedgerSlug:  fixture.slug,
+		RequestID:   "req_gapless_3",
+		Kind:        "payment",
+		Description: "Second successful payment",
+		EffectiveAt: &eff3,
+		Lines: []journal.LineInput{
+			{
+				DebitAccountReference:  fixture.platform.Cash.Reference,
+				CreditAccountReference: fixture.payable.Reference,
+				Amount:                 2_000,
+				Purpose:                "Another credit",
+			},
+		},
+	})
+
+	verifyTx, err := testDB.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("begin verifyTx: %v", err)
+	}
+	defer func() { _ = verifyTx.Rollback() }()
+
+	assertAccountMovements(t, verifyTx, fixture.payable.ID, []accountMovementRow{
+		{
+			Sequence:     1,
+			LineNumber:   1,
+			Direction:    "credit",
+			Amount:       5_000,
+			Purpose:      "Credit line",
+			BalanceAfter: 5_000,
+		},
+		{
+			Sequence:     2,
+			LineNumber:   1,
+			Direction:    "credit",
+			Amount:       2_000,
+			Purpose:      "Another credit",
+			BalanceAfter: 7_000,
+		},
+	})
+
+	var movCount int64
+	if err := verifyTx.QueryRowContext(t.Context(),
+		`SELECT movement_count FROM accounts WHERE id = $1`, fixture.payable.ID,
+	).Scan(&movCount); err != nil {
+		t.Fatalf("query movement_count: %v", err)
+	}
+	if movCount != 2 {
+		t.Errorf("movement_count = %d, want 2 (gapless)", movCount)
+	}
+}

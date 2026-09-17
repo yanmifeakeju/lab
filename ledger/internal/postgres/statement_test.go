@@ -16,7 +16,7 @@ import (
 
 func TestStore_GetStatement_HappyPath(t *testing.T) {
 	fixture := newPostEntryFixture(t)
-	store := postgres.New(fixture.tx)
+	store := postgres.NewWithStatementMargin(fixture.tx, 0)
 
 	// Create 2 payments for the payable account.
 	// Entry 1: 10,000 credit to payable, 200 fee debit from payable
@@ -50,8 +50,8 @@ func TestStore_GetStatement_HappyPath(t *testing.T) {
 
 	res, err := store.GetStatement(t.Context(), statement.ListInput{
 		AccountReference: fixture.payable.Reference,
-		From:             from,
-		To:               to,
+		From:             new(from),
+		To:               new(to),
 		Limit:            50,
 	})
 	if err != nil {
@@ -131,7 +131,7 @@ func TestStore_GetStatement_HappyPath(t *testing.T) {
 // remains stable when a newly recorded entry carries an earlier effective_at value.
 func TestStore_GetStatement_TimelineStability(t *testing.T) {
 	fixture := newPostEntryFixture(t)
-	store := postgres.New(fixture.tx)
+	store := postgres.NewWithStatementMargin(fixture.tx, 0)
 
 	// Entry 1: effective Sept 15, posted first
 	eff1 := time.Date(2026, time.September, 15, 0, 0, 0, 0, time.UTC)
@@ -171,8 +171,8 @@ func TestStore_GetStatement_TimelineStability(t *testing.T) {
 
 	res, err := store.GetStatement(t.Context(), statement.ListInput{
 		AccountReference: fixture.payable.Reference,
-		From:             entry1.Entry.CreatedAt.Add(-24 * time.Hour),
-		To:               entry2.Entry.CreatedAt.Add(24 * time.Hour),
+		From:             new(entry1.Entry.CreatedAt.Add(-24 * time.Hour)),
+		To:               new(entry2.Entry.CreatedAt.Add(24 * time.Hour)),
 		Limit:            10,
 	})
 	if err != nil {
@@ -197,7 +197,7 @@ func TestStore_GetStatement_TimelineStability(t *testing.T) {
 // backward navigation, ensuring round-trip symmetry and exact boundary handling.
 func TestStore_GetStatement_BidirectionalPagination(t *testing.T) {
 	fixture := newPostEntryFixture(t)
-	store := postgres.New(fixture.tx)
+	store := postgres.NewWithStatementMargin(fixture.tx, 0)
 
 	// Create 5 entries (1 movement each).
 	var postedEntries []journal.PostResult
@@ -228,8 +228,8 @@ func TestStore_GetStatement_BidirectionalPagination(t *testing.T) {
 	// Page 1: Should return entries 0 and 1
 	page1, err := store.GetStatement(t.Context(), statement.ListInput{
 		AccountReference: fixture.payable.Reference,
-		From:             from,
-		To:               to,
+		From:             new(from),
+		To:               new(to),
 		Limit:            limit,
 	})
 	if err != nil {
@@ -254,8 +254,8 @@ func TestStore_GetStatement_BidirectionalPagination(t *testing.T) {
 	// Page 2: Follow page1.Next -> should return entries 2 and 3
 	page2, err := store.GetStatement(t.Context(), statement.ListInput{
 		AccountReference: fixture.payable.Reference,
-		From:             from,
-		To:               to,
+		From:             new(from),
+		To:               new(to),
 		Limit:            limit,
 		Cursor:           page1.Page.Next,
 	})
@@ -281,8 +281,8 @@ func TestStore_GetStatement_BidirectionalPagination(t *testing.T) {
 	// Page 3: Follow page2.Next -> should return entry 4
 	page3, err := store.GetStatement(t.Context(), statement.ListInput{
 		AccountReference: fixture.payable.Reference,
-		From:             from,
-		To:               to,
+		From:             new(from),
+		To:               new(to),
 		Limit:            limit,
 		Cursor:           page2.Page.Next,
 	})
@@ -305,8 +305,8 @@ func TestStore_GetStatement_BidirectionalPagination(t *testing.T) {
 	// Backtrack: from Page 2, follow page2.Previous -> MUST return Page 1 exactly!
 	backToPage1, err := store.GetStatement(t.Context(), statement.ListInput{
 		AccountReference: fixture.payable.Reference,
-		From:             from,
-		To:               to,
+		From:             new(from),
+		To:               new(to),
 		Limit:            limit,
 		Cursor:           page2.Page.Previous,
 	})
@@ -329,12 +329,12 @@ func TestStore_GetStatement_BidirectionalPagination(t *testing.T) {
 
 func TestStore_GetStatement_EmptyPeriod(t *testing.T) {
 	fixture := newPostEntryFixture(t)
-	store := postgres.New(fixture.tx)
+	store := postgres.NewWithStatementMargin(fixture.tx, 0)
 
 	res, err := store.GetStatement(t.Context(), statement.ListInput{
 		AccountReference: fixture.payable.Reference,
-		From:             time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC),
-		To:               time.Date(2025, time.February, 1, 0, 0, 0, 0, time.UTC),
+		From:             new(time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)),
+		To:               new(time.Date(2025, time.February, 1, 0, 0, 0, 0, time.UTC)),
 		Limit:            50,
 	})
 	if err != nil {
@@ -354,7 +354,7 @@ func TestStore_GetStatement_EmptyPeriod(t *testing.T) {
 
 func TestStore_GetStatement_Errors(t *testing.T) {
 	fixture := newPostEntryFixture(t)
-	store := postgres.New(fixture.tx)
+	store := postgres.NewWithStatementMargin(fixture.tx, 0)
 
 	from := time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC)
@@ -362,8 +362,8 @@ func TestStore_GetStatement_Errors(t *testing.T) {
 	t.Run("account not found", func(t *testing.T) {
 		_, err := store.GetStatement(t.Context(), statement.ListInput{
 			AccountReference: "acct_01K00000000000000000000000",
-			From:             from,
-			To:               to,
+			From:             new(from),
+			To:               new(to),
 			Limit:            50,
 		})
 		if !errors.Is(err, account.ErrAccountNotFound) {
@@ -374,8 +374,8 @@ func TestStore_GetStatement_Errors(t *testing.T) {
 	t.Run("internal account returns account not found", func(t *testing.T) {
 		_, err := store.GetStatement(t.Context(), statement.ListInput{
 			AccountReference: fixture.platform.Cash.Reference,
-			From:             from,
-			To:               to,
+			From:             new(from),
+			To:               new(to),
 			Limit:            50,
 		})
 		if !errors.Is(err, account.ErrAccountNotFound) {
@@ -389,8 +389,8 @@ func TestStore_GetStatement_Errors(t *testing.T) {
 
 		_, err := store.GetStatement(ctx, statement.ListInput{
 			AccountReference: fixture.payable.Reference,
-			From:             from,
-			To:               to,
+			From:             new(from),
+			To:               new(to),
 			Limit:            50,
 		})
 		if !errors.Is(err, context.Canceled) {
@@ -400,4 +400,264 @@ func TestStore_GetStatement_Errors(t *testing.T) {
 			t.Errorf("GetStatement() incorrectly masked error as ErrAccountNotFound")
 		}
 	})
+}
+
+// TestStore_GetStatement_ReconciliationIdentity verifies the two reconciliation identities:
+// 1. For the first movement in a period: opening_balance + signed(amount) = balance_after.
+// 2. closing_balance - opening_balance equals the signed sum of the period's movements.
+func TestStore_GetStatement_ReconciliationIdentity(t *testing.T) {
+	fixture := newPostEntryFixture(t)
+	store := postgres.NewWithStatementMargin(fixture.tx, 0)
+
+	// Entry 0: before period (creates opening balance of 20,000)
+	eff0 := time.Date(2026, time.September, 1, 10, 0, 0, 0, time.UTC)
+	fixture.mustPost(t, journal.PostInput{
+		LedgerSlug:  "ngn_ng",
+		RequestID:   "req_recon_id_0",
+		Kind:        "payment",
+		Description: "Opening credit",
+		EffectiveAt: &eff0,
+		Lines: []journal.LineInput{
+			{
+				DebitAccountReference:  fixture.platform.Cash.Reference,
+				CreditAccountReference: fixture.payable.Reference,
+				Amount:                 20_000,
+				Purpose:                "Initial deposit",
+			},
+		},
+	})
+
+	var rec0 time.Time
+	if err := fixture.tx.QueryRowContext(t.Context(),
+		`SELECT recorded_at FROM account_movements WHERE account_id = $1 AND sequence = 1`,
+		fixture.payable.ID,
+	).Scan(&rec0); err != nil {
+		t.Fatalf("query rec0: %v", err)
+	}
+
+	periodFrom := rec0.Add(1 * time.Millisecond)
+
+	// Entry 1: inside period (credit 10,000, debit 500 fee)
+	eff1 := time.Date(2026, time.September, 5, 10, 0, 0, 0, time.UTC)
+	fixture.mustPost(t, journal.PostInput{
+		LedgerSlug:  "ngn_ng",
+		RequestID:   "req_recon_id_1",
+		Kind:        "payment",
+		Description: "Period payment 1",
+		EffectiveAt: &eff1,
+		Lines: []journal.LineInput{
+			{
+				DebitAccountReference:  fixture.platform.Cash.Reference,
+				CreditAccountReference: fixture.payable.Reference,
+				Amount:                 10_000,
+				Purpose:                "Payment 1",
+			},
+			{
+				DebitAccountReference:  fixture.payable.Reference,
+				CreditAccountReference: fixture.platform.FeeRevenue.Reference,
+				Amount:                 500,
+				Purpose:                "Fee 1",
+			},
+		},
+	})
+
+	// Entry 2: inside period (debit 5,000 withdrawal)
+	eff2 := time.Date(2026, time.September, 10, 10, 0, 0, 0, time.UTC)
+	fixture.mustPost(t, journal.PostInput{
+		LedgerSlug:  "ngn_ng",
+		RequestID:   "req_recon_id_2",
+		Kind:        "payment",
+		Description: "Period withdrawal 2",
+		EffectiveAt: &eff2,
+		Lines: []journal.LineInput{
+			{
+				DebitAccountReference:  fixture.payable.Reference,
+				CreditAccountReference: fixture.platform.Cash.Reference,
+				Amount:                 5_000,
+				Purpose:                "Withdrawal 2",
+			},
+		},
+	})
+
+	periodTo := time.Now().UTC().Add(24 * time.Hour)
+
+	res, err := store.GetStatement(t.Context(), statement.ListInput{
+		AccountReference: fixture.payable.Reference,
+		From:             new(periodFrom),
+		To:               new(periodTo),
+		Limit:            50,
+	})
+	if err != nil {
+		t.Fatalf("GetStatement error: %v", err)
+	}
+
+	if res.OpeningBalance != 20_000 {
+		t.Errorf("OpeningBalance = %d, want 20000", res.OpeningBalance)
+	}
+
+	if len(res.Movements) != 3 {
+		t.Fatalf("len(Movements) = %d, want 3", len(res.Movements))
+	}
+
+	// 1. For the first movement in a period: opening_balance + signed(amount) = balance_after
+	firstM := res.Movements[0]
+	var firstSigned int64
+	if firstM.Direction == statement.DirectionCredit {
+		firstSigned = firstM.Amount
+	} else {
+		firstSigned = -firstM.Amount
+	}
+	if res.OpeningBalance+firstSigned != firstM.BalanceAfter {
+		t.Errorf("opening_balance (%d) + signed(amount) (%d) = %d != balance_after (%d)",
+			res.OpeningBalance, firstSigned, res.OpeningBalance+firstSigned, firstM.BalanceAfter)
+	}
+
+	// 2. closing_balance - opening_balance equals the signed sum of the period's movements
+	var sumSigned int64
+	for _, m := range res.Movements {
+		if m.Direction == statement.DirectionCredit {
+			sumSigned += m.Amount
+		} else {
+			sumSigned -= m.Amount
+		}
+	}
+	balanceDiff := res.ClosingBalance - res.OpeningBalance
+	if balanceDiff != sumSigned {
+		t.Errorf("closing_balance (%d) - opening_balance (%d) = %d != sum(signed_amounts) (%d)",
+			res.ClosingBalance, res.OpeningBalance, balanceDiff, sumSigned)
+	}
+}
+
+func TestStore_GetStatement_Period(t *testing.T) {
+	fixture := newPostEntryFixture(t)
+	store := postgres.New(fixture.tx)
+
+	clock := func() time.Time {
+		t.Helper()
+		var now time.Time
+		if err := fixture.tx.QueryRowContext(t.Context(), `SELECT clock_timestamp()`).Scan(&now); err != nil {
+			t.Fatalf("read database clock: %v", err)
+		}
+		return now
+	}
+
+	fixture.mustPost(t, journal.PostInput{
+		LedgerSlug:  "ngn_ng",
+		RequestID:   "req_period_recent",
+		Kind:        "payment",
+		Description: "Posting inside the margin",
+		Lines: []journal.LineInput{{
+			DebitAccountReference:  fixture.platform.Cash.Reference,
+			CreditAccountReference: fixture.payable.Reference,
+			Amount:                 1_000,
+			Purpose:                "Card payment",
+		}},
+	})
+
+	t.Run("omitted to ends the margin before the database clock", func(t *testing.T) {
+		before := clock()
+		res, err := store.GetStatement(t.Context(), statement.ListInput{
+			AccountReference: fixture.payable.Reference,
+			Limit:            10,
+		})
+		after := clock()
+		if err != nil {
+			t.Fatalf("GetStatement() error = %v", err)
+		}
+
+		assertBetween(t, "Period.To", res.Period.To, before.Add(-statement.Margin), after.Add(-statement.Margin))
+		if want := res.Period.To.Add(-statement.DefaultPeriod); !res.Period.From.Equal(want) {
+			t.Errorf("Period.From = %v, want %v", res.Period.From, want)
+		}
+		if len(res.Movements) != 0 || res.ClosingBalance != 0 {
+			t.Errorf("statement includes the posting inside the margin: movements %d, closing %d",
+				len(res.Movements), res.ClosingBalance)
+		}
+	})
+
+	t.Run("later to is reduced", func(t *testing.T) {
+		before := clock()
+		res, err := store.GetStatement(t.Context(), statement.ListInput{
+			AccountReference: fixture.payable.Reference,
+			From:             new(before.Add(-time.Hour)),
+			To:               new(before.Add(time.Hour)),
+			Limit:            10,
+		})
+		after := clock()
+		if err != nil {
+			t.Fatalf("GetStatement() error = %v", err)
+		}
+
+		assertBetween(t, "Period.To", res.Period.To, before.Add(-statement.Margin), after.Add(-statement.Margin))
+	})
+
+	t.Run("earlier to is kept", func(t *testing.T) {
+		to := clock().Add(-time.Hour).Truncate(time.Microsecond)
+		from := to.Add(-time.Hour)
+		res, err := store.GetStatement(t.Context(), statement.ListInput{
+			AccountReference: fixture.payable.Reference,
+			From:             &from,
+			To:               &to,
+			Limit:            10,
+		})
+		if err != nil {
+			t.Fatalf("GetStatement() error = %v", err)
+		}
+
+		if !res.Period.From.Equal(from) || !res.Period.To.Equal(to) {
+			t.Errorf("Period = (%v, %v), want (%v, %v)", res.Period.From, res.Period.To, from, to)
+		}
+	})
+
+	errorTests := []struct {
+		name    string
+		account string
+		from    func(now time.Time) time.Time
+		to      func(now time.Time) time.Time
+		wantErr error
+	}{
+		{
+			name:    "from not before the reduced to",
+			account: fixture.payable.Reference,
+			from:    func(now time.Time) time.Time { return now.Add(-time.Minute) },
+			to:      func(now time.Time) time.Time { return now.Add(time.Hour) },
+			wantErr: statement.ErrPeriodNotOrdered,
+		},
+		{
+			name:    "period longer than the maximum",
+			account: fixture.payable.Reference,
+			from:    func(now time.Time) time.Time { return now.Add(-statement.MaxPeriod - 2*time.Hour) },
+			to:      func(now time.Time) time.Time { return now.Add(-time.Hour) },
+			wantErr: statement.ErrPeriodTooLong,
+		},
+		{
+			name:    "missing account precedes a period error",
+			account: "acct_01M20H8704F1FDM1CFWSZDVJPV",
+			from:    func(now time.Time) time.Time { return now.Add(-time.Minute) },
+			to:      func(now time.Time) time.Time { return now.Add(time.Hour) },
+			wantErr: account.ErrAccountNotFound,
+		},
+	}
+
+	for _, tt := range errorTests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := clock()
+			_, err := store.GetStatement(t.Context(), statement.ListInput{
+				AccountReference: tt.account,
+				From:             new(tt.from(now)),
+				To:               new(tt.to(now)),
+				Limit:            10,
+			})
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("GetStatement() error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func assertBetween(t *testing.T, name string, got, earliest, latest time.Time) {
+	t.Helper()
+	if got.Before(earliest) || got.After(latest) {
+		t.Errorf("%s = %v, want between %v and %v", name, got, earliest, latest)
+	}
 }

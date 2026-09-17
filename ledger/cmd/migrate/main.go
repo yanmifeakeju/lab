@@ -7,15 +7,15 @@
 package main
 
 import (
-	"database/sql"
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 
+	"yanmifeakeju.com/ledger/internal/database"
 	"yanmifeakeju.com/ledger/migrations"
 )
 
@@ -37,7 +37,7 @@ func main() {
 		log.Fatal("DATABASE_URL not set")
 	}
 
-	db, err := sql.Open("pgx", dsn)
+	db, err := database.Open(context.Background(), dsn)
 	if err != nil {
 		log.Fatalf("open db: %v", err)
 	}

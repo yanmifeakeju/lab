@@ -53,7 +53,6 @@ func LoadEnvConfig() (Config, error) {
 	cfg.Database.URL = os.Getenv("DATABASE_URL")
 	if cfg.Database.URL == "" {
 		return cfg, errors.New("config database url is not set")
-
 	}
 
 	return cfg, nil

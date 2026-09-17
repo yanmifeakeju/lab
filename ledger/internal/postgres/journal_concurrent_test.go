@@ -14,6 +14,7 @@ import (
 	"yanmifeakeju.com/ledger/internal/account"
 	"yanmifeakeju.com/ledger/internal/journal"
 	"yanmifeakeju.com/ledger/internal/postgres"
+	"yanmifeakeju.com/ledger/internal/statement"
 )
 
 // TestStore_PostEntry_ConcurrentIdempotentRetry verifies the ON CONFLICT path
@@ -344,6 +345,7 @@ func newCommittedPostEntryFixture(t *testing.T) committedPostEntryFixture {
 			query string
 			arg   any
 		}{
+			{`DELETE FROM account_movements WHERE account_id IN (SELECT id FROM accounts WHERE ledger_id = $1)`, ledgerID},
 			{`DELETE FROM journal_lines WHERE ledger_id = $1`, ledgerID},
 			{`DELETE FROM journal_entries WHERE ledger_id = $1`, ledgerID},
 			{`DELETE FROM accounts WHERE ledger_id = $1`, ledgerID},
@@ -478,5 +480,152 @@ func waitForDatabaseLock(
 				return
 			}
 		}
+	}
+}
+
+// TestStore_PostEntry_ConcurrentLockOrderDecidesSequence verifies that of two
+// concurrent postings, the one whose transaction starts first but acquires the
+// lock second receives the higher sequence and a recorded_at no earlier than
+// the other's, and that a cursor issued between the commits returns the late
+// posting on a following page.
+func TestStore_PostEntry_ConcurrentLockOrderDecidesSequence(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	fixture := newCommittedPostEntryFixture(t)
+	store := postgres.NewWithStatementMargin(testDB, 0)
+
+	early, err := testDB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin early transaction: %v", err)
+	}
+	defer func() { _ = early.Rollback() }()
+
+	// The first statement fixes the transaction's now(), and so the early
+	// entry's created_at, before the late transaction begins.
+	var earlyPID int
+	if err := early.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&earlyPID); err != nil {
+		t.Fatalf("read early transaction PID: %v", err)
+	}
+
+	late, err := testDB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin late transaction: %v", err)
+	}
+	defer func() { _ = late.Rollback() }()
+
+	// Two lines give the late-starting entry two movements, so a one-movement
+	// page ends with a real next cursor between them.
+	lateResult, err := postgres.New(late).PostEntry(ctx, journal.PostInput{
+		LedgerSlug:  fixture.slug,
+		RequestID:   "req_locks_first",
+		Kind:        "payment",
+		Description: "Payment that locks first",
+		Lines: []journal.LineInput{
+			{
+				DebitAccountReference:  fixture.platform.Cash.Reference,
+				CreditAccountReference: fixture.payable.Reference,
+				Amount:                 10_000,
+				Purpose:                "Card payment",
+			},
+			{
+				DebitAccountReference:  fixture.payable.Reference,
+				CreditAccountReference: fixture.platform.FeeRevenue.Reference,
+				Amount:                 200,
+				Purpose:                "Processing fee",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PostEntry() locking first error = %v", err)
+	}
+
+	earlyDone := make(chan postOutcome, 1)
+	go func() {
+		result, err := postgres.New(early).PostEntry(ctx, journal.PostInput{
+			LedgerSlug:  fixture.slug,
+			RequestID:   "req_locks_second",
+			Kind:        "payment",
+			Description: "Payment that locks second",
+			Lines: []journal.LineInput{{
+				DebitAccountReference:  fixture.platform.Cash.Reference,
+				CreditAccountReference: fixture.payable.Reference,
+				Amount:                 5_000,
+				Purpose:                "Card payment",
+			}},
+		})
+		earlyDone <- postOutcome{result: result, err: err}
+	}()
+
+	waitForDatabaseLock(t, ctx, earlyPID, earlyDone)
+
+	if err := late.Commit(); err != nil {
+		t.Fatalf("commit late transaction: %v", err)
+	}
+
+	from := time.Now().UTC().Add(-time.Hour)
+	to := time.Now().UTC().Add(time.Hour)
+
+	firstPage, err := store.GetStatement(ctx, statement.ListInput{
+		AccountReference: fixture.payable.Reference,
+		From:             new(from),
+		To:               new(to),
+		Limit:            1,
+	})
+	if err != nil {
+		t.Fatalf("GetStatement() first page error = %v", err)
+	}
+	if firstPage.Page.Next == nil {
+		t.Fatal("first page Next = nil, want a cursor")
+	}
+
+	earlyOutcome := <-earlyDone
+	if earlyOutcome.err != nil {
+		t.Fatalf("PostEntry() locking second error = %v", earlyOutcome.err)
+	}
+	if err := early.Commit(); err != nil {
+		t.Fatalf("commit early transaction: %v", err)
+	}
+
+	earlyEntry := earlyOutcome.result.Entry
+	if !earlyEntry.CreatedAt.Before(lateResult.Entry.CreatedAt) {
+		t.Fatalf("created_at locking second = %v, want before locking first %v",
+			earlyEntry.CreatedAt, lateResult.Entry.CreatedAt)
+	}
+
+	var followed []statement.Movement
+	for cursor := firstPage.Page.Next; cursor != nil; {
+		page, err := store.GetStatement(ctx, statement.ListInput{
+			AccountReference: fixture.payable.Reference,
+			From:             new(from),
+			To:               new(to),
+			Limit:            1,
+			Cursor:           cursor,
+		})
+		if err != nil {
+			t.Fatalf("GetStatement() following page error = %v", err)
+		}
+		followed = append(followed, page.Movements...)
+		cursor = page.Page.Next
+	}
+
+	want := []struct {
+		reference string
+		sequence  int64
+	}{
+		{lateResult.Entry.Reference, 2},
+		{earlyEntry.Reference, 3},
+	}
+	if len(followed) != len(want) {
+		t.Fatalf("following pages movement count = %d, want %d", len(followed), len(want))
+	}
+	for i, w := range want {
+		if followed[i].JournalReference != w.reference || followed[i].Sequence != w.sequence {
+			t.Errorf("following movement %d = (%s, %d), want (%s, %d)",
+				i, followed[i].JournalReference, followed[i].Sequence, w.reference, w.sequence)
+		}
+	}
+	if followed[1].RecordedAt.Before(followed[0].RecordedAt) {
+		t.Errorf("recorded_at locking second = %v, want no earlier than %v",
+			followed[1].RecordedAt, followed[0].RecordedAt)
 	}
 }

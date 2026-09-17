@@ -97,7 +97,6 @@ func (s *Store) PostEntry(ctx context.Context, input journal.PostInput) (journal
 		&row.CreatedAt,
 		&created,
 	)
-
 	if err != nil {
 		return journal.PostResult{}, mapPostEntryError(err)
 	}

@@ -43,11 +43,6 @@ type Service interface {
 	StatementGetter
 }
 
-const (
-	defaultStatementPeriod = 30 * 24 * time.Hour
-	maxStatementPeriod     = 90 * 24 * time.Hour
-)
-
 const msgUnknownLedger = "ledger must name an existing ledger"
 
 // server implements the generated strict OpenAPI server interface. It stays
@@ -413,8 +408,8 @@ func (s *server) GetAccountStatement(
 	request api.GetAccountStatementRequestObject,
 ) (api.GetAccountStatementResponseObject, error) {
 	var (
-		from   time.Time
-		to     time.Time
+		from   *time.Time
+		to     *time.Time
 		cursor *statement.Cursor
 	)
 
@@ -423,36 +418,24 @@ func (s *server) GetAccountStatement(
 		limit = *request.Params.Limit
 	}
 
+	// The store resolves defaults and the period checks against the database
+	// clock, which also stamps the movements.
 	if request.Params.Cursor != nil && *request.Params.Cursor != "" {
 		decCursor, boundPeriod, err := statement.DecodeCursor(*request.Params.Cursor)
 		if err != nil {
 			return statementValidationResponse(api.Query, "cursor", "invalid pagination cursor"), nil
 		}
-		if boundPeriod.To.Sub(boundPeriod.From) > maxStatementPeriod {
-			return statementValidationResponse(api.Query, "cursor", "invalid pagination cursor"), nil
-		}
 		cursor = decCursor
-		from = boundPeriod.From
-		to = boundPeriod.To
+		from = &boundPeriod.From
+		to = &boundPeriod.To
 	} else {
-		if request.Params.To != nil {
-			to = request.Params.To.UTC()
-		} else {
-			to = time.Now().UTC()
-		}
-
 		if request.Params.From != nil {
-			from = request.Params.From.UTC()
-		} else {
-			from = to.Add(-defaultStatementPeriod)
+			v := request.Params.From.UTC()
+			from = &v
 		}
-
-		if !from.Before(to) {
-			return statementValidationResponse(api.Query, "from", "from must be before to"), nil
-		}
-
-		if to.Sub(from) > maxStatementPeriod {
-			return statementValidationResponse(api.Query, "from", "statement period must not exceed 90 days"), nil
+		if request.Params.To != nil {
+			v := request.Params.To.UTC()
+			to = &v
 		}
 	}
 
@@ -463,6 +446,16 @@ func (s *server) GetAccountStatement(
 		Limit:            limit,
 		Cursor:           cursor,
 	})
+	if errors.Is(err, statement.ErrPeriodNotOrdered) || errors.Is(err, statement.ErrPeriodTooLong) {
+		switch {
+		case cursor != nil:
+			return statementValidationResponse(api.Query, "cursor", "invalid pagination cursor"), nil
+		case errors.Is(err, statement.ErrPeriodTooLong):
+			return statementValidationResponse(api.Query, "from", "statement period must not exceed 90 days"), nil
+		default:
+			return statementValidationResponse(api.Query, "from", "from must be before to"), nil
+		}
+	}
 	if err != nil {
 		return mapGetAccountStatementError(err), nil
 	}

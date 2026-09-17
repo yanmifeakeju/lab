@@ -7,17 +7,20 @@ CREATE TABLE "journal_entries" (
 	"fingerprint" text NOT NULL,
 	"kind" text NOT NULL,
 	"state" text NOT NULL,
-	"description" text,
+	"description" text NOT NULL,
 	"expires_at" timestamp with time zone,
 	"pending_entry_id" bigint,
 	"effective_at" timestamp with time zone NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "journal_entries_public_ref_unique" UNIQUE ("public_ref"),
 	CONSTRAINT "journal_entries_public_ref_valid" CHECK ("journal_entries"."public_ref" ~ '^jrn_[0-7][0-9A-HJKMNP-TV-Z]{25}$'),
-	CONSTRAINT "journal_entries_request_id_not_blank" CHECK (length(btrim("journal_entries"."request_id")) > 0),
+	CONSTRAINT "journal_entries_request_id_not_blank" CHECK ("journal_entries"."request_id" ~ '\S'),
 	CONSTRAINT "journal_entries_request_id_length" CHECK (length("journal_entries"."request_id") <= 255),
-	CONSTRAINT "journal_entries_fingerprint_not_blank" CHECK (length(btrim("journal_entries"."fingerprint")) > 0),
-	CONSTRAINT "journal_entries_kind_valid" CHECK ("journal_entries"."kind" in ('payment', 'settlement', 'transfer')),
+	CONSTRAINT "journal_entries_fingerprint_not_blank" CHECK ("journal_entries"."fingerprint" ~ '\S'),
+	CONSTRAINT "journal_entries_kind_not_blank" CHECK ("journal_entries"."kind" ~ '\S'),
+	CONSTRAINT "journal_entries_kind_length" CHECK (length("journal_entries"."kind") <= 64),
+	CONSTRAINT "journal_entries_description_not_blank" CHECK ("journal_entries"."description" ~ '\S'),
+	CONSTRAINT "journal_entries_description_length" CHECK (length("journal_entries"."description") <= 500),
 	CONSTRAINT "journal_entries_state_valid" CHECK ("journal_entries"."state" in ('pending', 'posted', 'captured', 'voided', 'expired')),
 	CONSTRAINT "journal_entries_pending_has_expiry" CHECK ("journal_entries"."state" <> 'pending' or "journal_entries"."expires_at" is not null),
 	CONSTRAINT "journal_entries_terminal_has_expiry" CHECK ("journal_entries"."state" not in ('captured', 'voided', 'expired') or "journal_entries"."expires_at" is not null),
@@ -45,9 +48,12 @@ CREATE TABLE "journal_lines" (
 	"line_number" smallint NOT NULL,
 	"amount" bigint NOT NULL,
 	"effect" text NOT NULL,
+	"purpose" text NOT NULL,
 	CONSTRAINT "journal_lines_line_number_positive" CHECK ("journal_lines"."line_number" > 0),
 	CONSTRAINT "journal_lines_amount_positive" CHECK ("journal_lines"."amount" > 0),
 	CONSTRAINT "journal_lines_effect_valid" CHECK ("journal_lines"."effect" in ('pending', 'posted', 'pending_posted', 'pending_voided')),
+	CONSTRAINT "journal_lines_purpose_not_blank" CHECK ("journal_lines"."purpose" ~ '\S'),
+	CONSTRAINT "journal_lines_purpose_length" CHECK (length("journal_lines"."purpose") <= 100),
 	CONSTRAINT "journal_lines_no_self_transfer" CHECK ("journal_lines"."debit_account_id" <> "journal_lines"."credit_account_id"),
 	CONSTRAINT "journal_lines_entry_line_number_unique" UNIQUE ("journal_entry_id", "line_number")
 );
@@ -58,3 +64,22 @@ ALTER TABLE "journal_lines" ADD CONSTRAINT "journal_lines_credit_account_ledger_
 
 CREATE INDEX "journal_lines_debit_account_idx" ON "journal_lines" USING btree ("debit_account_id", "ledger_id", "journal_entry_id");
 CREATE INDEX "journal_lines_credit_account_idx" ON "journal_lines" USING btree ("credit_account_id", "ledger_id", "journal_entry_id");
+
+CREATE TABLE "account_movements" (
+	"account_id"       bigint      NOT NULL REFERENCES "accounts" ("id"),
+	"sequence"         bigint      NOT NULL CHECK ("sequence" > 0),
+	"journal_entry_id" bigint      NOT NULL,
+	"line_number"      smallint    NOT NULL,
+	"direction"        text        NOT NULL CHECK ("direction" IN ('debit', 'credit')),
+	"amount"           bigint      NOT NULL CHECK ("amount" > 0),
+	"purpose"          text        NOT NULL,
+	"balance_after"    bigint      NOT NULL,
+	"recorded_at"      timestamptz NOT NULL,
+	PRIMARY KEY ("account_id", "sequence"),
+	UNIQUE ("account_id", "journal_entry_id", "line_number"),
+	FOREIGN KEY ("journal_entry_id", "line_number")
+		REFERENCES "journal_lines" ("journal_entry_id", "line_number")
+);
+
+CREATE INDEX "account_movements_account_recorded_idx"
+ON "account_movements" ("account_id", "recorded_at", "sequence");

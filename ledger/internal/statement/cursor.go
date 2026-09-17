@@ -4,16 +4,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"math"
-	"strings"
 	"time"
 )
 
 // Position identifies one movement in the stable statement order.
 type Position struct {
-	RecordedAt       time.Time
-	JournalReference string
-	LineNumber       int
+	RecordedAt time.Time
+	Sequence   int64
 }
 
 // Cursor identifies where and in which direction statement pagination resumes.
@@ -23,22 +20,18 @@ type Cursor struct {
 }
 
 type cursorPayload struct {
-	Navigation       Navigation `json:"nav"`
-	RecordedAt       time.Time  `json:"rec"`
-	JournalReference string     `json:"jref"`
-	LineNumber       int        `json:"ln"`
-	From             time.Time  `json:"from"`
-	To               time.Time  `json:"to"`
+	Navigation Navigation `json:"nav"`
+	RecordedAt time.Time  `json:"rec"`
+	Sequence   int64      `json:"seq"`
+	From       time.Time  `json:"from"`
+	To         time.Time  `json:"to"`
 }
 
 func validPosition(pos Position) bool {
 	if pos.RecordedAt.IsZero() {
 		return false
 	}
-	if pos.JournalReference == "" || len(pos.JournalReference) > 64 || strings.IndexByte(pos.JournalReference, 0) >= 0 {
-		return false
-	}
-	if pos.LineNumber <= 0 || pos.LineNumber > math.MaxInt16 {
+	if pos.Sequence <= 0 {
 		return false
 	}
 	return true
@@ -66,12 +59,11 @@ func EncodeCursor(cursor *Cursor, period Period) (*string, error) {
 	}
 
 	payload := cursorPayload{
-		Navigation:       cursor.Navigation,
-		RecordedAt:       cursor.Position.RecordedAt.UTC(),
-		JournalReference: cursor.Position.JournalReference,
-		LineNumber:       cursor.Position.LineNumber,
-		From:             period.From.UTC(),
-		To:               period.To.UTC(),
+		Navigation: cursor.Navigation,
+		RecordedAt: cursor.Position.RecordedAt.UTC(),
+		Sequence:   cursor.Position.Sequence,
+		From:       period.From.UTC(),
+		To:         period.To.UTC(),
 	}
 
 	data, err := json.Marshal(payload)
@@ -96,9 +88,8 @@ func DecodeCursor(token string) (*Cursor, Period, error) {
 	}
 
 	pos := Position{
-		RecordedAt:       payload.RecordedAt,
-		JournalReference: payload.JournalReference,
-		LineNumber:       payload.LineNumber,
+		RecordedAt: payload.RecordedAt,
+		Sequence:   payload.Sequence,
 	}
 	period := Period{
 		From: payload.From,

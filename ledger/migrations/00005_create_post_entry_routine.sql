@@ -32,8 +32,8 @@ AS $$
 $$;
 -- +goose StatementEnd
 
--- post_entry() records an immediately posted entry and updates account
--- counters atomically.
+-- post_entry() records an immediately posted entry, writes movements for
+-- accounts that record them, and updates account counters atomically.
 --
 --   LG001  ledger_not_found
 --   LG002  ledger_closed
@@ -206,13 +206,14 @@ BEGIN
     SELECT line_number::smallint AS line_number,
            element->>'debit_account_ref' AS debit_account_ref,
            element->>'credit_account_ref' AS credit_account_ref,
-           (element->>'amount')::bigint AS amount
+           (element->>'amount')::bigint AS amount,
+           element->>'purpose' AS purpose
     FROM jsonb_array_elements(p_lines) WITH ORDINALITY
       AS supplied(element, line_number)
   ),
   resolved AS (
     SELECT parsed.line_number, debit.id AS debit_account_id,
-           credit.id AS credit_account_id, parsed.amount
+           credit.id AS credit_account_id, parsed.amount, parsed.purpose
     FROM parsed
     JOIN accounts AS debit
       ON debit.public_ref = parsed.debit_account_ref
@@ -223,10 +224,10 @@ BEGIN
   )
   INSERT INTO journal_lines
     (journal_entry_id, ledger_id, debit_account_id, credit_account_id,
-     line_number, amount, effect)
+     line_number, amount, effect, purpose)
   SELECT v_entry.id, v_ledger.id, resolved.debit_account_id,
          resolved.credit_account_id, resolved.line_number, resolved.amount,
-         'posted'
+         'posted', resolved.purpose
   FROM resolved
   ORDER BY resolved.line_number;
 
@@ -238,7 +239,8 @@ BEGIN
   SELECT count(*) INTO v_bad
   FROM journal_entry_totals(v_entry.id) AS total
   JOIN accounts AS account ON account.id = total.account_id
-  WHERE account.is_closed;
+  WHERE account.closed_at IS NOT NULL
+    AND account.closed_at <= clock_timestamp();
 
   IF v_bad > 0 THEN
     RAISE EXCEPTION 'account_closed' USING ERRCODE = 'LG011';
@@ -263,10 +265,94 @@ BEGIN
     RAISE EXCEPTION 'insufficient_funds' USING ERRCODE = 'LG024';
   END IF;
 
+  -- For each affected account that records movements, write running-balance movements
+  -- and update movement_count alongside balance counters.
+  WITH entry_account_lines AS (
+    SELECT
+      line.debit_account_id AS account_id,
+      line.journal_entry_id,
+      line.line_number,
+      'debit'::text AS direction,
+      line.amount,
+      -line.amount AS signed_amount,
+      line.purpose
+    FROM journal_lines line
+    JOIN accounts a ON a.id = line.debit_account_id
+    WHERE line.journal_entry_id = v_entry.id
+      AND a.records_movements = true
+
+    UNION ALL
+
+    SELECT
+      line.credit_account_id AS account_id,
+      line.journal_entry_id,
+      line.line_number,
+      'credit'::text AS direction,
+      line.amount,
+      line.amount AS signed_amount,
+      line.purpose
+    FROM journal_lines line
+    JOIN accounts a ON a.id = line.credit_account_id
+    WHERE line.journal_entry_id = v_entry.id
+      AND a.records_movements = true
+  ),
+  account_prev AS (
+    SELECT
+      a.id AS account_id,
+      a.movement_count,
+      coalesce(prev.balance_after, 0::bigint) AS prev_balance_after,
+      greatest(clock_timestamp(), prev.recorded_at) AS recorded_at
+    FROM accounts a
+    LEFT JOIN account_movements prev
+      ON prev.account_id = a.id
+     AND prev.sequence = a.movement_count
+    WHERE a.id IN (SELECT DISTINCT account_id FROM entry_account_lines)
+  ),
+  inserted_movements AS (
+    INSERT INTO account_movements (
+      account_id,
+      sequence,
+      journal_entry_id,
+      line_number,
+      direction,
+      amount,
+      purpose,
+      balance_after,
+      recorded_at
+    )
+    SELECT
+      lines.account_id,
+      prev.movement_count + row_number() OVER (
+        PARTITION BY lines.account_id
+        ORDER BY lines.line_number
+      ) AS sequence,
+      lines.journal_entry_id,
+      lines.line_number,
+      lines.direction,
+      lines.amount,
+      lines.purpose,
+      prev.prev_balance_after + sum(lines.signed_amount) OVER (
+        PARTITION BY lines.account_id
+        ORDER BY lines.line_number
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+      ) AS balance_after,
+      prev.recorded_at
+    FROM entry_account_lines lines
+    JOIN account_prev prev ON prev.account_id = lines.account_id
+    ORDER BY lines.account_id, lines.line_number
+    RETURNING account_id
+  ),
+  movement_counts AS (
+    SELECT account_id, count(*)::bigint AS cnt
+    FROM inserted_movements
+    GROUP BY account_id
+  )
   UPDATE accounts AS account
   SET debits_posted = account.debits_posted + total.debit,
-      credits_posted = account.credits_posted + total.credit
+      credits_posted = account.credits_posted + total.credit,
+      movement_count = account.movement_count + coalesce(mc.cnt, 0)
   FROM journal_entry_totals(v_entry.id) AS total
+  LEFT JOIN movement_counts mc ON mc.account_id = total.account_id
   WHERE account.id = total.account_id;
 
   RETURN QUERY

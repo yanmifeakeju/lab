@@ -1437,7 +1437,7 @@ func TestGetAccountValidation(t *testing.T) {
 func TestGetAccountStatement_HappyPath(t *testing.T) {
 	recordedAt := time.Date(2026, time.September, 10, 9, 15, 0, 0, time.UTC)
 	from := time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC)
-	to := time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, time.September, 15, 0, 0, 0, 0, time.UTC)
 	desc := "Payment received"
 
 	svc := &fakeService{
@@ -1455,6 +1455,7 @@ func TestGetAccountStatement_HappyPath(t *testing.T) {
 			ClosingBalance: 9600,
 			Movements: []statement.Movement{
 				{
+					Sequence:         1,
 					JournalReference: "jrn_01M20J1QD2XB8K7G4N9CVF6T3A",
 					LineNumber:       1,
 					Kind:             "payment",
@@ -1466,6 +1467,7 @@ func TestGetAccountStatement_HappyPath(t *testing.T) {
 					RecordedAt:       recordedAt,
 				},
 				{
+					Sequence:         2,
 					JournalReference: "jrn_01M20J1QD2XB8K7G4N9CVF6T3A",
 					LineNumber:       2,
 					Kind:             "payment",
@@ -1482,9 +1484,8 @@ func TestGetAccountStatement_HappyPath(t *testing.T) {
 				Next: &statement.Cursor{
 					Navigation: statement.NavigationNext,
 					Position: statement.Position{
-						RecordedAt:       recordedAt,
-						JournalReference: "jrn_01M20J1QD2XB8K7G4N9CVF6T3A",
-						LineNumber:       2,
+						RecordedAt: recordedAt,
+						Sequence:   2,
 					},
 				},
 			},
@@ -1496,7 +1497,7 @@ func TestGetAccountStatement_HappyPath(t *testing.T) {
 		t.Fatalf("NewHandler: %v", err)
 	}
 
-	target := "/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?from=2026-09-01T00:00:00Z&to=2026-10-01T00:00:00Z&limit=50"
+	target := "/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?from=2026-09-01T00:00:00Z&to=2026-09-15T00:00:00Z&limit=50"
 	req := httptest.NewRequest(http.MethodGet, target, nil)
 	rec := httptest.NewRecorder()
 
@@ -1540,14 +1541,13 @@ func TestGetAccountStatement_HappyPath(t *testing.T) {
 func TestGetAccountStatement_WithCursor(t *testing.T) {
 	recordedAt := time.Date(2026, time.September, 10, 9, 15, 0, 0, time.UTC)
 	from := time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC)
-	to := time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, time.September, 15, 0, 0, 0, 0, time.UTC)
 
 	cursor := &statement.Cursor{
 		Navigation: statement.NavigationNext,
 		Position: statement.Position{
-			RecordedAt:       recordedAt,
-			JournalReference: "jrn_01M20J1QD2XB8K7G4N9CVF6T3A",
-			LineNumber:       2,
+			RecordedAt: recordedAt,
+			Sequence:   2,
 		},
 	}
 	token, err := statement.EncodeCursor(cursor, statement.Period{From: from, To: to})
@@ -1589,8 +1589,8 @@ func TestGetAccountStatement_WithCursor(t *testing.T) {
 		if svc.statementInput.Cursor.Navigation != statement.NavigationNext {
 			t.Errorf("Navigation = %q, want next", svc.statementInput.Cursor.Navigation)
 		}
-		if svc.statementInput.Cursor.Position.JournalReference != "jrn_01M20J1QD2XB8K7G4N9CVF6T3A" {
-			t.Errorf("JournalReference = %q, want jrn_01M20J1QD2XB8K7G4N9CVF6T3A", svc.statementInput.Cursor.Position.JournalReference)
+		if svc.statementInput.Cursor.Position.Sequence != 2 {
+			t.Errorf("Sequence = %d, want 2", svc.statementInput.Cursor.Position.Sequence)
 		}
 		if svc.statementInput.Limit != limit {
 			t.Errorf("Limit = %d, want %d", svc.statementInput.Limit, limit)
@@ -1647,41 +1647,9 @@ func TestGetAccountStatement_ValidationErrors(t *testing.T) {
 			wantMsgSub: "invalid pagination cursor",
 		},
 		{
-			name:       "from after to",
-			target:     "/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?from=2026-10-01T00:00:00Z&to=2026-09-01T00:00:00Z",
-			wantField:  "from",
-			wantMsgSub: "from must be before to",
-		},
-		{
-			name:       "period exceeds 90 days",
-			target:     "/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?from=2026-01-01T00:00:00Z&to=2026-06-01T00:00:00Z",
-			wantField:  "from",
-			wantMsgSub: "statement period must not exceed 90 days",
-		},
-		{
-			name: "cursor exceeds 90-day limit",
+			name: "cursor sequence invalid",
 			target: func() string {
-				c := &statement.Cursor{
-					Navigation: statement.NavigationNext,
-					Position: statement.Position{
-						RecordedAt:       time.Date(2026, time.September, 10, 9, 15, 0, 0, time.UTC),
-						JournalReference: "jrn_01M20J1QD2XB8K7G4N9CVF6T3A",
-						LineNumber:       1,
-					},
-				}
-				tok, _ := statement.EncodeCursor(c, statement.Period{
-					From: time.Date(1970, time.January, 1, 0, 0, 0, 0, time.UTC),
-					To:   time.Date(2100, time.January, 1, 0, 0, 0, 0, time.UTC),
-				})
-				return "/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?cursor=" + *tok
-			}(),
-			wantField:  "cursor",
-			wantMsgSub: "invalid pagination cursor",
-		},
-		{
-			name: "cursor line number exceeds max int16",
-			target: func() string {
-				tok := base64.RawURLEncoding.EncodeToString([]byte(`{"nav":"next","rec":"2026-09-10T09:15:00Z","jref":"jrn_01M20J1QD2XB8K7G4N9CVF6T3A","ln":40000,"from":"2026-09-01T00:00:00Z","to":"2026-09-15T00:00:00Z"}`))
+				tok := base64.RawURLEncoding.EncodeToString([]byte(`{"nav":"next","rec":"2026-09-10T09:15:00Z","seq":0,"from":"2026-09-01T00:00:00Z","to":"2026-09-15T00:00:00Z"}`))
 				return "/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?cursor=" + tok
 			}(),
 			wantField:  "cursor",
@@ -1772,4 +1740,162 @@ func TestGetAccountStatement_ServiceErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGetAccountStatement_Period(t *testing.T) {
+	from := time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, time.September, 15, 0, 0, 0, 0, time.UTC)
+	resolvedTo := time.Date(2026, time.September, 10, 0, 0, 0, 0, time.UTC)
+
+	cursor := &statement.Cursor{
+		Navigation: statement.NavigationNext,
+		Position: statement.Position{
+			RecordedAt: time.Date(2026, time.September, 5, 0, 0, 0, 0, time.UTC),
+			Sequence:   1,
+		},
+	}
+	token, err := statement.EncodeCursor(cursor, statement.Period{From: from, To: to})
+	if err != nil {
+		t.Fatalf("EncodeCursor: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		query    string
+		wantFrom *time.Time
+		wantTo   *time.Time
+	}{
+		{
+			name: "omitted bounds are left to the store",
+		},
+		{
+			name:     "explicit bounds pass through unreduced",
+			query:    "?from=2026-09-01T00:00:00Z&to=2026-09-15T00:00:00Z",
+			wantFrom: &from,
+			wantTo:   &to,
+		},
+		{
+			name:     "cursor binds its period",
+			query:    "?cursor=" + *token,
+			wantFrom: &from,
+			wantTo:   &to,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &fakeService{
+				statementResult: statement.Result{
+					Account: statement.Account{Reference: "acct_01M20H8704F1FDM1CFWSZDVJPV"},
+					Period:  statement.Period{From: from, To: resolvedTo},
+				},
+			}
+			handler, err := httpapi.NewHandler(svc)
+			if err != nil {
+				t.Fatalf("NewHandler: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement"+tt.query, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			if !equalTimePtr(svc.statementInput.From, tt.wantFrom) {
+				t.Errorf("input From = %v, want %v", svc.statementInput.From, tt.wantFrom)
+			}
+			if !equalTimePtr(svc.statementInput.To, tt.wantTo) {
+				t.Errorf("input To = %v, want %v", svc.statementInput.To, tt.wantTo)
+			}
+
+			var got api.GetAccountStatementResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if !got.Period.To.Equal(resolvedTo) {
+				t.Errorf("response period To = %v, want the store's %v", got.Period.To, resolvedTo)
+			}
+		})
+	}
+}
+
+func TestGetAccountStatement_PeriodErrors(t *testing.T) {
+	cursor := &statement.Cursor{
+		Navigation: statement.NavigationNext,
+		Position: statement.Position{
+			RecordedAt: time.Date(2026, time.September, 5, 0, 0, 0, 0, time.UTC),
+			Sequence:   1,
+		},
+	}
+	token, err := statement.EncodeCursor(cursor, statement.Period{
+		From: time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2026, time.September, 15, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("EncodeCursor: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		query       string
+		err         error
+		wantField   string
+		wantMessage string
+	}{
+		{
+			name:        "period not ordered",
+			err:         statement.ErrPeriodNotOrdered,
+			wantField:   "from",
+			wantMessage: "from must be before to",
+		},
+		{
+			name:        "period too long",
+			err:         statement.ErrPeriodTooLong,
+			wantField:   "from",
+			wantMessage: "statement period must not exceed 90 days",
+		},
+		{
+			name:        "cursor period rejected",
+			query:       "?cursor=" + *token,
+			err:         statement.ErrPeriodTooLong,
+			wantField:   "cursor",
+			wantMessage: "invalid pagination cursor",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &fakeService{statementErr: fmt.Errorf("get statement: %w", tt.err)}
+			handler, err := httpapi.NewHandler(svc)
+			if err != nil {
+				t.Fatalf("NewHandler: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement"+tt.query, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			var got api.ValidationErrorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode validation response: %v", err)
+			}
+			if len(got.Error.Details) != 1 {
+				t.Fatalf("details = %+v, want one detail", got.Error.Details)
+			}
+			if d := got.Error.Details[0]; d.Field != tt.wantField || d.Message != tt.wantMessage {
+				t.Errorf("detail = (%q, %q), want (%q, %q)", d.Field, d.Message, tt.wantField, tt.wantMessage)
+			}
+		})
+	}
+}
+
+func equalTimePtr(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(*b)
 }
