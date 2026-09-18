@@ -177,7 +177,7 @@ func payableAccountStatus(closedAt *time.Time) api.AccountStatus {
 	if closedAt != nil && !closedAt.After(time.Now()) {
 		return api.Closed
 	}
-	return api.Active
+	return api.Open
 }
 
 // PostJournalEntry posts an immediate journal entry or returns the existing

@@ -458,7 +458,7 @@ func TestCreatePayableAccountResponses(t *testing.T) {
 				if got.Kind != api.Payable {
 					t.Errorf("kind = %q, want %q", got.Kind, api.Payable)
 				}
-				wantAccountStatus := api.Active
+				wantAccountStatus := api.Open
 				if tt.result.Account.ClosedAt != nil && !tt.result.Account.ClosedAt.After(time.Now()) {
 					wantAccountStatus = api.Closed
 				}
@@ -1239,7 +1239,7 @@ func TestGetAccount(t *testing.T) {
 				CreatedAt: createdAt,
 			},
 			wantStatus:        http.StatusOK,
-			wantAccountStatus: api.Active,
+			wantAccountStatus: api.Open,
 		},
 		{
 			name: "closed account",
@@ -1277,7 +1277,7 @@ func TestGetAccount(t *testing.T) {
 				CreatedAt: createdAt,
 			},
 			wantStatus:        http.StatusOK,
-			wantAccountStatus: api.Active,
+			wantAccountStatus: api.Open,
 		},
 		{
 			name:        "account not found",

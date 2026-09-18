@@ -342,11 +342,11 @@ components:
 
     AccountStatus:
       type: string
-      description: Whether the payable account itself is active or closed.
+      description: Whether the payable account itself is open or closed.
       enum:
-        - active
+        - open
         - closed
-      example: active
+      example: open
 
     PayableAccountKind:
       type: string
@@ -632,7 +632,7 @@ components:
         ledger_slug: ngn_ng
         kind: payable
         name: Acme Ltd
-        status: active
+        status: open
         closed_at: null
         available: 9800
         balances:
