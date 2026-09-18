@@ -45,7 +45,15 @@ CREATE TABLE "accounts" (
 	CONSTRAINT "accounts_debits_must_not_exceed_credits" CHECK (not "accounts"."debits_must_not_exceed_credits"
            or "accounts"."debits_pending" + "accounts"."debits_posted" <= "accounts"."credits_posted"),
 	CONSTRAINT "accounts_credits_must_not_exceed_debits" CHECK (not "accounts"."credits_must_not_exceed_debits"
-           or "accounts"."credits_pending" + "accounts"."credits_posted" <= "accounts"."debits_posted")
+           or "accounts"."credits_pending" + "accounts"."credits_posted" <= "accounts"."debits_posted"),
+	CONSTRAINT "accounts_untracked_counters_zero" CHECK (
+		("accounts"."debits_must_not_exceed_credits" OR "accounts"."credits_must_not_exceed_debits" OR "accounts"."records_movements")
+		OR (
+			"accounts"."debits_pending" = 0 AND "accounts"."credits_pending" = 0
+			AND "accounts"."debits_posted" = 0 AND "accounts"."credits_posted" = 0
+			AND "accounts"."movement_count" = 0
+		)
+	)
 );
 
 ALTER TABLE "accounts" ADD CONSTRAINT "accounts_ledger_id_ledgers_id_fk" FOREIGN KEY ("ledger_id") REFERENCES "public"."ledgers"("id") ON DELETE no action ON UPDATE no action;
@@ -84,6 +92,14 @@ BEGIN
     RAISE EXCEPTION 'records_movements is immutable';
   END IF;
 
+  IF NEW.debits_must_not_exceed_credits IS DISTINCT FROM OLD.debits_must_not_exceed_credits THEN
+    RAISE EXCEPTION 'debits_must_not_exceed_credits is immutable';
+  END IF;
+
+  IF NEW.credits_must_not_exceed_debits IS DISTINCT FROM OLD.credits_must_not_exceed_debits THEN
+    RAISE EXCEPTION 'credits_must_not_exceed_debits is immutable';
+  END IF;
+
   IF OLD.closed_at IS NOT NULL AND OLD.closed_at <= clock_timestamp() THEN
     IF NEW.closed_at IS DISTINCT FROM OLD.closed_at THEN
       RAISE EXCEPTION 'reached closed_at cannot be modified';
@@ -98,6 +114,6 @@ $$;
 -- +goose StatementEnd
 
 CREATE TRIGGER accounts_before_update
-BEFORE UPDATE OF records_movements, closed_at ON accounts
+BEFORE UPDATE OF records_movements, debits_must_not_exceed_credits, credits_must_not_exceed_debits, closed_at ON accounts
 FOR EACH ROW
 EXECUTE FUNCTION accounts_before_update();

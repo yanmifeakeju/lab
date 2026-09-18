@@ -30,8 +30,9 @@ func Open(ctx context.Context, dsn string, maxConns int) (*sql.DB, error) {
 	}
 	connConfig.RuntimeParams["timezone"] = "UTC"
 	// Statements end statement.Margin before the database clock, which is
-	// safe only while no posting transaction outlives that margin. These cap
-	// a posting at one statement plus one idle wait before commit.
+	// safe only while no posting transaction outlives that margin. A posting
+	// is one autocommit call to post_entry, so statement_timeout bounds it;
+	// the idle timeout ends transactions a caller leaves open.
 	connConfig.RuntimeParams["statement_timeout"] = "30s"
 	connConfig.RuntimeParams["idle_in_transaction_session_timeout"] = "30s"
 

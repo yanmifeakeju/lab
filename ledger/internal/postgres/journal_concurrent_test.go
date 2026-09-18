@@ -130,8 +130,8 @@ func TestStore_PostEntry_ConcurrentIdempotentRetry(t *testing.T) {
 	}
 
 	deltas := map[int64]accountBalances{
-		fixture.platform.Cash.ID:       {DebitsPosted: amount},
-		fixture.platform.FeeRevenue.ID: {CreditsPosted: fee},
+		fixture.platform.Cash.ID:       {},
+		fixture.platform.FeeRevenue.ID: {},
 		fixture.payable.ID:             {DebitsPosted: fee, CreditsPosted: amount},
 	}
 	for id, delta := range deltas {
@@ -272,11 +272,11 @@ func TestStore_PostEntry_ConcurrentInsufficientFunds(t *testing.T) {
 		t.Errorf("journal line count = %d, want 2 (funding + winner)", lineCount)
 	}
 
-	// Only the winner spent: the payable's debit counter moved once, the fee
-	// account was credited once, and the funding cash account is untouched.
+	// Only the winner spent: the payable's debit counter moved once, and the
+	// platform accounts (cash and fee revenue) are untracked so their counters stay at zero.
 	deltas := map[int64]accountBalances{
 		fixture.platform.Cash.ID:       {},
-		fixture.platform.FeeRevenue.ID: {CreditsPosted: spend},
+		fixture.platform.FeeRevenue.ID: {},
 		fixture.payable.ID:             {DebitsPosted: spend},
 	}
 	for id, delta := range deltas {
@@ -627,5 +627,123 @@ func TestStore_PostEntry_ConcurrentLockOrderDecidesSequence(t *testing.T) {
 	if followed[1].RecordedAt.Before(followed[0].RecordedAt) {
 		t.Errorf("recorded_at locking second = %v, want no earlier than %v",
 			followed[1].RecordedAt, followed[0].RecordedAt)
+	}
+}
+
+// TestStore_PostEntry_ConcurrentUntrackedAccountNotBlocked verifies that two postings
+// through the same untracked account (Cash) to different payable accounts do not
+// wait for each other: the second posting completes while the first is uncommitted.
+func TestStore_PostEntry_ConcurrentUntrackedAccountNotBlocked(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	secondExternalID := "merchant_second_" + ulid.Make().String()
+	t.Cleanup(func() {
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelCleanup()
+		if _, err := testDB.ExecContext(cleanupCtx, `DELETE FROM holders WHERE external_id = $1`, secondExternalID); err != nil {
+			t.Errorf("clean up second holder: %v", err)
+		}
+	})
+
+	fixture := newCommittedPostEntryFixture(t)
+
+	// Create a second payable account in the same ledger
+	secondSetupTx, err := testDB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin second setup tx: %v", err)
+	}
+	defer func() { _ = secondSetupTx.Rollback() }()
+
+	secondStore := postgres.New(secondSetupTx)
+	secondPayableResult, err := secondStore.CreatePayableAccount(ctx, account.CreatePayableInput{
+		LedgerSlug: fixture.slug,
+		ExternalID: secondExternalID,
+		Name:       "Second Merchant Ltd",
+	})
+	if err != nil {
+		t.Fatalf("create second payable account: %v", err)
+	}
+	secondPayable := lookupSeededAccount(t, secondSetupTx, secondPayableResult.Account.Reference)
+	if err := secondSetupTx.Commit(); err != nil {
+		t.Fatalf("commit second setup tx: %v", err)
+	}
+
+	tx1, err := testDB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx1: %v", err)
+	}
+	defer func() { _ = tx1.Rollback() }()
+
+	input1 := journal.PostInput{
+		LedgerSlug:  fixture.slug,
+		RequestID:   "req_untracked_parallel_1",
+		Kind:        "payment",
+		Description: "First posting",
+		Lines: []journal.LineInput{
+			{
+				DebitAccountReference:  fixture.platform.Cash.Reference,
+				CreditAccountReference: fixture.payable.Reference,
+				Amount:                 10_000,
+				Purpose:                "Payment 1",
+			},
+		},
+	}
+
+	// Post entry in tx1, but DO NOT commit tx1 yet: tx1 remains open and uncommitted.
+	res1, err := postgres.New(tx1).PostEntry(ctx, input1)
+	if err != nil {
+		t.Fatalf("tx1 PostEntry error = %v", err)
+	}
+	if !res1.Created {
+		t.Error("tx1 PostEntry Created = false, want true")
+	}
+
+	// tx2 posts through the same Cash account to secondPayable.
+	// Give tx2 a short timeout: if it queues on Cash's lock, it fails fast instead of hanging.
+	ctx2, cancel2 := context.WithTimeout(ctx, 1*time.Second)
+	defer cancel2()
+
+	tx2, err := testDB.BeginTx(ctx2, nil)
+	if err != nil {
+		t.Fatalf("begin tx2: %v", err)
+	}
+	defer func() { _ = tx2.Rollback() }()
+
+	input2 := journal.PostInput{
+		LedgerSlug:  fixture.slug,
+		RequestID:   "req_untracked_parallel_2",
+		Kind:        "payment",
+		Description: "Second posting",
+		Lines: []journal.LineInput{
+			{
+				DebitAccountReference:  fixture.platform.Cash.Reference,
+				CreditAccountReference: secondPayable.Reference,
+				Amount:                 20_000,
+				Purpose:                "Payment 2",
+			},
+		},
+	}
+
+	// This must complete immediately while tx1 is uncommitted
+	res2, err := postgres.New(tx2).PostEntry(ctx2, input2)
+	if err != nil {
+		t.Fatalf("tx2 PostEntry while tx1 uncommitted error = %v (wanted immediate completion)", err)
+	}
+	if !res2.Created {
+		t.Error("tx2 PostEntry Created = false, want true")
+	}
+
+	if err := tx2.Commit(); err != nil {
+		t.Fatalf("commit tx2: %v", err)
+	}
+	if err := tx1.Commit(); err != nil {
+		t.Fatalf("commit tx1: %v", err)
+	}
+
+	// Untracked Cash counters must remain zero
+	cashBalances := readAccountBalances(t, testDB, fixture.platform.Cash.ID)
+	if cashBalances != (accountBalances{}) {
+		t.Errorf("cash balances = %+v, want empty", cashBalances)
 	}
 }

@@ -927,3 +927,133 @@ func TestAccountModel_PlatformAccountsAndLabels(t *testing.T) {
 		}
 	})
 }
+
+func TestAccountModel_BalanceLimitFlagsImmutable(t *testing.T) {
+	ctx := t.Context()
+
+	t.Run("updating debits_must_not_exceed_credits is rejected", func(t *testing.T) {
+		tx := newTestTx(t)
+		ledgerID := seedLedger(t, tx, "ngn_ng", "NGN")
+		ref := "acct_" + ulid.Make().String()
+
+		if _, err := tx.ExecContext(
+			ctx,
+			`INSERT INTO accounts (public_ref, ledger_id, kind, label)
+			 VALUES ($1, $2, 'platform', 'cash')`,
+			ref, ledgerID,
+		); err != nil {
+			t.Fatalf("insert platform account: %v", err)
+		}
+
+		_, err := tx.ExecContext(
+			ctx,
+			`UPDATE accounts SET debits_must_not_exceed_credits = true WHERE public_ref = $1`,
+			ref,
+		)
+		if err == nil {
+			t.Fatal("update debits_must_not_exceed_credits succeeded, want trigger exception")
+		}
+		if !strings.Contains(err.Error(), "debits_must_not_exceed_credits is immutable") {
+			t.Errorf("error = %q, want 'debits_must_not_exceed_credits is immutable'", err.Error())
+		}
+	})
+
+	t.Run("updating credits_must_not_exceed_debits is rejected", func(t *testing.T) {
+		tx := newTestTx(t)
+		ledgerID := seedLedger(t, tx, "ngn_ng", "NGN")
+		ref := "acct_" + ulid.Make().String()
+
+		if _, err := tx.ExecContext(
+			ctx,
+			`INSERT INTO accounts (public_ref, ledger_id, kind, label)
+			 VALUES ($1, $2, 'platform', 'cash')`,
+			ref, ledgerID,
+		); err != nil {
+			t.Fatalf("insert platform account: %v", err)
+		}
+
+		_, err := tx.ExecContext(
+			ctx,
+			`UPDATE accounts SET credits_must_not_exceed_debits = true WHERE public_ref = $1`,
+			ref,
+		)
+		if err == nil {
+			t.Fatal("update credits_must_not_exceed_debits succeeded, want trigger exception")
+		}
+		if !strings.Contains(err.Error(), "credits_must_not_exceed_debits is immutable") {
+			t.Errorf("error = %q, want 'credits_must_not_exceed_debits is immutable'", err.Error())
+		}
+	})
+}
+
+func TestAccountModel_UntrackedZeroCountersConstraint(t *testing.T) {
+	ctx := t.Context()
+
+	counters := []struct {
+		name   string
+		column string
+	}{
+		{"debits_pending", "debits_pending"},
+		{"credits_pending", "credits_pending"},
+		{"debits_posted", "debits_posted"},
+		{"credits_posted", "credits_posted"},
+		{"movement_count", "movement_count"},
+	}
+
+	for _, c := range counters {
+		t.Run("insert untracked account with non-zero "+c.name+" violates check", func(t *testing.T) {
+			tx := newTestTx(t)
+			ledgerID := seedLedger(t, tx, "ngn_ng", "NGN")
+			ref := "acct_" + ulid.Make().String()
+
+			query := `INSERT INTO accounts (public_ref, ledger_id, kind, label, ` + c.column + `)
+			          VALUES ($1, $2, 'platform', 'cash', 1)`
+			_, err := tx.ExecContext(ctx, query, ref, ledgerID)
+			if err == nil {
+				t.Fatalf("insert untracked account with %s = 1 succeeded, want check constraint violation", c.name)
+			}
+			if !strings.Contains(err.Error(), "accounts_untracked_counters_zero") {
+				t.Errorf("error = %q, want check constraint 'accounts_untracked_counters_zero'", err.Error())
+			}
+		})
+
+		t.Run("update untracked account with non-zero "+c.name+" violates check", func(t *testing.T) {
+			tx := newTestTx(t)
+			ledgerID := seedLedger(t, tx, "ngn_ng", "NGN")
+			ref := "acct_" + ulid.Make().String()
+
+			if _, err := tx.ExecContext(
+				ctx,
+				`INSERT INTO accounts (public_ref, ledger_id, kind, label) VALUES ($1, $2, 'platform', 'cash')`,
+				ref, ledgerID,
+			); err != nil {
+				t.Fatalf("insert platform account: %v", err)
+			}
+
+			query := `UPDATE accounts SET ` + c.column + ` = 1 WHERE public_ref = $1`
+			_, err := tx.ExecContext(ctx, query, ref)
+			if err == nil {
+				t.Fatalf("update untracked account with %s = 1 succeeded, want check constraint violation", c.name)
+			}
+			if !strings.Contains(err.Error(), "accounts_untracked_counters_zero") {
+				t.Errorf("error = %q, want check constraint 'accounts_untracked_counters_zero'", err.Error())
+			}
+		})
+	}
+
+	t.Run("tracked account can have non-zero counters", func(t *testing.T) {
+		tx := newTestTx(t)
+		ledgerID := seedLedger(t, tx, "ngn_ng", "NGN")
+		ref := "acct_" + ulid.Make().String()
+
+		// An account with records_movements=true is tracked, so its counters can be non-zero
+		if _, err := tx.ExecContext(
+			ctx,
+			`INSERT INTO accounts (public_ref, ledger_id, kind, label, records_movements, debits_posted, movement_count)
+			 VALUES ($1, $2, 'platform', 'cash', true, 100, 1)`,
+			ref, ledgerID,
+		); err != nil {
+			t.Fatalf("insert tracked platform account with non-zero counters failed: %v", err)
+		}
+	})
+}

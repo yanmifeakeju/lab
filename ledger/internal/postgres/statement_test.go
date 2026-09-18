@@ -619,7 +619,7 @@ func TestStore_GetStatement_Period(t *testing.T) {
 		{
 			name:    "from not before the reduced to",
 			account: fixture.payable.Reference,
-			from:    func(now time.Time) time.Time { return now.Add(-time.Minute) },
+			from:    func(now time.Time) time.Time { return now.Add(-statement.Margin / 2) },
 			to:      func(now time.Time) time.Time { return now.Add(time.Hour) },
 			wantErr: statement.ErrPeriodNotOrdered,
 		},
@@ -633,7 +633,7 @@ func TestStore_GetStatement_Period(t *testing.T) {
 		{
 			name:    "missing account precedes a period error",
 			account: "acct_01M20H8704F1FDM1CFWSZDVJPV",
-			from:    func(now time.Time) time.Time { return now.Add(-time.Minute) },
+			from:    func(now time.Time) time.Time { return now.Add(-statement.Margin / 2) },
 			to:      func(now time.Time) time.Time { return now.Add(time.Hour) },
 			wantErr: account.ErrAccountNotFound,
 		},

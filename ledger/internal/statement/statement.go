@@ -28,7 +28,7 @@ const (
 // A statement is historical, not a live view of the journal: its period ends at
 // least Margin before now, so every posting inside it has committed.
 const (
-	Margin        = 2 * time.Minute
+	Margin        = time.Minute
 	DefaultPeriod = 30 * 24 * time.Hour
 	MaxPeriod     = 90 * 24 * time.Hour
 )

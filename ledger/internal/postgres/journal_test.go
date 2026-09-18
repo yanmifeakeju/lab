@@ -68,8 +68,8 @@ func TestStore_PostEntry(t *testing.T) {
 	})
 
 	debitBalances := readAccountBalances(t, fixture.tx, fixture.platform.Cash.ID)
-	if debitBalances != (accountBalances{DebitsPosted: amount}) {
-		t.Errorf("cash balances = %+v, want DebitsPosted=%d", debitBalances, amount)
+	if debitBalances != (accountBalances{}) {
+		t.Errorf("cash balances = %+v, want empty", debitBalances)
 	}
 	creditBalances := readAccountBalances(t, fixture.tx, fixture.payable.ID)
 	if creditBalances != (accountBalances{CreditsPosted: amount}) {
@@ -133,14 +133,14 @@ func TestStore_PostEntry_MultipleLines(t *testing.T) {
 	}
 	assertJournalLines(t, fixture.tx, result.Entry.Reference, wantLines)
 
-	if got := readAccountBalances(t, fixture.tx, fixture.platform.Cash.ID); got != (accountBalances{DebitsPosted: 10_000}) {
-		t.Errorf("cash balances = %+v, want DebitsPosted=10000", got)
+	if got := readAccountBalances(t, fixture.tx, fixture.platform.Cash.ID); got != (accountBalances{}) {
+		t.Errorf("cash balances = %+v, want empty", got)
 	}
 	if got := readAccountBalances(t, fixture.tx, fixture.payable.ID); got != (accountBalances{DebitsPosted: 200, CreditsPosted: 10_000}) {
 		t.Errorf("payable balances = %+v, want DebitsPosted=200 CreditsPosted=10000", got)
 	}
-	if got := readAccountBalances(t, fixture.tx, fixture.platform.FeeRevenue.ID); got != (accountBalances{CreditsPosted: 200}) {
-		t.Errorf("fee revenue balances = %+v, want CreditsPosted=200", got)
+	if got := readAccountBalances(t, fixture.tx, fixture.platform.FeeRevenue.ID); got != (accountBalances{}) {
+		t.Errorf("fee revenue balances = %+v, want empty", got)
 	}
 }
 
@@ -227,15 +227,15 @@ func TestStore_PostEntry_DefaultsEffectiveAt(t *testing.T) {
 	}
 	assertJournalLines(t, fixture.tx, posted1.Entry.Reference, wantLines)
 
-	if got := readAccountBalances(t, fixture.tx, fixture.platform.Cash.ID); got != (accountBalances{DebitsPosted: 10_000}) {
-		t.Errorf("cash balances = %+v, want DebitsPosted=10000", got)
+	if got := readAccountBalances(t, fixture.tx, fixture.platform.Cash.ID); got != (accountBalances{}) {
+		t.Errorf("cash balances = %+v, want empty", got)
 	}
 
 	if got := readAccountBalances(t, fixture.tx, fixture.payable.ID); got != (accountBalances{DebitsPosted: 200, CreditsPosted: 10_000}) {
 		t.Errorf("payable balances = %+v, want DebitsPosted=200 CreditsPosted=10000", got)
 	}
-	if got := readAccountBalances(t, fixture.tx, fixture.platform.FeeRevenue.ID); got != (accountBalances{CreditsPosted: 200}) {
-		t.Errorf("fee revenue balances = %+v, want CreditsPosted=200", got)
+	if got := readAccountBalances(t, fixture.tx, fixture.platform.FeeRevenue.ID); got != (accountBalances{}) {
+		t.Errorf("fee revenue balances = %+v, want empty", got)
 	}
 }
 
@@ -322,8 +322,8 @@ func TestStore_PostEntry_IdempotentRetry(t *testing.T) {
 	}
 	assertJournalLines(t, fixture.tx, posted1.Entry.Reference, wantLines)
 
-	if got := readAccountBalances(t, fixture.tx, fixture.platform.Cash.ID); got != (accountBalances{DebitsPosted: 50_000}) {
-		t.Errorf("cash balances = %+v, want DebitsPosted=50000", got)
+	if got := readAccountBalances(t, fixture.tx, fixture.platform.Cash.ID); got != (accountBalances{}) {
+		t.Errorf("cash balances = %+v, want empty", got)
 	}
 
 	if got := readAccountBalances(t, fixture.tx, fixture.payable.ID); got != (accountBalances{DebitsPosted: 500, CreditsPosted: 50_000}) {
@@ -566,15 +566,15 @@ func TestStore_PostEntry_IdempotencyConflict(t *testing.T) {
 			}
 			assertJournalLines(t, fixture.tx, posted.Entry.Reference, wantLines)
 
-			if got := readAccountBalances(t, fixture.tx, fixture.platform.Cash.ID); got != (accountBalances{DebitsPosted: 50_000}) {
-				t.Errorf("cash balances = %+v, want DebitsPosted=50000", got)
+			if got := readAccountBalances(t, fixture.tx, fixture.platform.Cash.ID); got != (accountBalances{}) {
+				t.Errorf("cash balances = %+v, want empty", got)
 			}
 
 			if got := readAccountBalances(t, fixture.tx, fixture.payable.ID); got != (accountBalances{DebitsPosted: 500, CreditsPosted: 50_000}) {
 				t.Errorf("payable balances = %+v, want DebitsPosted=500 CreditsPosted=50_000", got)
 			}
-			if got := readAccountBalances(t, fixture.tx, fixture.platform.FeeRevenue.ID); got != (accountBalances{CreditsPosted: 500}) {
-				t.Errorf("fee revenue balances = %+v, want CreditsPosted=500", got)
+			if got := readAccountBalances(t, fixture.tx, fixture.platform.FeeRevenue.ID); got != (accountBalances{}) {
+				t.Errorf("fee revenue balances = %+v, want empty", got)
 			}
 		})
 	}
@@ -692,14 +692,14 @@ func TestStore_PostEntry_RetryAfterClosure(t *testing.T) {
 				},
 			})
 
-			if got := readAccountBalances(t, fixture.tx, fixture.platform.Cash.ID); got != (accountBalances{DebitsPosted: 50_000}) {
-				t.Errorf("cash balances = %+v, want DebitsPosted=50000", got)
+			if got := readAccountBalances(t, fixture.tx, fixture.platform.Cash.ID); got != (accountBalances{}) {
+				t.Errorf("cash balances = %+v, want empty", got)
 			}
 			if got := readAccountBalances(t, fixture.tx, fixture.payable.ID); got != (accountBalances{DebitsPosted: 500, CreditsPosted: 50_000}) {
 				t.Errorf("payable balances = %+v, want DebitsPosted=500 CreditsPosted=50000", got)
 			}
-			if got := readAccountBalances(t, fixture.tx, fixture.platform.FeeRevenue.ID); got != (accountBalances{CreditsPosted: 500}) {
-				t.Errorf("fee revenue balances = %+v, want CreditsPosted=500", got)
+			if got := readAccountBalances(t, fixture.tx, fixture.platform.FeeRevenue.ID); got != (accountBalances{}) {
+				t.Errorf("fee revenue balances = %+v, want empty", got)
 			}
 		})
 	}
@@ -827,16 +827,21 @@ func TestStore_PostEntry_Errors(t *testing.T) {
 			arrange: func(t *testing.T, fixture postEntryFixture, input *journal.PostInput) {
 				t.Helper()
 
-				if _, err := fixture.tx.ExecContext(
+				reference := "acct_" + ulid.Make().String()
+				var restrictedID int64
+				if err := fixture.tx.QueryRowContext(
 					t.Context(),
-					`UPDATE accounts SET credits_must_not_exceed_debits = true WHERE id = $1`,
-					fixture.platform.Cash.ID,
-				); err != nil {
-					t.Fatalf("restrict account credits: %v", err)
+					`INSERT INTO accounts (public_ref, ledger_id, kind, label, credits_must_not_exceed_debits)
+					VALUES ($1, $2, 'platform', 'restricted', true)
+					RETURNING id`,
+					reference,
+					fixture.ledgerID,
+				).Scan(&restrictedID); err != nil {
+					t.Fatalf("seed restricted platform account: %v", err)
 				}
 				input.Lines[0] = journal.LineInput{
 					DebitAccountReference:  fixture.platform.FeeRevenue.Reference,
-					CreditAccountReference: fixture.platform.Cash.Reference,
+					CreditAccountReference: reference,
 					Amount:                 100,
 					Purpose:                "Platform fee",
 				}
@@ -1871,5 +1876,88 @@ func TestStore_PostEntry_SequenceGaplessAfterRollback(t *testing.T) {
 	}
 	if movCount != 2 {
 		t.Errorf("movement_count = %d, want 2 (gapless)", movCount)
+	}
+}
+
+// TestStore_PostEntry_TrackedPlatformAccount verifies that a platform account
+// created with records_movements=true tracks its balance: its counters and
+// movement_count are updated, and its movements are recorded.
+func TestStore_PostEntry_TrackedPlatformAccount(t *testing.T) {
+	fixture := newPostEntryFixture(t)
+
+	// Seed a tracked platform account with records_movements = true
+	trackedRef := "acct_" + ulid.Make().String()
+	var trackedID int64
+	if err := fixture.tx.QueryRowContext(
+		t.Context(),
+		`INSERT INTO accounts (public_ref, ledger_id, kind, label, records_movements)
+		 VALUES ($1, $2, 'platform', 'tracked_clearing', true)
+		 RETURNING id`,
+		trackedRef,
+		fixture.ledgerID,
+	).Scan(&trackedID); err != nil {
+		t.Fatalf("seed tracked platform account: %v", err)
+	}
+
+	result := fixture.mustPost(t, journal.PostInput{
+		LedgerSlug:  "ngn_ng",
+		RequestID:   "req_tracked_platform_1",
+		Kind:        "settlement",
+		Description: "Settlement to tracked platform account",
+		Lines: []journal.LineInput{
+			{
+				DebitAccountReference:  fixture.platform.Cash.Reference,
+				CreditAccountReference: trackedRef,
+				Amount:                 25_000,
+				Purpose:                "Settlement clearing",
+			},
+		},
+	})
+
+	if !result.Created {
+		t.Error("PostEntry() Created = false, want true")
+	}
+
+	// Untracked cash counters must remain zero
+	cashBalances := readAccountBalances(t, fixture.tx, fixture.platform.Cash.ID)
+	if cashBalances != (accountBalances{}) {
+		t.Errorf("untracked cash balances = %+v, want empty", cashBalances)
+	}
+
+	// Tracked platform account counters must be updated
+	trackedBalances := readAccountBalances(t, fixture.tx, trackedID)
+	wantTracked := accountBalances{CreditsPosted: 25_000}
+	if trackedBalances != wantTracked {
+		t.Errorf("tracked platform balances = %+v, want %+v", trackedBalances, wantTracked)
+	}
+
+	// movement_count must be incremented to 1
+	var movementCount int64
+	if err := fixture.tx.QueryRowContext(
+		t.Context(),
+		`SELECT movement_count FROM accounts WHERE id = $1`,
+		trackedID,
+	).Scan(&movementCount); err != nil {
+		t.Fatalf("read movement_count: %v", err)
+	}
+	if movementCount != 1 {
+		t.Errorf("movement_count = %d, want 1", movementCount)
+	}
+
+	// Movement must be inserted in account_movements
+	var seq int64
+	var balanceAfter int64
+	if err := fixture.tx.QueryRowContext(
+		t.Context(),
+		`SELECT sequence, balance_after FROM account_movements WHERE account_id = $1`,
+		trackedID,
+	).Scan(&seq, &balanceAfter); err != nil {
+		t.Fatalf("read account_movements: %v", err)
+	}
+	if seq != 1 {
+		t.Errorf("movement sequence = %d, want 1", seq)
+	}
+	if balanceAfter != 25_000 {
+		t.Errorf("movement balance_after = %d, want 25000", balanceAfter)
 	}
 }

@@ -174,7 +174,11 @@ BEGIN
     RETURN;
   END IF;
 
-  -- Every affected account is locked in the same order, and before the lines
+  -- Only accounts that track a balance are locked: one with a limit or with
+  -- movements. The others keep no counters, so postings to them run in
+  -- parallel.
+  --
+  -- Every locked account is locked in the same order, and before the lines
   -- are inserted: the line foreign keys take KEY SHARE locks on the
   -- referenced accounts, and locking after the insert would let two
   -- concurrent entries each hold KEY SHARE and wait for each other's
@@ -199,6 +203,7 @@ BEGIN
        AND credit.ledger_id = v_ledger.id
     ) AS affected
   )
+    AND (locked.debits_must_not_exceed_credits OR locked.credits_must_not_exceed_debits OR locked.records_movements)
   ORDER BY locked.id
   FOR UPDATE;
 
@@ -353,7 +358,10 @@ BEGIN
       movement_count = account.movement_count + coalesce(mc.cnt, 0)
   FROM journal_entry_totals(v_entry.id) AS total
   LEFT JOIN movement_counts mc ON mc.account_id = total.account_id
-  WHERE account.id = total.account_id;
+  WHERE account.id = total.account_id
+    AND (account.debits_must_not_exceed_credits
+      OR account.credits_must_not_exceed_debits
+      OR account.records_movements);
 
   RETURN QUERY
   SELECT v_entry.id, v_entry.public_ref, v_entry.ledger_id,
