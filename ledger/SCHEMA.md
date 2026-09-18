@@ -109,8 +109,9 @@ and may optionally belong to a holder.
 | `credits_pending` | Authorized credit movements not yet captured or released. |
 | `debits_posted` | Final debit movements. |
 | `credits_posted` | Final credit movements. |
-| `debits_must_not_exceed_credits` | Prevents debit exposure from exceeding posted credits. |
-| `credits_must_not_exceed_debits` | Prevents credit exposure from exceeding posted debits. |
+| `debits_must_not_exceed_credits` | Prevents debit exposure from exceeding posted credits. Fixed at creation (immutable). |
+| `credits_must_not_exceed_debits` | Prevents credit exposure from exceeding posted debits. Fixed at creation (immutable). |
+| `movement_count` | Number of balance movements recorded for this account. Incremented atomically under the account lock. |
 | `records_movements` | Fixed at creation. Immutable flag indicating whether account records running balance movements (always true for `payable`). |
 | `closed_at` | Time the account was closed or scheduled to close. An account is closed once `closed_at <= clock_timestamp()`. Once reached, it cannot be modified. Past values are rounded up to `clock_timestamp()` to prevent backdating history. |
 | `created_at` | Time the account was created. |
@@ -146,6 +147,21 @@ debits_posted - credits_posted - credits_pending
 The two restriction flags are mutually exclusive. Counters cannot be negative,
 and database constraints provide a final guard against invalid exposure.
 
+### Balance tracking and untracked accounts
+
+An account tracks a balance only when the ledger reads its counters during a posting:
+```text
+debits_must_not_exceed_credits OR credits_must_not_exceed_debits OR records_movements
+```
+
+- Payable accounts always record movements, so they always track a balance.
+- Platform accounts track a balance only when created with a limit flag or with `records_movements = true`.
+- The limit flags (`debits_must_not_exceed_credits`, `credits_must_not_exceed_debits`) are fixed at creation and immutable, enforced by trigger.
+
+Accounts that do not track a balance keep their counters (`debits_pending`, `credits_pending`, `debits_posted`, `credits_posted`, and `movement_count`) at zero, enforced by the `accounts_untracked_counters_zero` CHECK constraint. These counters are always zero and are not the account's balance.
+
+The ledger does not lock untracked accounts `FOR UPDATE` or serve their balances; platform balances come from a column store fed from `journal_lines` by change data capture (`journal_lines` is append-only, making it a clean source). Postings touching untracked accounts therefore run in parallel without queueing on platform account rows.
+
 ## Journal entries
 
 A journal entry describes one business operation and its lifecycle. It owns one
@@ -158,9 +174,9 @@ or more balanced transfer lines.
 | `ledger_id` | Ledger containing the entry and all accounts touched by it. |
 | `request_id` | Caller-provided idempotency identifier. It is unique within a ledger. |
 | `fingerprint` | Digest of the meaningful request contents. It detects reuse of a request ID with different content. It is not a secret. |
-| `kind` | Business classification: `payment`, `settlement`, or `transfer`. |
+| `kind` | Client-defined business classification string (e.g. `payment`, `settlement`, `fee`). |
 | `state` | Current business lifecycle state: `pending`, `posted`, `captured`, `voided`, or `expired`. |
-| `description` | Optional human-readable explanation. It does not control accounting behavior. |
+| `description` | Required human-readable explanation naming the business event. |
 | `expires_at` | Deadline for resolving an authorization. Pending and terminal authorization entries retain it for audit. |
 | `pending_entry_id` | Original pending authorization resolved by this entry. Only a posted resolution entry may set it. |
 | `effective_at` | Business time of the operation or resolution. |
@@ -219,6 +235,7 @@ arithmetically unbalanced.
 | `credit_account_id` | Account receiving the credit movement. |
 | `line_number` | One-based stable position within the entry. It preserves deterministic request order and diagnostics. |
 | `amount` | Positive integer amount in the ledger's minor units. |
+| `purpose` | Required client-defined classification describing this line's specific role in the entry. |
 | `effect` | Immutable counter transition: `pending`, `posted`, `pending_posted`, or `pending_voided`. |
 
 The debit and credit accounts must exist in the line's ledger and must be
@@ -244,6 +261,26 @@ After capture, for example, the original authorization has state `captured` but
 its original lines still have effect `pending`. The linked resolution entry is
 `posted`, and its copied lines have effect `pending_posted`.
 
+## Account movements
+
+An account movement records one recorded-account side of a posted journal line,
+its per-account sequence, and the posted balance after it, at posting time.
+
+| Column | Meaning and reason |
+| --- | --- |
+| `account_id` | Account affected by the movement. |
+| `sequence` | Monotonically increasing per-account ordinal starting at 1. Unique and gapless within an account. |
+| `journal_entry_id` | Entry that produced the movement. |
+| `line_number` | Line within the entry that produced the movement. |
+| `direction` | Side of the movement: `debit` or `credit`. |
+| `amount` | Positive integer amount in the ledger's minor units. |
+| `purpose` | Copied from the immutable journal line. |
+| `balance_after` | Posted balance of the account immediately following this movement. |
+| `recorded_at` | Commit-ordered timestamp assigned under the account lock, monotonically non-decreasing within the account. |
+
+Statements are served directly from `account_movements` rather than scanning
+`journal_lines`.
+
 ## Posting and resolution invariants
 
 Some invariants are structural and belong in table constraints and foreign
@@ -260,13 +297,15 @@ The schema enforces:
 - one request ID per ledger;
 - one resolution entry per pending authorization;
 - required expiry for pending and terminal authorization states;
-- non-negative account counters and account exposure limits.
+- non-negative account counters and account exposure limits;
+- untracked accounts maintain zero counters;
+- immutable balance limit flags and records_movements.
 
 The posting and resolution routines must enforce:
 
 - at least one line;
 - every supplied account resolves exactly once;
-- all affected accounts are locked in a stable order;
+- all affected balance-tracking accounts are locked in a stable order;
 - closed ledgers and accounts reject new activity;
 - an idempotent retry has the same fingerprint;
 - only a pending entry can be captured, voided, or expired;
