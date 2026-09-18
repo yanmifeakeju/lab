@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/joho/godotenv"
 )
@@ -22,6 +23,9 @@ type Config struct {
 	}
 	Database struct {
 		URL string
+		// MaxConns is the most connections the pool keeps open, or 0 for
+		// the pool's own default.
+		MaxConns int
 	}
 }
 
@@ -32,9 +36,11 @@ type Config struct {
 //   - SERVER_ADDRESS - the HTTP listen address. Defaults to ":8080" when
 //     unset or empty.
 //   - DATABASE_URL - the PostgreSQL connection URL. Required.
+//   - DATABASE_MAX_CONNS - the connection pool size. Left at 0 when unset
+//     or empty.
 //
-// Returns an error if the optional .env file cannot be parsed or DATABASE_URL
-// is empty.
+// Returns an error if the optional .env file cannot be parsed, DATABASE_URL
+// is empty, or DATABASE_MAX_CONNS is not a positive integer.
 func LoadEnvConfig() (Config, error) {
 	var cfg Config
 	// .env is a dev convenience; production injects env vars natively.
@@ -53,6 +59,14 @@ func LoadEnvConfig() (Config, error) {
 	cfg.Database.URL = os.Getenv("DATABASE_URL")
 	if cfg.Database.URL == "" {
 		return cfg, errors.New("config database url is not set")
+	}
+
+	if raw := os.Getenv("DATABASE_MAX_CONNS"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			return cfg, fmt.Errorf("config database max conns %q must be a positive integer", raw)
+		}
+		cfg.Database.MaxConns = n
 	}
 
 	return cfg, nil

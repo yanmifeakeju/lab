@@ -118,7 +118,7 @@ paths:
       operationId: getAccountStatement
       summary: Get a payable account statement
       description: |
-        Retrieves the journal movements affecting one payable account within a recorded-time period in deterministic chronological order (`recorded_at, journal entry identity, line_number`).
+        Retrieves the journal movements affecting one payable account within a recorded-time period, in the order they were applied to the account (`recorded_at, sequence`).
 
         ### Example movements
 

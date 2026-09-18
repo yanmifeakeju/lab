@@ -30,7 +30,7 @@ func run() error {
 	}
 
 	startupCtx, cancelStartup := context.WithTimeout(context.Background(), 10*time.Second)
-	db, err := database.Open(startupCtx, cfg.Database.URL)
+	db, err := database.Open(startupCtx, cfg.Database.URL, cfg.Database.MaxConns)
 	cancelStartup()
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)

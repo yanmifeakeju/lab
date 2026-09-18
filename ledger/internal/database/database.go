@@ -10,9 +10,17 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
-// Open returns a [*sql.DB] for the given DSN. The caller owns its lifetime.
-// Use Close() on shutdown.
-func Open(ctx context.Context, dsn string) (*sql.DB, error) {
+// DefaultMaxConns is the pool size [Open] uses when none is given.
+const DefaultMaxConns = 10
+
+// Open returns a [*sql.DB] for the given DSN, with a pool of at most maxConns
+// connections, or [DefaultMaxConns] when maxConns is not positive. The caller
+// owns its lifetime. Use Close() on shutdown.
+func Open(ctx context.Context, dsn string, maxConns int) (*sql.DB, error) {
+	if maxConns < 1 {
+		maxConns = DefaultMaxConns
+	}
+
 	connConfig, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("parse dsn: %w", err)
@@ -29,8 +37,8 @@ func Open(ctx context.Context, dsn string) (*sql.DB, error) {
 
 	db := stdlib.OpenDB(*connConfig)
 
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(25)
+	db.SetMaxOpenConns(maxConns)
+	db.SetMaxIdleConns(maxConns)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
 	if err := db.PingContext(ctx); err != nil {

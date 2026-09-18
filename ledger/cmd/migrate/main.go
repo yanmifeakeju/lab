@@ -37,7 +37,7 @@ func main() {
 		log.Fatal("DATABASE_URL not set")
 	}
 
-	db, err := database.Open(context.Background(), dsn)
+	db, err := database.Open(context.Background(), dsn, database.DefaultMaxConns)
 	if err != nil {
 		log.Fatalf("open db: %v", err)
 	}

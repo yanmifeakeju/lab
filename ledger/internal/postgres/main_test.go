@@ -60,7 +60,7 @@ func runIntegrationTests(m *testing.M) (code int) {
 		return 1
 	}
 
-	testDB, err = database.Open(setupCtx, dsn)
+	testDB, err = database.Open(setupCtx, dsn, database.DefaultMaxConns)
 	if err != nil {
 		log.Printf("open postgres: %v", err)
 		return 1
