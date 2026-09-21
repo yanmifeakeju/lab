@@ -27,6 +27,12 @@ CREATE TABLE "accounts" (
 	"debits_must_not_exceed_credits" boolean DEFAULT false NOT NULL,
 	"credits_must_not_exceed_debits" boolean DEFAULT false NOT NULL,
 	"records_movements" boolean DEFAULT false NOT NULL,
+	-- An account tracks a balance when it has a limit to enforce or a movement
+	-- history to keep. Only these are locked and have their counters updated by
+	-- a posting; the rest stay out of the way of concurrent postings.
+	"tracks_balance" boolean GENERATED ALWAYS AS (
+		"debits_must_not_exceed_credits" OR "credits_must_not_exceed_debits" OR "records_movements"
+	) STORED,
 	"closed_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "accounts_public_ref_unique" UNIQUE("public_ref"),

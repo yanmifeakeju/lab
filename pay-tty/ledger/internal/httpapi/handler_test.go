@@ -37,6 +37,10 @@ type fakeService struct {
 	statementResult statement.Result
 	statementErr    error
 	statementCalls  int
+	batchInput      journal.BatchInput
+	batchResult     journal.BatchResult
+	batchErr        error
+	batchCalls      int
 }
 
 func (f *fakeService) CreatePayableAccount(
@@ -64,6 +68,15 @@ func (f *fakeService) PostEntry(
 	f.postInput = input
 	f.postCalls++
 	return f.postResult, f.postErr
+}
+
+func (f *fakeService) PostEntries(
+	_ context.Context,
+	input journal.BatchInput,
+) (journal.BatchResult, error) {
+	f.batchInput = input
+	f.batchCalls++
+	return f.batchResult, f.batchErr
 }
 
 func (f *fakeService) GetStatement(
@@ -842,6 +855,75 @@ func TestPostJournalEntryValidation(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "whitespace-only kind",
+			body: `{
+				"ledger":"ngn_ng",
+				"kind":"   \u00a0   ",
+				"description":"Payment received",
+				"lines":[{
+					"debit_account_ref":"acct_cash",
+					"credit_account_ref":"acct_payable",
+					"amount":10000,
+					"purpose":"Card payment"
+				}]
+			}`,
+			key: "payment_123",
+			wantDetails: []api.ValidationErrorDetail{
+				{
+					Location: api.Body,
+					Field:    "kind",
+					Code:     api.InvalidValue,
+					Message:  "kind must not be blank",
+				},
+			},
+		},
+		{
+			name: "whitespace-only description",
+			body: `{
+				"ledger":"ngn_ng",
+				"kind":"payment",
+				"description":"   \u00a0   ",
+				"lines":[{
+					"debit_account_ref":"acct_cash",
+					"credit_account_ref":"acct_payable",
+					"amount":10000,
+					"purpose":"Card payment"
+				}]
+			}`,
+			key: "payment_123",
+			wantDetails: []api.ValidationErrorDetail{
+				{
+					Location: api.Body,
+					Field:    "description",
+					Code:     api.InvalidValue,
+					Message:  "description must not be blank",
+				},
+			},
+		},
+		{
+			name: "whitespace-only purpose",
+			body: `{
+				"ledger":"ngn_ng",
+				"kind":"payment",
+				"description":"Payment received",
+				"lines":[{
+					"debit_account_ref":"acct_cash",
+					"credit_account_ref":"acct_payable",
+					"amount":10000,
+					"purpose":"   \u00a0   "
+				}]
+			}`,
+			key: "payment_123",
+			wantDetails: []api.ValidationErrorDetail{
+				{
+					Location: api.Body,
+					Field:    "lines[0].purpose",
+					Code:     api.InvalidValue,
+					Message:  "purpose must not be blank",
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1018,7 +1100,7 @@ func TestPostJournalEntryResponses(t *testing.T) {
 		{name: "ledger closed", err: journal.ErrLedgerClosed, wantStatus: http.StatusConflict, wantCode: api.LedgerClosed, wantMessage: "Ledger is closed."},
 		{name: "account closed", err: journal.ErrAccountClosed, wantStatus: http.StatusConflict, wantCode: api.AccountClosed, wantMessage: "Account is closed."},
 		{name: "insufficient funds", err: journal.ErrInsufficientFunds, wantStatus: http.StatusConflict, wantCode: api.InsufficientFunds, wantMessage: "Insufficient funds."},
-		{name: "idempotency conflict", err: journal.ErrIdempotencyConflict, wantStatus: http.StatusConflict, wantCode: api.IdempotencyConflict, wantMessage: "Idempotency key conflicts with a previous request."},
+		{name: "idempotency conflict", err: journal.ErrIdempotencyConflict, wantStatus: http.StatusConflict, wantCode: api.IdempotencyConflict, wantMessage: "Idempotency key was previously used with different content."},
 		{
 			name:       "defensive no lines",
 			err:        journal.ErrNoLines,

@@ -71,3 +71,57 @@ type PostResult struct {
 	// was returned due to an idempotent retry.
 	Created bool
 }
+
+// BatchItemStatus represents the outcome status of an entry within a batch.
+type BatchItemStatus string
+
+const (
+	BatchItemCreated  BatchItemStatus = "created"
+	BatchItemExisting BatchItemStatus = "existing"
+	BatchItemRejected BatchItemStatus = "rejected"
+)
+
+// BatchItemError represents an individual entry's domain rejection reason.
+type BatchItemError struct {
+	Code    string
+	Message string
+}
+
+// BatchItemInput describes an individual journal entry within a batch posting.
+type BatchItemInput struct {
+	RequestID   string
+	Kind        string
+	Description string
+	EffectiveAt *time.Time
+	Lines       []LineInput
+}
+
+// Batch limits enforced across single batch postings.
+//
+// MinBatchEntries exists because setting up a batch costs about what ten
+// single postings cost: below it, PostEntry is the faster route for the same
+// entries, so a smaller batch is rejected rather than served slowly.
+const (
+	MinBatchEntries = 10
+	MaxBatchEntries = 1000
+	MaxBatchLines   = 5000
+)
+
+// BatchInput contains the parameters required to post a batch of journal entries.
+type BatchInput struct {
+	LedgerSlug string
+	Entries    []BatchItemInput
+}
+
+// BatchItemResult contains the outcome for one entry in a posted batch.
+type BatchItemResult struct {
+	RequestID  string
+	Status     BatchItemStatus
+	JournalRef *string
+	Error      *BatchItemError
+}
+
+// BatchResult contains the results for all entries in a batch posting.
+type BatchResult struct {
+	Results []BatchItemResult
+}

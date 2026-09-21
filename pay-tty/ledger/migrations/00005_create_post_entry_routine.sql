@@ -1,4 +1,9 @@
 -- +goose Up
+-- Building blocks shared by post_entry() and post_entries(), then post_entry()
+-- itself. The two routines are deliberately separate implementations: one fails
+-- the whole call on the first problem, the other records an outcome per entry
+-- without opening a subtransaction. What they must agree on lives here.
+
 -- journal_entry_totals() aggregates one entry's lines by account. It never
 -- scans an account's journal history; posting uses it to lock and update each
 -- affected account exactly once.
@@ -32,8 +37,93 @@ AS $$
 $$;
 -- +goose StatementEnd
 
--- post_entry() records an immediately posted entry, writes movements for
--- accounts that record them, and updates account counters atomically.
+-- journal_fingerprint() identifies a posting request by its content, so a retry
+-- through either endpoint is recognised as the same request. Both routines must
+-- hash identically or an entry posted through one would look new to the other.
+--
+-- jsonb provides a stable object-key order and preserves line-array order. The
+-- caller-supplied effective time is hashed before it is defaulted: otherwise
+-- each retry that omitted the value would appear to contain new content.
+--
+-- STABLE, not IMMUTABLE, only because extract(epoch FROM timestamptz) is.
+
+-- +goose StatementBegin
+CREATE OR REPLACE FUNCTION journal_fingerprint(
+  p_ledger_slug  text,
+  p_kind         text,
+  p_description  text,
+  p_effective_at timestamp with time zone,
+  p_lines        jsonb
+)
+RETURNS text
+LANGUAGE sql
+STABLE
+PARALLEL SAFE
+SET search_path = public, pg_temp
+AS $$
+  SELECT encode(
+    sha256(
+      convert_to(
+        jsonb_build_object(
+          'operation', 'post',
+          'ledger_slug', p_ledger_slug,
+          'kind', p_kind,
+          'description', p_description,
+          'effective_at_epoch', CASE
+            WHEN p_effective_at IS NULL THEN NULL
+            ELSE extract(epoch FROM p_effective_at)
+          END,
+          'lines', p_lines
+        )::text,
+        'UTF8'
+      )
+    ),
+    'hex'
+  );
+$$;
+-- +goose StatementEnd
+
+-- account_limit_exceeded() answers whether adding a debit and a credit to an
+-- account would break its overdraft limit. The counters are passed in rather
+-- than read, because a batch checks entries against running balances held in
+-- memory, not against the stored row.
+--
+-- It takes no search_path: it reads nothing, so leaving it inlinable matters
+-- more. The same arithmetic is spelled out in the accounts CHECK constraints,
+-- which cannot call it; those constraints remain the enforcement, this is the
+-- pre-check that turns a violation into a domain error.
+
+-- +goose StatementBegin
+CREATE OR REPLACE FUNCTION account_limit_exceeded(
+  p_debits_must_not_exceed_credits boolean,
+  p_credits_must_not_exceed_debits boolean,
+  p_debits_pending                 bigint,
+  p_credits_pending                bigint,
+  p_debits_posted                  bigint,
+  p_credits_posted                 bigint,
+  p_added_debit                    bigint,
+  p_added_credit                   bigint
+)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+AS $$
+  SELECT (
+    p_debits_must_not_exceed_credits
+    AND p_debits_pending + p_debits_posted + p_added_debit
+        > p_credits_posted + p_added_credit
+  ) OR (
+    p_credits_must_not_exceed_debits
+    AND p_credits_pending + p_credits_posted + p_added_credit
+        > p_debits_posted + p_added_debit
+  );
+$$;
+-- +goose StatementEnd
+
+-- post_entry() records one immediately posted entry, writes movements for
+-- accounts that record them, and updates account counters atomically. It fails
+-- the whole call on the first problem it finds.
 --
 --   LG001  ledger_not_found
 --   LG002  ledger_closed
@@ -96,27 +186,8 @@ BEGIN
     RAISE EXCEPTION 'ledger_not_found: %', p_ledger_slug USING ERRCODE = 'LG001';
   END IF;
 
-  -- jsonb provides a stable object-key order and preserves line-array order.
-  -- Hash the caller-supplied effective time before defaulting it: otherwise
-  -- each retry that omitted the value would appear to contain new content.
-  v_fingerprint := encode(
-    sha256(
-      convert_to(
-        jsonb_build_object(
-          'operation', 'post',
-          'ledger_slug', p_ledger_slug,
-          'kind', p_kind,
-          'description', p_description,
-          'effective_at_epoch', CASE
-            WHEN p_effective_at IS NULL THEN NULL
-            ELSE extract(epoch FROM p_effective_at)
-          END,
-          'lines', p_lines
-        )::text,
-        'UTF8'
-      )
-    ),
-    'hex'
+  v_fingerprint := journal_fingerprint(
+    p_ledger_slug, p_kind, p_description, p_effective_at, p_lines
   );
 
   -- Return successful retries even if the ledger or an account was closed
@@ -144,8 +215,10 @@ BEGIN
     RAISE EXCEPTION 'ledger_closed: %', p_ledger_slug USING ERRCODE = 'LG002';
   END IF;
 
-  -- ON CONFLICT also handles two concurrent first attempts using the same
-  -- request ID. The loser waits for the winner, then returns its entry.
+  -- Claim the request id before taking account locks. post_entries() claims
+  -- request ids in the same phase and in sorted order, so idempotency and
+  -- account locks never form a cycle. The loser of a concurrent first attempt
+  -- waits here for the winner, then returns its entry.
   INSERT INTO journal_entries
     (public_ref, ledger_id, request_id, fingerprint, kind, state,
      description, effective_at)
@@ -174,15 +247,13 @@ BEGIN
     RETURN;
   END IF;
 
-  -- Only accounts that track a balance are locked: one with a limit or with
-  -- movements. The others keep no counters, so postings to them run in
-  -- parallel.
+  -- Only accounts that track a balance are locked. The others keep no
+  -- counters, so postings to them run in parallel.
   --
-  -- Every locked account is locked in the same order, and before the lines
-  -- are inserted: the line foreign keys take KEY SHARE locks on the
-  -- referenced accounts, and locking after the insert would let two
-  -- concurrent entries each hold KEY SHARE and wait for each other's
-  -- FOR UPDATE.
+  -- Every locked account is locked in the same order and before the lines are
+  -- inserted: the line foreign keys take KEY SHARE locks on the accounts they
+  -- reference, and locking afterwards would let two concurrent entries each
+  -- hold KEY SHARE while waiting for the other's FOR UPDATE.
   PERFORM 1
   FROM accounts AS locked
   WHERE locked.id IN (
@@ -203,7 +274,7 @@ BEGIN
        AND credit.ledger_id = v_ledger.id
     ) AS affected
   )
-    AND (locked.debits_must_not_exceed_credits OR locked.credits_must_not_exceed_debits OR locked.records_movements)
+    AND locked.tracks_balance
   ORDER BY locked.id
   FOR UPDATE;
 
@@ -256,14 +327,15 @@ BEGIN
   SELECT count(*) INTO v_bad
   FROM journal_entry_totals(v_entry.id) AS total
   JOIN accounts AS account ON account.id = total.account_id
-  WHERE (
-    account.debits_must_not_exceed_credits
-    AND account.debits_pending + account.debits_posted + total.debit
-        > account.credits_posted + total.credit
-  ) OR (
-    account.credits_must_not_exceed_debits
-    AND account.credits_pending + account.credits_posted + total.credit
-        > account.debits_posted + total.debit
+  WHERE account_limit_exceeded(
+    account.debits_must_not_exceed_credits,
+    account.credits_must_not_exceed_debits,
+    account.debits_pending,
+    account.credits_pending,
+    account.debits_posted,
+    account.credits_posted,
+    total.debit,
+    total.credit
   );
 
   IF v_bad > 0 THEN
@@ -359,9 +431,7 @@ BEGIN
   FROM journal_entry_totals(v_entry.id) AS total
   LEFT JOIN movement_counts mc ON mc.account_id = total.account_id
   WHERE account.id = total.account_id
-    AND (account.debits_must_not_exceed_credits
-      OR account.credits_must_not_exceed_debits
-      OR account.records_movements);
+    AND account.tracks_balance;
 
   RETURN QUERY
   SELECT v_entry.id, v_entry.public_ref, v_entry.ledger_id,

@@ -27,6 +27,16 @@ var (
 	// ErrNoLines is returned when a post entry contains no lines.
 	ErrNoLines = errors.New("no lines")
 
+	// ErrBatchTooSmall is returned when a batch contains fewer entries than the
+	// minimum that makes batching worthwhile.
+	ErrBatchTooSmall = errors.New("batch too small")
+
+	// ErrBatchSizeExceeded is returned when a batch contains more entries than the maximum allowed.
+	ErrBatchSizeExceeded = errors.New("batch size exceeded")
+
+	// ErrBatchLinesExceeded is returned when a batch contains more total lines than the maximum allowed.
+	ErrBatchLinesExceeded = errors.New("batch lines exceeded")
+
 	// ErrNoSelfTransfer is returned when a post entry line debits and credits
 	// the same account.
 	ErrNoSelfTransfer = errors.New("no self transfer")
