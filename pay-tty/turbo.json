@@ -1,0 +1,37 @@
+{
+  "$schema": "https://turborepo.com/schema.json",
+  "globalDependencies": [
+    ".oxlintrc.json",
+    "openapi.yaml",
+    "tsconfig.json",
+    "tools/oxlint/anti-slop/**"
+  ],
+  "tasks": {
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "start": {
+      "cache": false
+    },
+    "test": {
+      "dependsOn": ["^test"],
+      "outputs": []
+    },
+    "generate": {
+      "inputs": ["$TURBO_DEFAULT$", "!src/generated.ts"],
+      "outputs": ["src/generated.ts"]
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck"],
+      "outputs": []
+    },
+    "lint": {
+      "dependsOn": ["^lint"],
+      "outputs": []
+    },
+    "clean": {
+      "cache": false
+    }
+  }
+}

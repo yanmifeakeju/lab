@@ -1,0 +1,19 @@
+{
+  "name": "@pay-tty/ledger-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./generated": "./src/generated.ts"
+  },
+  "scripts": {
+    "generate": "openapigen --spec ../../openapi.yaml --name LedgerClient --format httpclient > src/generated.ts",
+    "generate:check": "openapigen --spec ../../openapi.yaml --name LedgerClient --format httpclient | diff -u src/generated.ts -",
+    "lint": "oxlint . --deny-warnings",
+    "typecheck": "tsc --project tsconfig.json"
+  },
+  "dependencies": {
+    "effect": "4.0.0-rc.117"
+  }
+}

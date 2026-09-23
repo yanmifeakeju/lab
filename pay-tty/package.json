@@ -1,0 +1,36 @@
+{
+  "name": "pay-tty",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.24.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "turbo run dev --filter=@pay-tty/app",
+    "start": "turbo run start --filter=@pay-tty/app",
+    "generate:client": "pnpm --filter @pay-tty/ledger-client generate",
+    "generate:client:check": "pnpm --filter @pay-tty/ledger-client generate:check",
+    "test": "pnpm test:anti-slop && turbo run test",
+    "test:anti-slop": "node --test tools/oxlint/anti-slop/effect/rules/*.test.ts",
+    "check": "pnpm generate:client:check && turbo run typecheck lint",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "lint:fix": "oxlint apps packages --fix",
+    "clean": "turbo run clean",
+    "prepare": "effect-tsgo patch --typescript --oxlint"
+  },
+  "devDependencies": {
+    "@effect/openapi-generator": "4.0.0-rc.117",
+    "@effect/platform-node": "4.0.0-rc.117",
+    "@effect/tsgo": "0.45.0",
+    "@oxlint/plugins": "1.82.0",
+    "@types/node": "^24.13.6",
+    "effect": "4.0.0-rc.117",
+    "oxlint": "1.82.0",
+    "oxlint-tsgolint": "7.0.2001",
+    "turbo": "2.11.2",
+    "typescript": "7.0.2"
+  }
+}
