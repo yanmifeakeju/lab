@@ -1,0 +1,534 @@
+{
+  "id": "a72a92e0-411d-4098-b016-2b7684be8d8f",
+  "prevId": "00000000-0000-0000-0000-000000000000",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.business_ledger_accounts": {
+      "name": "business_ledger_accounts",
+      "schema": "",
+      "columns": {
+        "business_id": {
+          "name": "business_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ledger": {
+          "name": "ledger",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "ledger_account_kind",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "label": {
+          "name": "label",
+          "type": "platform_account_label",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ledger_account_ref": {
+          "name": "ledger_account_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "business_ledger_accounts_payable_ref_unique": {
+          "name": "business_ledger_accounts_payable_ref_unique",
+          "columns": [
+            {
+              "expression": "ledger_account_ref",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"business_ledger_accounts\".\"kind\" = 'payable'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "business_ledger_accounts_business_id_businesses_id_fk": {
+          "name": "business_ledger_accounts_business_id_businesses_id_fk",
+          "tableFrom": "business_ledger_accounts",
+          "tableTo": "businesses",
+          "columnsFrom": [
+            "business_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "business_ledger_accounts_ledger_ledgers_slug_fk": {
+          "name": "business_ledger_accounts_ledger_ledgers_slug_fk",
+          "tableFrom": "business_ledger_accounts",
+          "tableTo": "ledgers",
+          "columnsFrom": [
+            "ledger"
+          ],
+          "columnsTo": [
+            "slug"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "business_ledger_accounts_unique": {
+          "name": "business_ledger_accounts_unique",
+          "nullsNotDistinct": true,
+          "columns": [
+            "business_id",
+            "ledger",
+            "kind",
+            "label"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "business_ledger_accounts_kind_matches_label": {
+          "name": "business_ledger_accounts_kind_matches_label",
+          "value": "(\"business_ledger_accounts\".\"kind\" = 'platform') = (\"business_ledger_accounts\".\"label\" is not null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.business_principals": {
+      "name": "business_principals",
+      "schema": "",
+      "columns": {
+        "principal_id": {
+          "name": "principal_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "business_id": {
+          "name": "business_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "business_principals_business_id_idx": {
+          "name": "business_principals_business_id_idx",
+          "columns": [
+            {
+              "expression": "business_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "business_principals_principal_id_principals_id_fk": {
+          "name": "business_principals_principal_id_principals_id_fk",
+          "tableFrom": "business_principals",
+          "tableTo": "principals",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "business_principals_business_id_businesses_id_fk": {
+          "name": "business_principals_business_id_businesses_id_fk",
+          "tableFrom": "business_principals",
+          "tableTo": "businesses",
+          "columnsFrom": [
+            "business_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.businesses": {
+      "name": "businesses",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "default_ledger": {
+          "name": "default_ledger",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provisioning_status": {
+          "name": "provisioning_status",
+          "type": "business_provisioning_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'provisioning'"
+        },
+        "provisioning_step": {
+          "name": "provisioning_step",
+          "type": "business_provisioning_step",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'business'"
+        },
+        "ledger_holder_ref": {
+          "name": "ledger_holder_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failure_code": {
+          "name": "failure_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failure_message": {
+          "name": "failure_message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "businesses_provisioning_status_idx": {
+          "name": "businesses_provisioning_status_idx",
+          "columns": [
+            {
+              "expression": "provisioning_status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "businesses_default_ledger_ledgers_slug_fk": {
+          "name": "businesses_default_ledger_ledgers_slug_fk",
+          "tableFrom": "businesses",
+          "tableTo": "ledgers",
+          "columnsFrom": [
+            "default_ledger"
+          ],
+          "columnsTo": [
+            "slug"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "businesses_failure_check": {
+          "name": "businesses_failure_check",
+          "value": "num_nonnulls(\"businesses\".\"failure_code\", \"businesses\".\"failure_message\") = case when \"businesses\".\"provisioning_status\" = 'stalled' then 2 else 0 end"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.ledger_platform_accounts": {
+      "name": "ledger_platform_accounts",
+      "schema": "",
+      "columns": {
+        "ledger": {
+          "name": "ledger",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "label": {
+          "name": "label",
+          "type": "platform_account_label",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ledger_account_ref": {
+          "name": "ledger_account_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "ledger_platform_accounts_ledger_ledgers_slug_fk": {
+          "name": "ledger_platform_accounts_ledger_ledgers_slug_fk",
+          "tableFrom": "ledger_platform_accounts",
+          "tableTo": "ledgers",
+          "columnsFrom": [
+            "ledger"
+          ],
+          "columnsTo": [
+            "slug"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {
+        "ledger_platform_accounts_ledger_label_pk": {
+          "name": "ledger_platform_accounts_ledger_label_pk",
+          "columns": [
+            "ledger",
+            "label"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.ledgers": {
+      "name": "ledgers",
+      "schema": "",
+      "columns": {
+        "slug": {
+          "name": "slug",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "currency": {
+          "name": "currency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "scale": {
+          "name": "scale",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ledgers_slug_not_blank": {
+          "name": "ledgers_slug_not_blank",
+          "value": "\"ledgers\".\"slug\" ~ '\\S'"
+        },
+        "ledgers_currency_valid": {
+          "name": "ledgers_currency_valid",
+          "value": "\"ledgers\".\"currency\" ~ '^[A-Z]{3}$'"
+        },
+        "ledgers_scale_valid": {
+          "name": "ledgers_scale_valid",
+          "value": "\"ledgers\".\"scale\" between 0 and 4"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.principals": {
+      "name": "principals",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "issuer": {
+          "name": "issuer",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subject": {
+          "name": "subject",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "principals_issuer_subject_unique": {
+          "name": "principals_issuer_subject_unique",
+          "columns": [
+            {
+              "expression": "issuer",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "subject",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {
+    "public.ledger_account_kind": {
+      "name": "ledger_account_kind",
+      "schema": "public",
+      "values": [
+        "payable",
+        "platform"
+      ]
+    },
+    "public.business_provisioning_status": {
+      "name": "business_provisioning_status",
+      "schema": "public",
+      "values": [
+        "provisioning",
+        "stalled",
+        "active"
+      ]
+    },
+    "public.business_provisioning_step": {
+      "name": "business_provisioning_step",
+      "schema": "public",
+      "values": [
+        "business",
+        "ledger",
+        "workspace"
+      ]
+    },
+    "public.platform_account_label": {
+      "name": "platform_account_label",
+      "schema": "public",
+      "values": [
+        "cash",
+        "fee"
+      ]
+    }
+  },
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}
