@@ -1,0 +1,61 @@
+{
+  "name": "@workspace/bus",
+  "version": "0.0.1",
+  "description": "Type-safe, transport-agnostic publisher and subscriber with Standard Schema validation",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./sqs": {
+      "types": "./dist/sqs.d.ts",
+      "import": "./dist/sqs.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/examples",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "pnpm run clean && tsc --build tsconfig.build.json",
+    "check": "tsc --noEmit",
+    "test": "node --test \"src/**/*.test.ts\"",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "prepack": "pnpm run build"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@standard-schema/spec": "^1.1.0"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-sqs": "^3.1096.0",
+    "@types/node": "26.1.2",
+    "typescript": "7.0.2",
+    "zod": "4.4.3"
+  },
+  "peerDependencies": {
+    "@aws-sdk/client-sqs": "^3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@aws-sdk/client-sqs": {
+      "optional": true
+    }
+  },
+  "keywords": [
+    "publisher",
+    "subscriber",
+    "messaging",
+    "pubsub",
+    "sqs",
+    "message-broker"
+  ],
+  "license": "MIT"
+}
