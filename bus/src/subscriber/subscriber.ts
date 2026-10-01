@@ -2,6 +2,7 @@ import type { StandardSchemaV1 } from "@standard-schema/spec";
 import { EventValidationError, validateEventData } from "../message/index.ts";
 import type { EventDefinition } from "../message/index.ts";
 import { isStandardSchema } from "../utils/standard.ts";
+import { isNonEmptyString } from "../utils/string.ts";
 import type {
   EventHandler,
   HandlerRegistration,
@@ -84,8 +85,7 @@ function assertValidRegistration(value: unknown): asserts value is HandlerRegist
   if (
     typeof event !== "object" ||
     event === null ||
-    typeof event.type !== "string" ||
-    event.type.trim().length === 0 ||
+    !isNonEmptyString(event.type) ||
     !isStandardSchema(event.schema)
   ) {
     throw new Error("Subscriber registration must contain a valid event definition");

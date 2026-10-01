@@ -1,7 +1,8 @@
 import type { SQSClient } from "@aws-sdk/client-sqs";
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 import { z } from "zod";
-import { createSqsBroker, defineTopic } from "../../brokers/index.ts";
+import { defineTopic } from "../../brokers/index.ts";
+import { createSqsBroker } from "../../sqs.ts";
 import { defineEvent } from "../../message/index.ts";
 import type { MessageMetadata } from "../../message/index.ts";
 import { createPublisher } from "../../publisher/index.ts";

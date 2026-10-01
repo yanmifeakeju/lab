@@ -3,6 +3,7 @@ import type { StandardSchemaV1 } from "@standard-schema/spec";
 import { validateEventData } from "../message/index.ts";
 import type { Event, Message, MessageMetadata } from "../message/index.ts";
 import { isPlainObject } from "../utils/object.ts";
+import { assertNonEmptyString } from "../utils/string.ts";
 import type {
   PublishRequest,
   PublishResult,
@@ -12,7 +13,7 @@ import type {
 
 export function createPublisher(config: PublisherConfig): Publisher {
   const { source, broker, generateId = randomUUID, now = () => new Date() } = config;
-  assertNonEmpty(source, "Publisher source");
+  assertNonEmptyString(source, "Publisher source");
   if (typeof broker?.publish !== "function") {
     throw new Error("Publisher broker must provide a publish function");
   }
@@ -36,7 +37,7 @@ export function createPublisher(config: PublisherConfig): Publisher {
       assertValidMetadata(metadata);
 
       const id = generateId();
-      assertNonEmpty(id, "Generated message id");
+      assertNonEmptyString(id, "Generated message id");
 
       const publishedAt = now();
       if (!(publishedAt instanceof Date) || Number.isNaN(publishedAt.getTime())) {
@@ -74,11 +75,5 @@ function assertValidMetadata(metadata: MessageMetadata): void {
     ) {
       throw new Error(`Message metadata value for "${key}" must be a scalar`);
     }
-  }
-}
-
-function assertNonEmpty(value: string, label: string): void {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${label} must be a non-empty string`);
   }
 }

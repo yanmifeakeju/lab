@@ -39,14 +39,6 @@ export type {
   UnhandledOutcome,
 } from "./subscriber/index.ts";
 
-export {
-  createSqsBroker,
-  defineTopic,
-  SqsTopicNotConfiguredError,
-} from "./brokers/index.ts";
-export type {
-  BrokerReceipt,
-  MessageBroker,
-  SqsBrokerConfig,
-  Topic,
-} from "./brokers/index.ts";
+// SQS lives at "./sqs" so the optional AWS SDK peer loads only when used.
+export { defineTopic } from "./brokers/index.ts";
+export type { BrokerReceipt, MessageBroker, Topic } from "./brokers/index.ts";

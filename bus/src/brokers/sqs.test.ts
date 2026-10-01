@@ -4,7 +4,8 @@ import { SendMessageCommand, type SQSClient } from "@aws-sdk/client-sqs";
 import { defineEvent } from "../message/index.ts";
 import type { Message } from "../message/index.ts";
 import { createPublisher } from "../publisher/index.ts";
-import { createSqsBroker, defineTopic, SqsTopicNotConfiguredError } from "./index.ts";
+import { createSqsBroker, SqsTopicNotConfiguredError } from "./sqs.ts";
+import { defineTopic } from "./topic.ts";
 
 const queueUrl = "https://sqs.eu-west-1.amazonaws.com/123456789012/orders";
 const orders = defineTopic("orders");

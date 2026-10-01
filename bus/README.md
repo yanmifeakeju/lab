@@ -14,12 +14,8 @@ fan-out policy, correlation context, or tracing context.
 ## Publishing
 
 ```ts
-import {
-  createPublisher,
-  createSqsBroker,
-  defineEvent,
-  defineTopic,
-} from "@workspace/bus";
+import { createPublisher, defineEvent, defineTopic } from "@workspace/bus";
+import { createSqsBroker } from "@workspace/bus/sqs";
 import { z } from "zod";
 
 const orders = defineTopic("orders");

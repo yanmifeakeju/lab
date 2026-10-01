@@ -1,6 +1,7 @@
 import { SendMessageCommand, type SQSClient } from "@aws-sdk/client-sqs";
 import type { Message } from "../message/index.ts";
 import { isPlainObject } from "../utils/object.ts";
+import { assertNonEmptyString } from "../utils/string.ts";
 import type { MessageBroker, Topic } from "./types.ts";
 
 export interface SqsBrokerConfig {
@@ -30,12 +31,8 @@ export function createSqsBroker(config: SqsBrokerConfig): MessageBroker {
 
   const queueByTopic = new Map<string, string>();
   for (const [topic, queueUrl] of Object.entries(queues)) {
-    if (topic.trim().length === 0) {
-      throw new Error("SQS broker topic names must be non-empty strings");
-    }
-    if (typeof queueUrl !== "string" || queueUrl.trim().length === 0) {
-      throw new Error(`SQS queue URL for topic "${topic}" must be a non-empty string`);
-    }
+    assertNonEmptyString(topic, "SQS broker topic name");
+    assertNonEmptyString(queueUrl, `SQS queue URL for topic "${topic}"`);
     if (queueUrl.endsWith(".fifo")) {
       throw new Error(`SQS queue for topic "${topic}" must be a standard queue`);
     }

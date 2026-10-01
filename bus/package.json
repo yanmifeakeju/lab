@@ -30,7 +30,7 @@
     "prepack": "pnpm run build"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=24.0.0"
   },
   "dependencies": {
     "@standard-schema/spec": "^1.1.0"
