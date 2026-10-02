@@ -1,22 +1,40 @@
 export {
+  decodeMessage,
   defineEvent,
+  encodeMessage,
   EventValidationError,
+  MessageDecodeError,
+  NonJsonValueError,
+  normalizeJson,
+  parseMessage,
   UnsupportedEventSchemaError,
   validateEventData,
 } from "./message/index.ts";
 export type {
+  DeepReadonly,
   Event,
   EventDefinition,
+  JsonPrimitive,
+  JsonValue,
   Message,
   MessageMetadata,
 } from "./message/index.ts";
 
-export { createPublisher } from "./publisher/index.ts";
+export {
+  createPublisher,
+  decodePublication,
+  encodePublication,
+  parsePublication,
+  PublicationDecodeError,
+} from "./publisher/index.ts";
 export type {
+  CreatedPublication,
+  Publication,
   Publisher,
   PublisherConfig,
   PublishRequest,
   PublishResult,
+  SendResult,
 } from "./publisher/index.ts";
 
 export {

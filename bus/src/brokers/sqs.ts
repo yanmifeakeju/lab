@@ -1,4 +1,5 @@
 import { SendMessageCommand, type SQSClient } from "@aws-sdk/client-sqs";
+import { encodeMessage } from "../message/index.ts";
 import type { Message } from "../message/index.ts";
 import { isPlainObject } from "../utils/object.ts";
 import { assertNonEmptyString } from "../utils/string.ts";
@@ -46,26 +47,14 @@ export function createSqsBroker(config: SqsBrokerConfig): MessageBroker {
         throw new SqsTopicNotConfiguredError(topic.name);
       }
 
-      const body = serializeMessage(topic.name, message);
       const result = await client.send(
         new SendMessageCommand({
           QueueUrl: queueUrl,
-          MessageBody: body,
+          MessageBody: encodeMessage(message),
         }),
       );
 
       return result.MessageId === undefined ? {} : { messageId: result.MessageId };
     },
   };
-}
-
-function serializeMessage(topic: string, message: Message): string {
-  try {
-    return JSON.stringify(message);
-  } catch (error) {
-    throw new Error(
-      `Message for topic "${topic}" is not JSON-serializable: ${error instanceof Error ? error.message : String(error)}`,
-      { cause: error },
-    );
-  }
 }

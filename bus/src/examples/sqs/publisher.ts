@@ -1,12 +1,11 @@
 import type { SQSClient } from "@aws-sdk/client-sqs";
-import type { StandardSchemaV1 } from "@standard-schema/spec";
 import { z } from "zod";
 import { defineTopic } from "../../brokers/index.ts";
 import { createSqsBroker } from "../../sqs.ts";
 import { defineEvent } from "../../message/index.ts";
 import type { MessageMetadata } from "../../message/index.ts";
 import { createPublisher } from "../../publisher/index.ts";
-import type { Publisher, PublishRequest, PublishResult } from "../../publisher/index.ts";
+import type { Publisher } from "../../publisher/index.ts";
 import { queueUrl } from "./config.ts";
 
 const orders = defineTopic("orders");
@@ -14,7 +13,8 @@ const orderPlaced = defineEvent(
   "order.placed",
   z.object({
     orderId: z.string(),
-    total: z.number().nonnegative(),
+    // Minor units (kobo) as a string; money never travels as a float.
+    amount: z.string().regex(/^\d+$/),
     currency: z.string().length(3),
   }),
 );
@@ -45,7 +45,7 @@ export async function publishOrderPlaced(client: SQSClient) {
     event: orderPlaced,
     data: {
       orderId: "order-123",
-      total: 50.99,
+      amount: "5099",
       currency: "NGN",
     },
     // Explicit values are merged after provided context and therefore win.
@@ -63,25 +63,19 @@ export async function publishOrderPlaced(client: SQSClient) {
   return result;
 }
 
-type MetadataProvider = () => MessageMetadata | Promise<MessageMetadata>;
+type MetadataProvider = () => MessageMetadata;
 
 // Application composition, deliberately not part of the bus library.
 function withMetadata(publisher: Publisher, provider: MetadataProvider): Publisher {
-  return {
-    async publish<
-      TType extends string,
-      TSchema extends StandardSchemaV1,
-      TTopicName extends string,
-    >(
-      request: PublishRequest<TType, TSchema, TTopicName>,
-    ): Promise<PublishResult<TType, TSchema, TTopicName>> {
-      return publisher.publish({
-        ...request,
-        metadata: {
-          ...(await provider()),
-          ...request.metadata,
-        },
-      });
-    },
-  };
+  const create: Publisher["create"] = (request) =>
+    publisher.create({
+      ...request,
+      metadata: {
+        ...provider(),
+        ...request.metadata,
+      },
+    });
+  const send: Publisher["send"] = (publication) => publisher.send(publication);
+  const publish: Publisher["publish"] = async (request) => send(create(request));
+  return { create, send, publish };
 }

@@ -21,7 +21,7 @@ import { z } from "zod";
 const orders = defineTopic("orders");
 const orderPlaced = defineEvent(
   "order.placed",
-  z.object({ orderId: z.string(), total: z.number() }),
+  z.object({ orderId: z.string(), amount: z.string().regex(/^\d+$/) }),
 );
 
 const broker = createSqsBroker({
@@ -33,9 +33,17 @@ const publisher = createPublisher({ source: "orders-service", broker });
 await publisher.publish({
   topic: orders,
   event: orderPlaced,
-  data: { orderId: "order-1", total: 100 },
+  data: { orderId: "order-1", amount: "1000000" },
   metadata: { correlationId: "request-42" },
 });
+
+// For a stable retry identity, construct once and resend the same publication.
+const publication = publisher.create({
+  topic: orders,
+  event: orderPlaced,
+  data: { orderId: "order-2", amount: "500000" },
+});
+await publisher.send(publication);
 ```
 
 ## Subscribing
@@ -51,7 +59,7 @@ import { z } from "zod";
 
 const orderPlaced = defineEvent(
   "order.placed",
-  z.object({ orderId: z.string(), total: z.number() }),
+  z.object({ orderId: z.string(), amount: z.string().regex(/^\d+$/) }),
 );
 
 const subscriber = createSubscriber([
@@ -66,8 +74,16 @@ const decision = await decideSubscriptionOutcome(outcome, (failure) =>
 );
 ```
 
-The receiving adapter owns decoding the broker representation into `Message`
-and translating `acknowledge`, `retry`, or `reject` into broker operations.
+The receiving adapter uses `decodeMessage` to decode the broker representation,
+then translates `acknowledge`, `retry`, or `reject` into broker operations.
+Malformed envelopes raise `MessageDecodeError` before subscriber dispatch.
+
+Messages use wire format version `1`. Producer schemas may normalize and
+default values, but their output must be JSON-compatible. Creation copies and
+deeply freezes that output so a stored or retried publication cannot change.
+`createdAt` is the construction time and therefore also remains stable across
+delivery attempts. Decoders accept valid RFC 3339 representations and normalize
+them to fixed-width UTC ISO strings, so textual ordering is chronological.
 
 ## Development
 

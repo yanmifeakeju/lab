@@ -9,7 +9,8 @@ const orderPlaced = defineEvent(
   "order.placed",
   z.object({
     orderId: z.string(),
-    total: z.number().nonnegative(),
+    // Minor units (kobo) as a string; money never travels as a float.
+    amount: z.string().regex(/^\d+$/),
   }),
 );
 
@@ -28,7 +29,7 @@ const publisher = createPublisher({
 const result = await publisher.publish({
   topic: orders,
   event: orderPlaced,
-  data: { orderId: "order-1", total: 100 },
+  data: { orderId: "order-1", amount: "1000000" },
   metadata: { correlationId: "request-42" },
 });
 

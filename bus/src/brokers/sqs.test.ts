@@ -1,21 +1,16 @@
 import assert from "node:assert";
 import { describe, test } from "node:test";
 import { SendMessageCommand, type SQSClient } from "@aws-sdk/client-sqs";
-import { defineEvent } from "../message/index.ts";
+import { z } from "zod";
+import { defineEvent, NonJsonValueError } from "../message/index.ts";
 import type { Message } from "../message/index.ts";
-import { createPublisher } from "../publisher/index.ts";
+import { createPublisher, parsePublication } from "../publisher/index.ts";
 import { createSqsBroker, SqsTopicNotConfiguredError } from "./sqs.ts";
 import { defineTopic } from "./topic.ts";
 
 const queueUrl = "https://sqs.eu-west-1.amazonaws.com/123456789012/orders";
 const orders = defineTopic("orders");
-const orderPlaced = defineEvent("order.placed", {
-  "~standard": {
-    version: 1,
-    vendor: "test",
-    validate: (value) => ({ value: value as { orderId: string } }),
-  },
-});
+const orderPlaced = defineEvent("order.placed", z.object({ orderId: z.string() }));
 
 function stubClient(reply: () => unknown = () => ({ MessageId: "sqs-message-1" })): {
   client: SQSClient;
@@ -76,6 +71,18 @@ describe("SQS broker", () => {
     assert.strictEqual(commands.length, 0);
   });
 
+  test("rejects an unknown restored topic when it is sent, not when it is decoded", async () => {
+    const { client, commands } = stubClient();
+    const publisher = createPublisher({
+      source: "orders-service",
+      broker: createSqsBroker({ client, queues: { orders: queueUrl } }),
+    });
+    const publication = parsePublication({ topic: "audit", message: message() });
+
+    await assert.rejects(() => publisher.send(publication), SqsTopicNotConfiguredError);
+    assert.strictEqual(commands.length, 0);
+  });
+
   test("propagates SQS failures unchanged", async () => {
     const failure = new Error("SQS unavailable");
     const { client } = stubClient(() => {
@@ -86,7 +93,7 @@ describe("SQS broker", () => {
     await assert.rejects(() => broker.publish(orders, message()), (error) => error === failure);
   });
 
-  test("reports serialization failures before calling SQS", async () => {
+  test("passes codec failures through unchanged before calling SQS", async () => {
     const { client, commands } = stubClient();
     const broker = createSqsBroker({ client, queues: { orders: queueUrl } });
     const circular: Record<string, unknown> = {};
@@ -94,7 +101,8 @@ describe("SQS broker", () => {
 
     await assert.rejects(
       () => broker.publish(orders, { ...message(), event: { type: "broken", data: circular } }),
-      /not JSON-serializable/,
+      (error: unknown) =>
+        error instanceof NonJsonValueError && error.path === "$.event.data.self",
     );
     assert.strictEqual(commands.length, 0);
   });
@@ -116,9 +124,10 @@ describe("SQS broker", () => {
 
 function message(): Message {
   return {
+    messageVersion: 1,
     id: "message-1",
     source: "orders-service",
-    publishedAt: "2026-09-28T12:00:00.000Z",
+    createdAt: "2026-09-28T12:00:00.000Z",
     event: { type: "order.placed", data: { orderId: "order-1" } },
     metadata: { correlationId: "request-1" },
   };

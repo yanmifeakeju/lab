@@ -20,3 +20,20 @@ export class UnsupportedEventSchemaError extends Error {
     this.name = "UnsupportedEventSchemaError";
   }
 }
+
+export class MessageDecodeError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "MessageDecodeError";
+  }
+}
+
+export class NonJsonValueError extends Error {
+  public readonly path: string;
+
+  constructor(path: string, reason: string) {
+    super(`Value at ${path} is not JSON-compatible: ${reason}`);
+    this.name = "NonJsonValueError";
+    this.path = path;
+  }
+}

@@ -25,9 +25,10 @@ const orderCancelled = defineEvent(
 
 function message(type = "order.placed", data: unknown = { orderId: "order-1" }): Message {
   return {
+    messageVersion: 1,
     id: "message-1",
     source: "orders-service",
-    publishedAt: "2026-09-29T10:00:00.000Z",
+    createdAt: "2026-09-29T10:00:00.000Z",
     event: { type, data },
     metadata: { correlationId: "request-1" },
   };
@@ -149,6 +150,26 @@ describe("subscriber mechanism", () => {
         void data.reason;
       });
     });
+  });
+
+  test("allows subscriber schemas to transform JSON into richer handler values", async () => {
+    const occurred = defineEvent(
+      "order.occurred",
+      z.object({ occurredAt: z.string().transform((value) => new Date(value)) }),
+    );
+    let received: Date | undefined;
+    const subscriber = createSubscriber([
+      handle(occurred, (data) => {
+        received = data.occurredAt;
+      }),
+    ]);
+
+    const outcome = await subscriber.handle(
+      message("order.occurred", { occurredAt: "2026-09-29T10:00:00.000Z" }),
+    );
+
+    assert.ok(outcome.status === "handled");
+    assert.ok(received instanceof Date);
   });
 });
 

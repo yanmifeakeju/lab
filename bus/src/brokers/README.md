@@ -6,8 +6,8 @@ the publisher remains infrastructure-independent.
 
 ## SQS
 
-The SQS broker maps logical topic names to standard queue URLs and sends the
-JSON-encoded message with `SendMessageCommand`.
+The SQS broker maps logical topic names to standard queue URLs and uses the
+shared message codec to send the JSON-encoded message with `SendMessageCommand`.
 
 ```ts
 const broker = createSqsBroker({

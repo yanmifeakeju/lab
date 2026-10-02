@@ -6,10 +6,15 @@ import type { MessageBroker, Topic } from "../brokers/index.ts";
 import {
   defineEvent,
   EventValidationError,
+  NonJsonValueError,
   UnsupportedEventSchemaError,
 } from "../message/index.ts";
 import type { Message } from "../message/index.ts";
-import { createPublisher } from "./index.ts";
+import {
+  createPublisher,
+  decodePublication,
+  encodePublication,
+} from "./index.ts";
 
 const orderPlaced = defineEvent(
   "order.placed",
@@ -47,9 +52,10 @@ describe("publisher mechanism", () => {
       {
         topic: { name: "orders" },
         message: {
+          messageVersion: 1,
           id: "message-1",
           source: "orders-service",
-          publishedAt: "2026-09-28T12:00:00.000Z",
+          createdAt: "2026-09-28T12:00:00.000Z",
           event: {
             type: "order.placed",
             data: { orderId: "order-1", currency: "USD" },
@@ -77,6 +83,144 @@ describe("publisher mechanism", () => {
     assert.ok(received !== undefined);
     assert.strictEqual(typeof received, "object");
     assert.deepStrictEqual(received.metadata, {});
+  });
+
+  test("creates synchronously and resends the exact publication", async () => {
+    const received: Array<{ topic: Topic; message: Message }> = [];
+    let ids = 0;
+    let clockReads = 0;
+    const publisher = createPublisher({
+      source: "orders",
+      broker: recordingBroker(received),
+      generateId: () => `message-${++ids}`,
+      now: () => {
+        clockReads += 1;
+        return new Date("2026-09-28T12:00:00.000Z");
+      },
+    });
+
+    const publication = publisher.create({
+      topic: orders,
+      event: orderPlaced,
+      data: { orderId: "order-1" },
+    });
+
+    assert.strictEqual(received.length, 0);
+    await publisher.send(publication);
+    await publisher.send(publication);
+
+    assert.strictEqual(ids, 1);
+    assert.strictEqual(clockReads, 1);
+    assert.strictEqual(received[0]?.message, publication.message);
+    assert.strictEqual(received[1]?.message, publication.message);
+    assert.strictEqual(received[0]?.topic, publication.topic);
+    assert.strictEqual(received[1]?.topic, publication.topic);
+  });
+
+  test("publish remains safe when destructured", async () => {
+    const publisher = createPublisher({ source: "orders", broker: recordingBroker([]) });
+    const { publish } = publisher;
+
+    await assert.doesNotReject(() =>
+      publish({ topic: orders, event: orderPlaced, data: { orderId: "order-1" } }),
+    );
+  });
+
+  test("normalizes, copies, and deeply freezes schema output", () => {
+    const passthrough = defineEvent(
+      "order.snapshot",
+      z.custom<{ nested: { value: string }; note?: string | undefined }>(),
+    );
+    const publisher = createPublisher({ source: "orders", broker: recordingBroker([]) });
+    const input = { nested: { value: "before" }, note: undefined };
+
+    const publication = publisher.create({ topic: orders, event: passthrough, data: input });
+    input.nested.value = "after";
+
+    assert.deepStrictEqual(publication.message.event.data, { nested: { value: "before" } });
+    assert.ok(Object.isFrozen(publication));
+    assert.ok(Object.isFrozen(publication.topic));
+    assert.ok(Object.isFrozen(publication.message));
+    assert.ok(Object.isFrozen(publication.message.event.data.nested));
+    assert.throws(() => {
+      (publication.message.event.data.nested as { value: string }).value = "runtime mutation";
+    }, TypeError);
+
+    void (() => {
+      // @ts-expect-error Created publication payloads are deeply readonly.
+      publication.message.event.data.nested.value = "compile-time mutation";
+    });
+  });
+
+  test("allows JSON schemas containing unknown and recursive JSON output", () => {
+    const recordEvent = defineEvent(
+      "record.created",
+      z.object({ extra: z.record(z.string(), z.unknown()) }),
+    );
+    const jsonEvent = defineEvent("json.created", z.json());
+    const publisher = createPublisher({ source: "records", broker: recordingBroker([]) });
+
+    const record = publisher.create({
+      topic: orders,
+      event: recordEvent,
+      data: { extra: { nested: [1, true, null] } },
+    });
+    const json = publisher.create({
+      topic: orders,
+      event: jsonEvent,
+      data: { nested: [1, true, null] },
+    });
+
+    assert.deepStrictEqual(record.message.event.data, {
+      extra: { nested: [1, true, null] },
+    });
+    assert.ok(json);
+  });
+
+  test("rejects schema output that cannot cross the JSON boundary", () => {
+    const dateEvent = defineEvent("order.dated", z.coerce.date());
+    const publisher = createPublisher({ source: "orders", broker: recordingBroker([]) });
+
+    assert.throws(
+      () =>
+        publisher.create({
+          topic: orders,
+          event: dateEvent,
+          data: "2026-09-29T10:00:00.000Z",
+        } as never),
+      NonJsonValueError,
+    );
+
+    void (() => {
+      publisher.create({
+        topic: orders,
+        // @ts-expect-error Producer schema output must be JSON-compatible.
+        event: dateEvent,
+        data: "2026-09-29T10:00:00.000Z",
+      });
+    });
+  });
+
+  test("decodes stored publications and reconstructs their topic", async () => {
+    const received: Array<{ topic: Topic; message: Message }> = [];
+    const publisher = createPublisher({
+      source: "orders",
+      broker: recordingBroker(received),
+      generateId: () => "message-1",
+      now: () => new Date("2026-09-28T12:00:00.000Z"),
+    });
+    const original = publisher.create({
+      topic: orders,
+      event: orderPlaced,
+      data: { orderId: "order-1" },
+    });
+
+    const restored = decodePublication(encodePublication(original));
+    await publisher.send(restored);
+
+    assert.deepStrictEqual(restored, original);
+    assert.notStrictEqual(restored.topic, original.topic);
+    assert.deepStrictEqual(received[0], restored);
   });
 
   test("rejects invalid event data before calling the broker", async () => {
