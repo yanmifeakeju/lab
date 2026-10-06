@@ -40,7 +40,7 @@ const reportCount = (source: string, filename = "src/runtime.ts") => {
 
 void test("recognizes relative and configured internal imports", () => {
   assert.equal(isProjectLocalImport("../service.ts", []), true)
-  assert.equal(isProjectLocalImport("@pay-tty/core", ["@pay-tty/"]), true)
+  assert.equal(isProjectLocalImport("@pay-tty/ledger-client", ["@pay-tty/"]), true)
 })
 
 void test("does not classify external packages as project-local", () => {
@@ -49,11 +49,11 @@ void test("does not classify external packages as project-local", () => {
 })
 
 void test("reports service constructors imported through a workspace alias", () => {
-  assert.equal(reportCount("@pay-tty/core"), 1)
+  assert.equal(reportCount("@pay-tty/ledger-client"), 1)
 })
 
 void test("preserves the test-file exemption", () => {
-  assert.equal(reportCount("@pay-tty/core", "src/runtime.test.ts"), 0)
+  assert.equal(reportCount("@pay-tty/ledger-client", "src/runtime.test.ts"), 0)
 })
 
 void test("the registered plugin rejects aliases but accepts external imports", () => {
@@ -89,7 +89,7 @@ void test("the registered plugin rejects aliases but accepts external imports", 
     )
     writeFileSync(
       rejected,
-      'import { makePaymentService } from "@pay-tty/core"\nvoid makePaymentService\n',
+      'import { makePaymentService } from "@pay-tty/ledger-client"\nvoid makePaymentService\n',
     )
 
     const acceptedResult = spawnSync(executable, ["--config", config, accepted], {

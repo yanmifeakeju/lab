@@ -9,6 +9,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "./scripts/seed.sh",
+    "db:reset": "./scripts/reset.sh",
     "test": "node --env-file-if-exists=.env --test test/*.test.ts",
     "typecheck": "tsc --project tsconfig.json",
     "lint": "oxlint . --deny-warnings",

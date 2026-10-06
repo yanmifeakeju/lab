@@ -58,12 +58,9 @@ const ngn = new Ledgers.Info({
   platformAccounts: new Ledgers.PlatformAccounts({ cash: "acct_default_cash", fee: "acct_default_fee" }),
 })
 
-const account = (kind: Business.Kind, label: Ledger.Label | null, ref: string) =>
-  new Business.LedgerAccount({ ledger: Ledger.ngn, kind, label, ref })
-
 const resolve = (
   found: Business.Info | undefined,
-  accounts: ReadonlyArray<Business.LedgerAccount> = [],
+  payable?: string,
   known = true,
 ) =>
   Effect.runPromise(
@@ -81,7 +78,8 @@ const resolve = (
               }),
               Layer.mock(Business.Service, {
                 findByPrincipal: () => Effect.succeed(found),
-                ledgerAccounts: () => Effect.succeed(accounts),
+                payableAccount: (_, ledger) =>
+                  Effect.succeed(ledger === Ledger.ngn ? payable : undefined),
               }),
               Layer.mock(Ledgers.Service, { get: (slug) => (slug === Ledger.ngn ? ngn : undefined) }),
               Workspace.dummyLayer,
@@ -93,7 +91,7 @@ const resolve = (
   )
 
 void test("reports an unknown principal as unknown", () =>
-  resolve(undefined, [], false).then((response) => {
+  resolve(undefined, undefined, false).then((response) => {
     assert.equal(response.status, "unknown")
     assert.deepEqual(response.steps, [])
     assert.equal(response.sessionConfig, null)
@@ -134,11 +132,8 @@ void test("marks a rejected ledger request as not retryable", () =>
   }),
 )
 
-void test("builds the default ledger's config, falling back to platform defaults", () =>
-  resolve(active, [
-    account("payable", null, "acct_payable"),
-    account("platform", "fee", "acct_override_fee"),
-  ]).then((response) => {
+void test("builds the default ledger's config with its shared platform accounts", () =>
+  resolve(active, "acct_payable").then((response) => {
     assert.equal(response.status, "active")
     assert.equal(response.failure, null)
     assert.deepEqual(
@@ -153,6 +148,6 @@ void test("builds the default ledger's config, falling back to platform defaults
     assert.equal(ledger?.scale, 2)
     assert.equal(ledger?.payableAccountRef, "acct_payable")
     assert.equal(ledger?.platformAccounts.cash, "acct_default_cash")
-    assert.equal(ledger?.platformAccounts.fee, "acct_override_fee")
+    assert.equal(ledger?.platformAccounts.fee, "acct_default_fee")
   }),
 )

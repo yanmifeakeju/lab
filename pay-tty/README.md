@@ -43,7 +43,7 @@ command in one workspace package with a filter:
 
 ```sh
 pnpm turbo run start --filter=@pay-tty/app
-pnpm turbo run test --filter=@pay-tty/core
+pnpm turbo run typecheck --filter=@pay-tty/ledger-client
 ```
 
 Add another workspace package by creating a directory under `apps/` or

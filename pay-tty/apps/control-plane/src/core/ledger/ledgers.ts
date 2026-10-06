@@ -3,7 +3,7 @@ import { Context, Effect, Layer, Schema } from "effect"
 import { Database } from "../../database/client.ts"
 import { Currency } from "./currency.ts"
 import { Ledger } from "./ledger.ts"
-import { labels, ledgerPlatformAccounts, ledgers } from "./sql.ts"
+import { labels, ledgers, platformAccounts } from "./sql.ts"
 
 export class PlatformAccounts extends Schema.Class<PlatformAccounts>(
   "Ledgers.PlatformAccounts",
@@ -45,7 +45,7 @@ const make = Effect.gen(function* () {
   const [ledgerRows, accountRows] = yield* Effect.promise(() =>
     Promise.all([
       db.select().from(ledgers),
-      db.select().from(ledgerPlatformAccounts),
+      db.select().from(platformAccounts),
     ]),
   )
 

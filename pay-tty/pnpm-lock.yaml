@@ -76,12 +76,6 @@ importers:
         specifier: ^0.31.11
         version: 0.31.11
 
-  packages/core:
-    dependencies:
-      effect:
-        specifier: 4.0.0-rc.117
-        version: 4.0.0-rc.117
-
   packages/ledger-client:
     dependencies:
       effect:

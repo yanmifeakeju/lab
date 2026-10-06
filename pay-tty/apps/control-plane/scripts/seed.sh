@@ -2,7 +2,7 @@
 
 # Seeds one ledger, with the currency and scale the ledger service fixes for
 # it, and its platform accounts: the refs every business's session uses for
-# `cash` and `fee` in that ledger unless it has its own override.
+# `cash` and `fee` in that ledger.
 #
 # This exists because the ledger has no API that exposes platform accounts.
 # They are seeded directly into its database by ledger/scripts/seed.sh, so the
@@ -133,10 +133,10 @@ table_exists="$(
 		-v ON_ERROR_STOP=1 \
 		-A \
 		-t \
-		-c "SELECT to_regclass('public.ledger_platform_accounts') IS NOT NULL"
+		-c "SELECT to_regclass('public.platform_accounts') IS NOT NULL"
 )"
 if [[ $table_exists != "t" ]]; then
-	printf 'the ledger_platform_accounts table is missing; run pnpm db:migrate first\n' >&2
+	printf 'the platform_accounts table is missing; run pnpm db:migrate first\n' >&2
 	exit 1
 fi
 
@@ -154,7 +154,7 @@ psql "$DATABASE_URL" \
 	VALUES (:'slug', :'currency', :'scale')
 	ON CONFLICT (slug) DO NOTHING;
 
-	INSERT INTO ledger_platform_accounts (ledger, label, ledger_account_ref)
+	INSERT INTO platform_accounts (ledger, label, ledger_account_ref)
 	VALUES (:'slug', 'cash', :'cash'), (:'slug', 'fee', :'fee')
 	ON CONFLICT (ledger, label) DO NOTHING;
 SQL
@@ -165,7 +165,7 @@ psql "$DATABASE_URL" \
 	-A \
 	-t \
 	-F ' ' \
-	-c "SELECT l.slug, l.currency, l.scale, a.label, a.ledger_account_ref FROM ledgers l JOIN ledger_platform_accounts a ON a.ledger = l.slug ORDER BY l.slug, a.label" |
+	-c "SELECT l.slug, l.currency, l.scale, a.label, a.ledger_account_ref FROM ledgers l JOIN platform_accounts a ON a.ledger = l.slug ORDER BY l.slug, a.label" |
 	while read -r ledger currency scale label reference; do
 		printf 'ledger %s (%s, scale %s) platform account %s (%s)\n' "$ledger" "$currency" "$scale" "$label" "$reference"
 	done

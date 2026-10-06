@@ -1,7 +1,6 @@
 import { Context, Effect, Layer, Schema } from "effect"
 
 import { Business } from "../business/business.ts"
-import type { Ledger } from "../ledger/ledger.ts"
 import { Ledgers } from "../ledger/ledgers.ts"
 import { Principal } from "../principal/principal.ts"
 import { Provisioning } from "../provisioning/provisioning.ts"
@@ -128,11 +127,7 @@ const make = Effect.gen(function* () {
       )
     }
 
-    const accounts = (yield* businesses.ledgerAccounts(business.id)).filter(
-      (account) => account.ledger === ledger.slug,
-    )
-
-    const payable = accounts.find((account) => account.kind === "payable")
+    const payable = yield* businesses.payableAccount(business.id, ledger.slug)
 
     if (payable === undefined) {
       return yield* Effect.die(
@@ -140,21 +135,14 @@ const make = Effect.gen(function* () {
       )
     }
 
-    const platform = (label: Ledger.Label) =>
-      accounts.find((account) => account.kind === "platform" && account.label === label)
-        ?.ref ?? ledger.platformAccounts[label]
-
     return new Config({
       business: new BusinessConfig({ id: business.id, name: business.name }),
       ledger: new LedgerConfig({
         slug: ledger.slug,
         currency: ledger.currency,
         scale: ledger.scale,
-        payableAccountRef: payable.ref,
-        platformAccounts: new PlatformAccountConfig({
-          cash: platform("cash"),
-          fee: platform("fee"),
-        }),
+        payableAccountRef: payable,
+        platformAccounts: new PlatformAccountConfig(ledger.platformAccounts),
       }),
       workspace: new WorkspaceConfig({ kind: workspace.kind, handle: workspace.handle }),
     })

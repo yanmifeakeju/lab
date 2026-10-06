@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, exists, isNotNull, sql } from "drizzle-orm";
 import { Context, Effect, Layer, Schema } from "effect";
 
 import { Database } from "../../database/client.ts";
@@ -8,9 +8,8 @@ import type { Principal } from "../principal/principal.ts";
 import { principals } from "../principal/sql.ts";
 import {
   businesses,
-  businessLedgerAccounts,
+  businessLedgers,
   businessPrincipals,
-  kinds,
   statuses,
   steps,
 } from "./sql.ts";
@@ -34,24 +33,11 @@ export class Details extends Schema.Class<Details>("Business.Details")({
   name: Schema.NonEmptyString,
 }) {}
 
-export const Kind = Schema.Literals(kinds)
-
-export type Kind = typeof Kind.Type
-
 export class PayableAccount extends Schema.Class<PayableAccount>(
   "Business.PayableAccount",
 )({
   holderRef: Schema.String,
   accountRef: Schema.String,
-}) {}
-
-export class LedgerAccount extends Schema.Class<LedgerAccount>(
-  "Business.LedgerAccount",
-)({
-  ledger: Ledger.Slug,
-  kind: Kind,
-  label: Schema.NullOr(Ledger.Label),
-  ref: Schema.String,
 }) {}
 
 export class Failure extends Schema.Class<Failure>("Business.Failure")({
@@ -91,8 +77,6 @@ export interface Interface {
     id: ID,
     ledger: Ledger.Slug,
   ) => Effect.Effect<string | undefined>
-  /** Every account the business holds, across ledgers. */
-  readonly ledgerAccounts: (id: ID) => Effect.Effect<ReadonlyArray<LedgerAccount>>
   /** Records a payable account the ledger created; repeating it is a no-op. */
   readonly recordPayableAccount: (
     id: ID,
@@ -105,6 +89,7 @@ export interface Interface {
     step: ProvisioningStep,
     failure: Failure,
   ) => Effect.Effect<Info, NotFoundError>;
+  /** Dies unless the business holds its payable account in its default ledger. */
   readonly activate: (id: ID) => Effect.Effect<Info, NotFoundError>;
 }
 
@@ -116,20 +101,32 @@ const make = Effect.gen(function* () {
 
   const load = Effect.fnUntraced(function* (id: string) {
     const rows = yield* Effect.promise(() =>
-      db.select().from(businesses).where(eq(businesses.id, id)),
+      db
+        .select({ row: businesses, defaultLedger: businessLedgers.ledger })
+        .from(businesses)
+        .leftJoin(
+          businessLedgers,
+          and(eq(businessLedgers.businessId, businesses.id), eq(businessLedgers.isDefault, true)),
+        )
+        .where(eq(businesses.id, id)),
     )
 
-    const row = rows[0]
-
-    if (row === undefined) {
+    if (rows[0] === undefined) {
       return undefined
+    }
+
+    const { row, defaultLedger } = rows[0]
+
+    // Create writes the default account with the business.
+    if (defaultLedger === null) {
+      return yield* Effect.die(new Error(`business ${id} has no default account`))
     }
 
     // The failure check keeps code and message all-or-nothing.
     return new Info({
       id: ID.make(row.id),
       name: row.name,
-      defaultLedger: Ledger.Slug.make(row.defaultLedger),
+      defaultLedger: Ledger.Slug.make(defaultLedger),
       ledgerHolderRef: row.ledgerHolderRef,
       provisioningStatus: row.provisioningStatus,
       provisioningStep: row.provisioningStep,
@@ -218,11 +215,12 @@ const make = Effect.gen(function* () {
 
                 return tx
                   .insert(businesses)
-                  .values({
-                    id: businessId,
-                    name: details.name,
-                    defaultLedger,
-                  })
+                  .values({ id: businessId, name: details.name })
+                  .then(() =>
+                    tx
+                      .insert(businessLedgers)
+                      .values({ businessId, ledger: defaultLedger, isDefault: true })
+                  )
                   .then(() =>
                     tx
                       .insert(businessPrincipals)
@@ -249,37 +247,12 @@ const make = Effect.gen(function* () {
   ) {
     const rows = yield* Effect.promise(() =>
       db
-        .select({ ref: businessLedgerAccounts.ledgerAccountRef })
-        .from(businessLedgerAccounts)
-        .where(
-          and(
-            eq(businessLedgerAccounts.businessId, id),
-            eq(businessLedgerAccounts.ledger, ledger),
-            eq(businessLedgerAccounts.kind, "payable"),
-          ),
-        ),
+        .select({ ref: businessLedgers.payableAccountRef })
+        .from(businessLedgers)
+        .where(and(eq(businessLedgers.businessId, id), eq(businessLedgers.ledger, ledger))),
     )
 
-    return rows[0]?.ref
-  })
-
-  const ledgerAccounts = Effect.fn("Business.ledgerAccounts")(function* (id: ID) {
-    const rows = yield* Effect.promise(() =>
-      db
-        .select()
-        .from(businessLedgerAccounts)
-        .where(eq(businessLedgerAccounts.businessId, id)),
-    )
-
-    return rows.map(
-      (row) =>
-        new LedgerAccount({
-          ledger: Ledger.Slug.make(row.ledger),
-          kind: row.kind,
-          label: row.label,
-          ref: row.ledgerAccountRef,
-        }),
-    )
+    return rows[0]?.ref ?? undefined
   })
 
   const recordPayableAccount = Effect.fn("Business.recordPayableAccount")(
@@ -308,19 +281,22 @@ const make = Effect.gen(function* () {
         )
       }
 
-      yield* Effect.promise(() =>
+      // Fills the default row create wrote, or joins another ledger; a ref
+      // already recorded is kept so a mismatch surfaces below.
+      const accounts = yield* Effect.promise(() =>
         db
-          .insert(businessLedgerAccounts)
-          .values({
-            businessId: id,
-            ledger,
-            kind: "payable",
-            ledgerAccountRef: account.accountRef,
+          .insert(businessLedgers)
+          .values({ businessId: id, ledger, payableAccountRef: account.accountRef })
+          .onConflictDoUpdate({
+            target: [businessLedgers.businessId, businessLedgers.ledger],
+            set: {
+              payableAccountRef: sql`coalesce(${businessLedgers.payableAccountRef}, excluded.payable_account_ref)`,
+            },
           })
-          .onConflictDoNothing(),
+          .returning({ ref: businessLedgers.payableAccountRef }),
       )
 
-      const recorded = yield* payableAccount(id, ledger)
+      const recorded = accounts[0]?.ref
 
       if (recorded !== account.accountRef) {
         return yield* Effect.die(
@@ -353,18 +329,45 @@ const make = Effect.gen(function* () {
   });
 
   const activate = Effect.fn("Business.activate")(function* (id: ID) {
-    return yield* update(id, {
-      provisioningStatus: "active",
-      failureCode: null,
-      failureMessage: null,
-    });
+    // Checked in the same statement, so the business can't go active on a
+    // default account it doesn't hold yet.
+    const rows = yield* Effect.promise(() =>
+      db
+        .update(businesses)
+        .set({ provisioningStatus: "active", failureCode: null, failureMessage: null })
+        .where(
+          and(
+            eq(businesses.id, id),
+            exists(
+              db
+                .select({ ledger: businessLedgers.ledger })
+                .from(businessLedgers)
+                .where(
+                  and(
+                    eq(businessLedgers.businessId, id),
+                    eq(businessLedgers.isDefault, true),
+                    isNotNull(businessLedgers.payableAccountRef),
+                  ),
+                ),
+            ),
+          ),
+        )
+        .returning({ id: businesses.id }),
+    );
+
+    if (rows[0] === undefined) {
+      return (yield* load(id)) === undefined
+        ? yield* new NotFoundError({ id })
+        : yield* Effect.die(new Error(`business ${id} has no payable account in its default ledger`));
+    }
+
+    return yield* loadExisting(id);
   });
 
   return Service.of({
     findByPrincipal,
     create,
     payableAccount,
-    ledgerAccounts,
     recordPayableAccount,
     advance,
     stall,

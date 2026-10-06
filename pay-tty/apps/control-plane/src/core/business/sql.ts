@@ -1,16 +1,17 @@
 import { sql } from "drizzle-orm"
 import {
+  boolean,
   check,
   index,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
-  unique,
   uniqueIndex,
 } from "drizzle-orm/pg-core"
 
 import { createdAt, timestamps } from "../../database/columns.ts"
-import { ledgers, platformAccountLabel } from "../ledger/sql.ts"
+import { ledgers } from "../ledger/sql.ts"
 import { principals } from "../principal/sql.ts"
 
 export const statuses = ["provisioning", "stalled", "active"] as const
@@ -21,10 +22,6 @@ export const provisioningStatus = pgEnum("business_provisioning_status", statuse
 
 export const provisioningStep = pgEnum("business_provisioning_step", steps)
 
-export const kinds = ["payable", "platform"] as const
-
-export const ledgerAccountKind = pgEnum("ledger_account_kind", kinds)
-
 export const businesses = pgTable(
   "businesses",
   {
@@ -32,11 +29,6 @@ export const businesses = pgTable(
     // Fixed at creation: the ledger holder carries this name and rejects a
     // different one when the business onboards onto another ledger.
     name: text("name").notNull(),
-    // The ledger the business was registered into, and the one its sessions
-    // run against.
-    defaultLedger: text("default_ledger")
-      .notNull()
-      .references(() => ledgers.slug, { onDelete: "restrict", onUpdate: "cascade" }),
     provisioningStatus: provisioningStatus("provisioning_status")
       .default("provisioning")
       .notNull(),
@@ -70,10 +62,11 @@ export const businessPrincipals = pgTable(
   (table) => [index("business_principals_business_id_idx").on(table.businessId)],
 )
 
-// The business's accounts in each ledger: its payable account, and any
-// platform account overriding that ledger's default for a label.
-export const businessLedgerAccounts = pgTable(
-  "business_ledger_accounts",
+// The ledgers a business is in, with its payable account in each. The default
+// row is written with the business, so the ledger its sessions run against is
+// known before provisioning has an account ref to record.
+export const businessLedgers = pgTable(
+  "business_ledgers",
   {
     businessId: text("business_id")
       .notNull()
@@ -81,23 +74,23 @@ export const businessLedgerAccounts = pgTable(
     ledger: text("ledger")
       .notNull()
       .references(() => ledgers.slug, { onDelete: "restrict", onUpdate: "cascade" }),
-    kind: ledgerAccountKind("kind").notNull(),
-    label: platformAccountLabel("label"),
-    ledgerAccountRef: text("ledger_account_ref").notNull(),
+    isDefault: boolean("is_default").default(false).notNull(),
+    // Null until the ledger creates the account.
+    payableAccountRef: text("payable_account_ref"),
     ...createdAt,
   },
   (table) => [
-    unique("business_ledger_accounts_unique")
-      .on(table.businessId, table.ledger, table.kind, table.label)
-      .nullsNotDistinct(),
-    // A payable account belongs to one business; a platform override may be
-    // shared by several.
-    uniqueIndex("business_ledger_accounts_payable_ref_unique")
-      .on(table.ledgerAccountRef)
-      .where(sql`${table.kind} = 'payable'`),
+    primaryKey({ columns: [table.businessId, table.ledger] }),
+    uniqueIndex("business_ledgers_payable_account_ref_unique").on(table.payableAccountRef),
+    // Uniqueness only: create writes the default row alongside the business,
+    // and activation requires its ref, so no business is without one.
+    uniqueIndex("business_ledgers_default_unique")
+      .on(table.businessId)
+      .where(sql`${table.isDefault}`),
+    // Only the default ledger is joined before its account exists.
     check(
-      "business_ledger_accounts_kind_matches_label",
-      sql`(${table.kind} = 'platform') = (${table.label} is not null)`,
+      "business_ledgers_ref_check",
+      sql`${table.isDefault} or ${table.payableAccountRef} is not null`,
     ),
   ],
 )

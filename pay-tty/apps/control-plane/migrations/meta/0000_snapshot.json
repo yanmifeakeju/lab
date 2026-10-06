@@ -1,11 +1,11 @@
 {
-  "id": "a72a92e0-411d-4098-b016-2b7684be8d8f",
+  "id": "137d651e-8984-43f9-b0c8-2aae7270d784",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
-    "public.business_ledger_accounts": {
-      "name": "business_ledger_accounts",
+    "public.business_ledgers": {
+      "name": "business_ledgers",
       "schema": "",
       "columns": {
         "business_id": {
@@ -20,25 +20,18 @@
           "primaryKey": false,
           "notNull": true
         },
-        "kind": {
-          "name": "kind",
-          "type": "ledger_account_kind",
-          "typeSchema": "public",
+        "is_default": {
+          "name": "is_default",
+          "type": "boolean",
           "primaryKey": false,
-          "notNull": true
+          "notNull": true,
+          "default": false
         },
-        "label": {
-          "name": "label",
-          "type": "platform_account_label",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "ledger_account_ref": {
-          "name": "ledger_account_ref",
+        "payable_account_ref": {
+          "name": "payable_account_ref",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -49,27 +42,42 @@
         }
       },
       "indexes": {
-        "business_ledger_accounts_payable_ref_unique": {
-          "name": "business_ledger_accounts_payable_ref_unique",
+        "business_ledgers_payable_account_ref_unique": {
+          "name": "business_ledgers_payable_account_ref_unique",
           "columns": [
             {
-              "expression": "ledger_account_ref",
+              "expression": "payable_account_ref",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             }
           ],
           "isUnique": true,
-          "where": "\"business_ledger_accounts\".\"kind\" = 'payable'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "business_ledgers_default_unique": {
+          "name": "business_ledgers_default_unique",
+          "columns": [
+            {
+              "expression": "business_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"business_ledgers\".\"is_default\"",
           "concurrently": false,
           "method": "btree",
           "with": {}
         }
       },
       "foreignKeys": {
-        "business_ledger_accounts_business_id_businesses_id_fk": {
-          "name": "business_ledger_accounts_business_id_businesses_id_fk",
-          "tableFrom": "business_ledger_accounts",
+        "business_ledgers_business_id_businesses_id_fk": {
+          "name": "business_ledgers_business_id_businesses_id_fk",
+          "tableFrom": "business_ledgers",
           "tableTo": "businesses",
           "columnsFrom": [
             "business_id"
@@ -80,9 +88,9 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "business_ledger_accounts_ledger_ledgers_slug_fk": {
-          "name": "business_ledger_accounts_ledger_ledgers_slug_fk",
-          "tableFrom": "business_ledger_accounts",
+        "business_ledgers_ledger_ledgers_slug_fk": {
+          "name": "business_ledgers_ledger_ledgers_slug_fk",
+          "tableFrom": "business_ledgers",
           "tableTo": "ledgers",
           "columnsFrom": [
             "ledger"
@@ -94,24 +102,21 @@
           "onUpdate": "cascade"
         }
       },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "business_ledger_accounts_unique": {
-          "name": "business_ledger_accounts_unique",
-          "nullsNotDistinct": true,
+      "compositePrimaryKeys": {
+        "business_ledgers_business_id_ledger_pk": {
+          "name": "business_ledgers_business_id_ledger_pk",
           "columns": [
             "business_id",
-            "ledger",
-            "kind",
-            "label"
+            "ledger"
           ]
         }
       },
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "business_ledger_accounts_kind_matches_label": {
-          "name": "business_ledger_accounts_kind_matches_label",
-          "value": "(\"business_ledger_accounts\".\"kind\" = 'platform') = (\"business_ledger_accounts\".\"label\" is not null)"
+        "business_ledgers_ref_check": {
+          "name": "business_ledgers_ref_check",
+          "value": "\"business_ledgers\".\"is_default\" or \"business_ledgers\".\"payable_account_ref\" is not null"
         }
       },
       "isRLSEnabled": false
@@ -207,12 +212,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "default_ledger": {
-          "name": "default_ledger",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
         "provisioning_status": {
           "name": "provisioning_status",
           "type": "business_provisioning_status",
@@ -279,21 +278,7 @@
           "with": {}
         }
       },
-      "foreignKeys": {
-        "businesses_default_ledger_ledgers_slug_fk": {
-          "name": "businesses_default_ledger_ledgers_slug_fk",
-          "tableFrom": "businesses",
-          "tableTo": "ledgers",
-          "columnsFrom": [
-            "default_ledger"
-          ],
-          "columnsTo": [
-            "slug"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "cascade"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -303,74 +288,6 @@
           "value": "num_nonnulls(\"businesses\".\"failure_code\", \"businesses\".\"failure_message\") = case when \"businesses\".\"provisioning_status\" = 'stalled' then 2 else 0 end"
         }
       },
-      "isRLSEnabled": false
-    },
-    "public.ledger_platform_accounts": {
-      "name": "ledger_platform_accounts",
-      "schema": "",
-      "columns": {
-        "ledger": {
-          "name": "ledger",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "label": {
-          "name": "label",
-          "type": "platform_account_label",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "ledger_account_ref": {
-          "name": "ledger_account_ref",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "ledger_platform_accounts_ledger_ledgers_slug_fk": {
-          "name": "ledger_platform_accounts_ledger_ledgers_slug_fk",
-          "tableFrom": "ledger_platform_accounts",
-          "tableTo": "ledgers",
-          "columnsFrom": [
-            "ledger"
-          ],
-          "columnsTo": [
-            "slug"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "cascade"
-        }
-      },
-      "compositePrimaryKeys": {
-        "ledger_platform_accounts_ledger_label_pk": {
-          "name": "ledger_platform_accounts_ledger_label_pk",
-          "columns": [
-            "ledger",
-            "label"
-          ]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.ledgers": {
@@ -422,6 +339,74 @@
           "value": "\"ledgers\".\"scale\" between 0 and 4"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.platform_accounts": {
+      "name": "platform_accounts",
+      "schema": "",
+      "columns": {
+        "ledger": {
+          "name": "ledger",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "label": {
+          "name": "label",
+          "type": "platform_account_label",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ledger_account_ref": {
+          "name": "ledger_account_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "platform_accounts_ledger_ledgers_slug_fk": {
+          "name": "platform_accounts_ledger_ledgers_slug_fk",
+          "tableFrom": "platform_accounts",
+          "tableTo": "ledgers",
+          "columnsFrom": [
+            "ledger"
+          ],
+          "columnsTo": [
+            "slug"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {
+        "platform_accounts_ledger_label_pk": {
+          "name": "platform_accounts_ledger_label_pk",
+          "columns": [
+            "ledger",
+            "label"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.principals": {
@@ -486,14 +471,6 @@
     }
   },
   "enums": {
-    "public.ledger_account_kind": {
-      "name": "ledger_account_kind",
-      "schema": "public",
-      "values": [
-        "payable",
-        "platform"
-      ]
-    },
     "public.business_provisioning_status": {
       "name": "business_provisioning_status",
       "schema": "public",

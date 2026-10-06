@@ -32,10 +32,9 @@ export const labels = ["cash", "fee"] as const
 
 export const platformAccountLabel = pgEnum("platform_account_label", labels)
 
-// Each ledger's platform accounts, which every business uses unless it
-// overrides one.
-export const ledgerPlatformAccounts = pgTable(
-  "ledger_platform_accounts",
+// Each ledger's platform accounts, shared by every business in it.
+export const platformAccounts = pgTable(
+  "platform_accounts",
   {
     ledger: text("ledger")
       .notNull()
