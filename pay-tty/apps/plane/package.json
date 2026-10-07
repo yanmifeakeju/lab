@@ -1,0 +1,25 @@
+{
+  "name": "@pay-tty/plane",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env --watch bin/api.ts",
+    "start": "node --env-file-if-exists=.env bin/api.ts",
+    "test": "node --env-file-if-exists=.env --test --test-global-setup=node_modules/@pay-tty/core/src/testing/setup.ts test/*.test.ts",
+    "typecheck": "tsc --project tsconfig.json",
+    "lint": "oxlint . --deny-warnings",
+    "clean": "node -e \"import('node:fs').then(({ rmSync }) => rmSync('dist', { recursive: true, force: true }))\"",
+    "token:key": "node -e \"console.log(Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64url'))\""
+  },
+  "dependencies": {
+    "@effect/platform-node": "4.0.0-rc.117",
+    "@pay-tty/core": "workspace:*",
+    "@pay-tty/ledger-client": "workspace:*",
+    "effect": "4.0.0-rc.117",
+    "jose": "^6.2.12"
+  },
+  "devDependencies": {
+    "ulid": "^3.0.2"
+  }
+}

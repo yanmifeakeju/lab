@@ -1,0 +1,37 @@
+{
+  "name": "@pay-tty/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./business": "./src/business/business.ts",
+    "./catalog": "./src/ledger/catalog.ts",
+    "./currency": "./src/ledger/currency.ts",
+    "./database": "./src/database/client.ts",
+    "./ledger": "./src/ledger/ledger.ts",
+    "./ledgers": "./src/ledger/ledgers.ts",
+    "./principal": "./src/principal/principal.ts",
+    "./testing": "./src/testing/testing.ts",
+    "./testing/setup": "./src/testing/setup.ts"
+  },
+  "scripts": {
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:seed": "./scripts/seed.sh",
+    "db:reset": "./scripts/reset.sh",
+    "test": "node --env-file-if-exists=.env --test --test-global-setup=src/testing/setup.ts test/*.test.ts",
+    "typecheck": "tsc --project tsconfig.json",
+    "lint": "oxlint . --deny-warnings",
+    "clean": "node -e \"import('node:fs').then(({ rmSync }) => rmSync('dist', { recursive: true, force: true }))\""
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.3",
+    "effect": "4.0.0-rc.117",
+    "pg": "^8.23.0",
+    "ulid": "^3.0.2"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "^0.31.11"
+  }
+}

@@ -6,7 +6,10 @@ shared packages.
 ## Workspace layout
 
 - `apps/` — deployable and runnable applications
+- `apps/plane/` — issues session tokens (`POST /session`), returns the caller and its business (`GET /me`), and creates businesses (`POST /business`)
+- `apps/control-plane/` — the implementation plane was split from, kept as reference until it is deleted
 - `packages/` — reusable workspace packages
+- `packages/core/` — domain database schema, migrations, and the principal, business, and ledger services
 - `packages/ledger-client/` — generated Effect client for the ledger API
 - `ledger/` — the existing Go ledger service
 - `openapi.yaml` — the repository-level HTTP API contract

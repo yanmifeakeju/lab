@@ -28,29 +28,40 @@ const health = Effect.gen(function* () {
 }).pipe(Effect.provide(FetchHttpClient.layer))
 ```
 
-Declared API errors fail with the decoded server response body directly. For
-example, a rejected account request can be handled without reaching through a
-generated error wrapper:
+Declared API errors fail with the decoded server response body directly. Keep
+those failures in the Effect channel while composing requests, then handle the
+whole client program once at the application boundary:
 
 ```ts
-const result = yield* client.createPayableAccount({
-  payload: {
-    ledger: "ngn_ng",
-    external_id: "merchant_123",
-    name: "Acme Ltd",
-  },
-}).pipe(
-  Effect.match({
-    onFailure: (error) => ({ ok: false as const, error }),
-    onSuccess: (account) => ({ ok: true as const, account }),
-  }),
-)
+import { Console, Effect } from "effect"
+
+import { catchClientErrors } from "@pay-tty/ledger-client"
+
+const program = Effect.gen(function* () {
+  const account = yield* client.createPayableAccount({
+    payload: {
+      ledger: "ngn_ng",
+      external_id: "merchant_123",
+      name: "Acme Ltd",
+    },
+  })
+
+  return yield* client.getAccount(account.reference, undefined)
+})
+
+const main = catchClientErrors(program, {
+  onApiError: (response) => Console.error(response.error),
+  onConfigError: (error) => Console.error(error),
+  onHttpClientError: (error) => Console.error(error),
+  onSchemaError: (error) => Console.error(error),
+})
 ```
 
 Transport failures and invalid server responses remain typed client or schema
-errors because they do not contain a valid API response body. The
-`includeResponse` operation option only adds the raw HTTP response to successful
-results; it does not change failure handling.
+errors because they do not contain a valid API response body.
+`catchClientErrors` distinguishes those failures from configuration errors and
+decoded API responses. The `includeResponse` operation option only adds the raw
+HTTP response to successful results; it does not change failure handling.
 
 `src/generated.ts` is generated code. Do not edit it directly. Regenerate and
 verify it from the repository root:

@@ -12,6 +12,8 @@ import {
   type PostJournalEntryRequestJson,
 } from "./generated.ts"
 
+export * from "./error.ts"
+
 export * from "./generated.ts"
 
 export interface ClientOptions {
