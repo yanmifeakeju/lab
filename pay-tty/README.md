@@ -1,16 +1,21 @@
 # pay-tty
 
 Effect 4, TypeScript 7, pnpm, and Turborepo monorepo for pay-tty's services and
-shared packages. The SSH/TUI front end is not built yet; the backend it will
-talk to is `apps/plane`.
+shared packages: an SSH terminal UI, `apps/tui`, over plane, `apps/plane`, over
+the Go ledger.
 
 ## Workspace layout
 
+- `apps/tui/` — the terminal UI, served over SSH by OpenTUI on Bun; it calls
+  plane over HTTP and nothing else
 - `apps/plane/` — plane, the HTTP service the front end calls: session tokens,
   the caller's business, and opening that business's ledger account
 - `packages/core/` — plane's database schema and migrations, and the principal,
   business, and ledger catalog services
 - `packages/ledger-client/` — generated Effect client for the ledger API
+- `packages/plane-client/` — generated Effect client for plane's API, from
+  `apps/plane/openapi.json`, which `pnpm generate:client` writes from plane's
+  route definitions
 - `ledger/` — the Go ledger service, with its own database
 - `openapi.yaml` — the ledger's HTTP API contract, which `ledger-client` is
   generated from. Plane publishes its own contract at `GET /openapi.json`.
@@ -116,10 +121,25 @@ business=$(curl -s localhost:3000/business -H "authorization: Bearer $token" \
 curl -s -X POST "localhost:3000/business/$business/ledger" -H "authorization: Bearer $token"
 ```
 
+### Run the TUI
+
+Needs Bun, and plane running. Copy `apps/tui/.env.example` to `apps/tui/.env`,
+then:
+
+```sh
+pnpm --filter @pay-tty/tui start   # or dev, with --watch
+ssh -p 2222 localhost
+```
+
+Ctrl+C or Ctrl+D disconnects. Any SSH key is accepted, and its fingerprint is
+the caller's identity. The
+host key is generated on first start at `TUI_HOST_KEY_PATH`; keep it, or every
+client sees a changed host key.
+
 ## Checks
 
 ```sh
-pnpm check   # generated-client diff, typecheck, lint
+pnpm check   # plane spec and generated-client diffs, typecheck, lint
 pnpm test    # anti-slop rule tests, then every package's tests
 ```
 

@@ -16,6 +16,7 @@
     ".roo/**",
     ".windsurf/**",
     "packages/ledger-client/src/generated.ts",
+    "packages/plane-client/src/generated.ts",
     "tools/oxlint/anti-slop/**"
   ],
   "jsPlugins": [

@@ -1,0 +1,21 @@
+{
+  "name": "@pay-tty/tui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch bin/server.tsx",
+    "start": "bun bin/server.tsx",
+    "test": "bun test",
+    "typecheck": "tsc --project tsconfig.json",
+    "lint": "oxlint . --deny-warnings"
+  },
+  "dependencies": {
+    "@opentui/core": "0.5.14",
+    "@opentui/solid": "0.5.14",
+    "@opentui/ssh": "0.5.14",
+    "@pay-tty/plane-client": "workspace:*",
+    "effect": "4.0.0-rc.117",
+    "solid-js": "1.9.12"
+  }
+}

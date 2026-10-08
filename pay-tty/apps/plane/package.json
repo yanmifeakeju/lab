@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "node --env-file-if-exists=.env --watch bin/api.ts",
     "start": "node --env-file-if-exists=.env bin/api.ts",
+    "openapi": "node bin/openapi.ts > openapi.json",
+    "openapi:check": "node bin/openapi.ts | diff -u openapi.json -",
     "test": "node --env-file-if-exists=.env --test --test-global-setup=node_modules/@pay-tty/core/src/testing/setup.ts test/*.test.ts",
     "typecheck": "tsc --project tsconfig.json",
     "lint": "oxlint . --deny-warnings",

@@ -1,0 +1,6 @@
+# Compiles the Solid JSX in .tsx files; Bun is the only runtime that can.
+preload = ["@opentui/solid/preload"]
+
+# bun test doesn't read the top-level preload.
+[test]
+preload = ["@opentui/solid/preload"]
