@@ -26,12 +26,16 @@ import { created as accountCreated, current, failing, fakeLedger, invalid, keys,
 
 // The core services over the test database, for preparing businesses and
 // reading back what plane stored.
-const domain = Layer.mergeAll(Principal.layer, Business.layer).pipe(Layer.provideMerge(DatabaseLayer))
+const domain = Layer.mergeAll(Principal.layer, Business.layer).pipe(
+  Layer.provideMerge(Catalog.layer),
+  Layer.provideMerge(DatabaseLayer),
+)
 
 interface ServerOptions {
   readonly ledger?: FakeLedger
-  // Stand-ins for what the ledger endpoint sees, to inject local failures.
+  // A stand-in for what the ledger endpoint sees, to inject local failures.
   readonly businesses?: Business.Interface
+  // A stand-in catalog for creating businesses.
   readonly catalog?: Catalog.Interface
 }
 
@@ -46,10 +50,7 @@ const server = (options: ServerOptions = {}) =>
       const ledgerEndpoint = BusinessLedgerService.layer.pipe(
         Layer.provide(ledger.layer),
         Layer.provide(
-          Layer.mergeAll(
-            options.businesses === undefined ? Business.layer : Layer.succeed(Business.Service, options.businesses),
-            options.catalog === undefined ? Catalog.layer : Layer.succeed(Catalog.Service, options.catalog),
-          ),
+          options.businesses === undefined ? Business.layer : Layer.succeed(Business.Service, options.businesses),
         ),
       )
 
@@ -59,7 +60,11 @@ const server = (options: ServerOptions = {}) =>
           Layer.mergeAll(ApiLive, UnknownErrorResponse).pipe(
             Layer.provideMerge(Layer.mergeAll(AuthenticationLive, ledgerEndpoint)),
             Layer.provideMerge(Token.layerFrom(keys)),
-            Layer.provideMerge(domain),
+            Layer.provideMerge(Layer.mergeAll(Principal.layer, Business.layer)),
+            Layer.provideMerge(
+              options.catalog === undefined ? Catalog.layer : Layer.succeed(Catalog.Service, options.catalog),
+            ),
+            Layer.provideMerge(DatabaseLayer),
             Layer.provideMerge(NodeHttpServer.layerHttpServices),
           ),
           { disableLogger: true },
@@ -100,8 +105,8 @@ const send = Effect.fnUntraced(function* (server: Server, call: Call) {
   return { status: response.status, json: text === "" ? null : yield* Schema.decodeEffect(Json)(text) }
 })
 
-// Excess keys fail decoding, so a camel-case leak or a retained field such as
-// hasBusiness is caught, not dropped.
+// Excess keys fail decoding, so a camel-case leak or any field outside the
+// contract is caught, not dropped.
 const strict = { onExcessProperty: "error" } as const
 
 const fingerprint = () => `SHA256:${ulid()}`
@@ -178,6 +183,21 @@ const unauthorized = { message: "A valid access token is required.", error: { co
 const run = <A, E>(effect: Effect.Effect<A, E, Scope.Scope | Principal.Service | Business.Service | Database>) =>
   Effect.runPromise(Effect.scoped(effect).pipe(Effect.provide(domain)))
 
+// The seed configures no US ledger. This stands one in as the US default for
+// the effect, then leaves the US without one again; the row stays, since
+// businesses refer to it.
+const withUsDefault = <A, E, R>(use: (ledger: Ledger.Slug) => Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const ledger = Ledger.Slug.make(`usd_test_${ulid().toLowerCase()}`)
+
+    yield* Testing.addLedger(ledger, "USD", 2, "US")
+
+    return yield* Testing.makeCountryDefault(ledger).pipe(
+      Effect.andThen(use(ledger)),
+      Effect.ensuring(Testing.clearCountryDefault("US")),
+    )
+  })
+
 void test("serves health without a token", () =>
   run(
     Effect.gen(function* () {
@@ -187,7 +207,7 @@ void test("serves health without a token", () =>
     }),
   ))
 
-void test("publishes /session, /me, /business, and its ledger, and none of the retired routes or schemas", () =>
+void test("publishes exactly /health, /session, /me, /business, and its ledger", () =>
   run(
     Effect.gen(function* () {
       const plane = yield* server()
@@ -207,7 +227,14 @@ void test("publishes /session, /me, /business, and its ledger, and none of the r
       const { paths, components } = yield* Schema.decodeUnknownEffect(
         Schema.Struct({
           paths: Schema.Record(Schema.String, Schema.Record(Schema.String, Operation)),
-          components: Schema.Struct({ schemas: Schema.Record(Schema.String, Schema.Unknown) }),
+          components: Schema.Struct({
+            schemas: Schema.Struct({
+              CreateBusinessRequestEncoded: Schema.Struct({
+                properties: Schema.Struct({ country_code: Schema.Unknown }),
+                required: Schema.Array(Schema.String),
+              }),
+            }),
+          }),
         }),
       )(json)
 
@@ -223,6 +250,13 @@ void test("publishes /session, /me, /business, and its ledger, and none of the r
       assert.deepEqual(create?.security, paths["/me"]?.["get"]?.security)
       assert.deepEqual(paths["/session"]?.["post"]?.security, [])
       assert.equal(create?.requestBody?.content["application/json"].schema.$ref, "#/components/schemas/CreateBusinessRequestEncoded")
+
+      // The country is optional, one of the listed codes, and Nigeria by default.
+      const request = components.schemas.CreateBusinessRequestEncoded
+
+      assert.deepEqual(request.properties.country_code, { type: "string", enum: ["NG", "US"], default: "NG" })
+      assert.deepEqual(request.required, ["name"])
+      assert.ok("503" in (create?.responses ?? {}))
 
       // The business itself, not wrapped.
       const success = yield* Schema.decodeUnknownEffect(Body)(create?.responses["200"])
@@ -242,20 +276,6 @@ void test("publishes /session, /me, /business, and its ledger, and none of the r
 
       for (const code of ["401", "404", "409", "502", "503"]) {
         assert.ok(code in (ledger?.responses ?? {}), code)
-      }
-
-      for (const retired of [
-        "ResolveResponse",
-        "RegisterRequest",
-        "ProgressStep",
-        "RegistrationFailure",
-        "SessionConfig",
-        "BusinessConfig",
-        "LedgerConfig",
-        "PlatformAccountConfig",
-        "WorkspaceConfig",
-      ]) {
-        assert.equal(retired in components.schemas, false, retired)
       }
     }),
   ))
@@ -311,7 +331,7 @@ void test("/me names a new session's stored principal, with no business", () =>
     }),
   ))
 
-void test("POST /business records a created NGN business and returns it as /me does", () =>
+void test("POST /business without a country records a created Nigerian NGN business and returns it as /me does", () =>
   run(
     Effect.gen(function* () {
       const plane = yield* server()
@@ -320,16 +340,18 @@ void test("POST /business records a created NGN business and returns it as /me d
 
       // Currency and ledger are the server's: these are dropped.
       const response = yield* created(plane, authorization, {
-        body: { name: "Acme Ltd", currency_code: "USD", currency: "USD", ledger: "usd_us" },
+        body: { name: "Acme Ltd", currency_code: "USD", currency: "USD", ledger: "usd_us", primary_ledger: "usd_us" },
       })
 
       const { business } = yield* stored(sub)
 
       assert.ok(business !== undefined)
       assert.equal(response.status, 200)
+      assert.equal(business.primaryLedger.slug, "ngn_ng")
       assert.deepEqual(response.json, {
         id: business.id,
         name: "Acme Ltd",
+        country_code: "NG",
         currency_code: "NGN",
         holder_ref: null,
         status: "created",
@@ -365,6 +387,79 @@ void test("repeating POST /business returns the business unchanged, whatever nam
     }),
   ))
 
+void test("POST /business saves an explicit country with its currency and default ledger", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+
+      const check = Effect.fnUntraced(function* (country: Business.Country, currency: string, ledger: string) {
+        const sub = fingerprint()
+        const { authorization } = yield* exchange(plane, sub)
+
+        // A caller's currency never overrides the country's.
+        const response = yield* created(plane, authorization, {
+          body: { name: "Acme", country_code: country, currency_code: country === "US" ? "NGN" : "USD" },
+        })
+
+        const { business } = yield* stored(sub)
+
+        assert.equal(response.body.country_code, country)
+        assert.equal(response.body.currency_code, currency)
+        assert.equal(response.body.status, "created")
+        assert.equal(response.body.ledger, null)
+        assert.equal(business?.primaryLedger.slug, ledger)
+        assert.equal(business.primaryLedger.payableAccountRef, null)
+        assert.deepEqual((yield* me(plane, authorization)).body.business, response.body)
+
+        // Nor does a repeat asking for the other country change it.
+        const again = yield* created(plane, authorization, { body: { name: "Acme", country_code: country === "US" ? "NG" : "US" } })
+
+        assert.deepEqual(again.json, response.json)
+      })
+
+      yield* check("NG", "NGN", "ngn_ng")
+      yield* withUsDefault((ledger) => check("US", "USD", ledger))
+
+      assert.equal(plane.ledger.requests.length, 0)
+    }),
+  ))
+
+void test("POST /business in a country with no default ledger is unavailable, creating nothing and never falling back", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { authorization } = yield* exchange(plane, fingerprint())
+
+      assert.deepEqual(yield* createBusiness(plane, authorization, { body: { name: "Acme Inc", country_code: "US" } }), {
+        status: 503,
+        json: { message: "Businesses can't be created in this country yet.", error: { code: "country_unavailable" } },
+      })
+      assert.equal((yield* me(plane, authorization)).body.business, null)
+      assert.equal(plane.ledger.requests.length, 0)
+    }),
+  ))
+
+void test("POST /business rejects a country that is null, blank, malformed, or unlisted, and creates nothing", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { authorization } = yield* exchange(plane, fingerprint())
+
+      for (const country of [null, "", " ", "ng", "Ng", "NGA", "USA", "NGN", "USD", "GB", 42]) {
+        const { status, json } = yield* createBusiness(plane, authorization, { body: { name: "Acme Ltd", country_code: country } })
+
+        const error = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ message: Schema.String, error: Schema.Struct({ code: Schema.Literal("validation_error") }) }),
+        )(json)
+
+        assert.equal(status, 400, String(country))
+        assert.equal(error.error.code, "validation_error", String(country))
+      }
+
+      assert.equal((yield* me(plane, authorization)).body.business, null)
+    }),
+  ))
+
 void test("POST /business returns an existing active business without touching it", () =>
   run(
     Effect.gen(function* () {
@@ -372,10 +467,11 @@ void test("POST /business returns an existing active business without touching i
       const businesses = yield* Business.Service
       const sub = fingerprint()
       const { authorization } = yield* exchange(plane, sub)
-      const active = yield* businesses.create((yield* stored(sub)).principal.id, new Business.Details({ name: "Active Ltd" }))
+      const details = new Business.Details({ name: "Active Ltd", countryCode: "NG" })
+      const active = yield* businesses.create((yield* stored(sub)).principal.id, details)
       const account = new Business.PayableAccount({ holderRef: `hld_${ulid()}`, accountRef: `acct_${ulid()}` })
 
-      yield* businesses.recordPayableAccount(active.id, Ledger.ngn, account, { isDefault: true })
+      yield* businesses.recordPayableAccount(active.id, active.primaryLedger.slug, account)
 
       const before = yield* businesses.activate(active.id)
       const response = yield* created(plane, authorization, { body: { name: "Other Ltd" } })
@@ -501,24 +597,12 @@ void test("identity fields in the body, query, or headers can't choose the owner
     }),
   ))
 
-void test("the retired routes are gone and create nothing", () =>
+void test("only POST /business creates", () =>
   run(
     Effect.gen(function* () {
       const plane = yield* server()
       const { authorization } = yield* exchange(plane, fingerprint())
 
-      const calls: ReadonlyArray<Call> = [
-        { method: "POST", path: "/v1/register", body: { name: "Acme Ltd" }, authorization },
-        { method: "GET", path: "/v1/resolve", authorization },
-        { method: "POST", path: "/v1/register", body: { name: "Acme Ltd" } },
-        { method: "GET", path: "/v1/resolve" },
-      ]
-
-      for (const call of calls) {
-        assert.equal((yield* send(plane, call)).status, 404, `${call.method} ${call.path}`)
-      }
-
-      // Nor does any other method on /business create.
       for (const call of [
         { method: "GET", path: "/business", authorization },
         { method: "PUT", path: "/business", body: { name: "Acme Ltd" }, authorization },
@@ -532,7 +616,7 @@ void test("the retired routes are gone and create nothing", () =>
     }),
   ))
 
-void test("session, business, then ledger leaves an active NGN business that /me agrees with", () =>
+void test("session, business, then ledger leaves an active NG business in NGN that /me agrees with", () =>
   run(
     Effect.gen(function* () {
       const plane = yield* server()
@@ -544,11 +628,12 @@ void test("session, business, then ledger leaves an active NGN business that /me
 
       assert.ok(business !== undefined)
       assert.ok(reply !== undefined && reply !== "unreachable" && "body" in reply && "reference" in reply.body && "holder_reference" in reply.body)
-      assert.deepEqual(plane.ledger.requests, [{ ledger: Ledger.ngn, external_id: id, name: "Acme Ltd" }])
+      assert.deepEqual(plane.ledger.requests, [{ ledger: "ngn_ng", external_id: id, name: "Acme Ltd" }])
       assert.equal(response.status, 200)
       assert.deepEqual(response.json, {
         id,
         name: "Acme Ltd",
+        country_code: "NG",
         currency_code: "NGN",
         holder_ref: reply.body.holder_reference,
         status: "active",
@@ -558,6 +643,35 @@ void test("session, business, then ledger leaves an active NGN business that /me
       })
       assert.deepEqual((yield* me(plane, authorization)).body.business, response.body)
     }),
+  ))
+
+void test("with a US default configured, a US business opens its account there, in USD", () =>
+  run(
+    withUsDefault(Effect.fnUntraced(function* (usd) {
+      const plane = yield* server()
+      const sub = fingerprint()
+      const { authorization } = yield* exchange(plane, sub)
+      const { id } = (yield* created(plane, authorization, { body: { name: "Acme Inc", country_code: "US" } })).body
+
+      const response = yield* opened(plane, authorization, id)
+      const reply = plane.ledger.replies[0]
+
+      assert.ok(reply !== undefined && reply !== "unreachable" && "body" in reply && "reference" in reply.body)
+      assert.deepEqual(plane.ledger.requests, [{ ledger: usd, external_id: id, name: "Acme Inc" }])
+      assert.equal(response.body.status, "active")
+      assert.equal(response.body.country_code, "US")
+      assert.equal(response.body.currency_code, "USD")
+      assert.deepEqual(
+        response.body.ledger,
+        new BusinessLedger({ slug: usd, currency: "USD", scale: 2, payable_account_ref: String(reply.body.reference) }),
+      )
+      assert.deepEqual((yield* me(plane, authorization)).body.business, response.body)
+
+      // Repeating either step changes nothing.
+      assert.deepEqual((yield* opened(plane, authorization, id)).json, response.json)
+      assert.deepEqual((yield* created(plane, authorization, { body: { name: "Other", country_code: "NG" } })).json, response.json)
+      assert.equal(plane.ledger.requests.length, 1)
+    })),
   ))
 
 void test("ledger creation ignores a caller-supplied ledger, currency, name, or reference", () =>
@@ -572,7 +686,7 @@ void test("ledger creation ignores a caller-supplied ledger, currency, name, or 
         headers: { "x-ledger": "usd_us" },
       })
 
-      assert.deepEqual(plane.ledger.requests, [{ ledger: Ledger.ngn, external_id: id, name: "Acme Ltd" }])
+      assert.deepEqual(plane.ledger.requests, [{ ledger: "ngn_ng", external_id: id, name: "Acme Ltd" }])
       assert.equal(response.body.name, "Acme Ltd")
       assert.equal(response.body.currency_code, "NGN")
       assert.equal(response.body.ledger?.slug, "ngn_ng")
@@ -597,15 +711,18 @@ void test("repeating ledger creation returns the business unchanged without aski
     }),
   ))
 
-void test("a default recorded before an interruption is activated without asking the ledger", () =>
+void test("an account recorded before an interruption is activated without asking the ledger", () =>
   run(
     Effect.gen(function* () {
       const plane = yield* server()
       const businesses = yield* Business.Service
-      const { authorization, id } = yield* withBusiness(plane)
+      const { sub, authorization, id } = yield* withBusiness(plane)
       const account = new Business.PayableAccount({ holderRef: `hld_${ulid()}`, accountRef: `acct_${ulid()}` })
+      const ledger = (yield* stored(sub)).business?.primaryLedger.slug
 
-      yield* businesses.recordPayableAccount(Business.ID.make(id), Ledger.ngn, account, { isDefault: true })
+      assert.ok(ledger !== undefined)
+
+      yield* businesses.recordPayableAccount(Business.ID.make(id), ledger, account)
 
       const response = yield* opened(plane, authorization, id)
 
@@ -636,7 +753,7 @@ void test("an account created before a local failure is recorded on retry", () =
 
       assert.equal(interrupted?.status, "created")
       assert.equal(interrupted.holderRef, null)
-      assert.equal(interrupted.ledger, null)
+      assert.equal(interrupted.primaryLedger.payableAccountRef, null)
 
       const plane = yield* server({ ledger })
       const resumed = yield* opened(plane, authorization, id)
@@ -648,6 +765,48 @@ void test("an account created before a local failure is recorded on retry", () =
       assert.equal(resumed.body.ledger?.payable_account_ref, reply.body.reference)
       assert.equal(ledger.requests.length, 2)
       assert.deepEqual(ledger.requests[0], ledger.requests[1])
+    }),
+  ))
+
+void test("a moved country default applies to new businesses, not to an existing one or its retry", () =>
+  run(
+    Effect.gen(function* () {
+      const businesses = yield* Business.Service
+      const ledger = fakeLedger()
+      const lost = Business.Service.of({ ...businesses, activate: () => Effect.die(new Error("connection lost")) })
+
+      // The ledger opens the account, then the local transaction fails.
+      const failing = yield* server({ ledger, businesses: lost })
+      const existing = yield* withBusiness(failing)
+
+      assert.equal((yield* openLedger(failing, existing.authorization, existing.id)).status, 500)
+
+      const original = (yield* stored(existing.sub)).business?.primaryLedger.slug
+      const moved = Ledger.Slug.make(`ngn_moved_${ulid().toLowerCase()}`)
+
+      assert.ok(original !== undefined)
+
+      // Committed, so it is put back for the tests after this one.
+      yield* Testing.addLedger(moved, "NGN", 2, "NG")
+
+      const plane = yield* server({ ledger })
+
+      const { retried, later } = yield* Effect.gen(function* () {
+        yield* Testing.makeCountryDefault(moved)
+
+        const retried = yield* opened(plane, existing.authorization, existing.id)
+        const later = yield* withBusiness(plane)
+
+        return { retried, later: yield* opened(plane, later.authorization, later.id) }
+      }).pipe(Effect.ensuring(Effect.orDie(Testing.makeCountryDefault(original))))
+
+      assert.equal(retried.body.status, "active")
+      assert.equal(retried.body.ledger?.slug, original)
+      assert.equal(later.body.ledger?.slug, moved)
+      assert.deepEqual(
+        ledger.requests.map((request) => request.ledger),
+        [original, original, moved],
+      )
     }),
   ))
 
@@ -688,71 +847,32 @@ void test("another principal's or an unknown business is not found, before the l
     }),
   ))
 
-void test("a default in another NGN ledger is a conflict, created or active, and nothing changes", () =>
+void test("an account the ledger already gave another business is a conflict, and nothing changes", () =>
   run(
     Effect.gen(function* () {
-      const plane = yield* server()
-      const businesses = yield* Business.Service
-      const { sub, authorization, id } = yield* withBusiness(plane)
-      // Committed to the disposable database, so unique to this run.
-      const other = Ledger.Slug.make(`ngn_alt_${ulid().toLowerCase()}`)
+      // Every business gets the same account back.
+      const reference = `acct_${ulid()}`
 
-      yield* Testing.addLedger(other, "NGN", 2)
-      yield* businesses.recordPayableAccount(
-        Business.ID.make(id),
-        other,
-        new Business.PayableAccount({ holderRef: `hld_${ulid()}`, accountRef: `acct_${ulid()}` }),
-        { isDefault: true },
-      )
+      const plane = yield* server({
+        ledger: fakeLedger((payload) => {
+          const reply = accountCreated(payload)
 
-      const conflict = {
-        message: "The business's recorded ledger state conflicts with this request.",
-        error: { code: "conflict" },
-      }
+          return reply !== "unreachable" && "body" in reply ? { status: reply.status, body: { ...reply.body, reference } } : reply
+        }),
+      })
 
-      for (const activate of [false, true]) {
-        if (activate) {
-          yield* businesses.activate(Business.ID.make(id))
-        }
+      const first = yield* withBusiness(plane)
+      const second = yield* withBusiness(plane)
 
-        const before = (yield* stored(sub)).business
+      assert.equal((yield* opened(plane, first.authorization, first.id)).body.ledger?.payable_account_ref, reference)
 
-        assert.equal(before?.ledger?.slug, other)
-        assert.deepEqual(yield* openLedger(plane, authorization, id), { status: 409, json: conflict })
-        assert.deepEqual((yield* stored(sub)).business, before)
-      }
+      const before = (yield* stored(second.sub)).business
 
-      assert.equal(plane.ledger.requests.length, 0)
-    }),
-  ))
-
-void test("a business stored in another currency is a conflict, created or active", () =>
-  run(
-    Effect.gen(function* () {
-      const plane = yield* server()
-      const businesses = yield* Business.Service
-
-      const createdCaller = yield* withBusiness(plane)
-
-      // Active in NGN first, since activation checks the currency.
-      const activeCaller = yield* withBusiness(plane)
-
-      yield* opened(plane, activeCaller.authorization, activeCaller.id)
-
-      for (const caller of [createdCaller, activeCaller]) {
-        yield* Testing.setCurrency(caller.id, "USD")
-
-        const before = (yield* stored(caller.sub)).business
-        const response = yield* openLedger(plane, caller.authorization, caller.id)
-
-        assert.equal(response.status, 409)
-        assert.equal((yield* Schema.decodeUnknownEffect(ErrorBody)(response.json)).error.code, "conflict")
-        assert.deepEqual((yield* stored(caller.sub)).business, before)
-      }
-
-      // Only the active caller's own creation asked the ledger.
-      assert.equal(plane.ledger.requests.length, 1)
-      assert.equal((yield* businesses.findByPrincipal((yield* stored(createdCaller.sub)).principal.id))?.ledger, null)
+      assert.deepEqual(yield* openLedger(plane, second.authorization, second.id), {
+        status: 409,
+        json: { message: "The business's recorded ledger state conflicts with this request.", error: { code: "conflict" } },
+      })
+      assert.deepEqual((yield* stored(second.sub)).business, before)
     }),
   ))
 
@@ -771,7 +891,8 @@ void test("a ledger failure is an error response and leaves the business created
         ["ledger 500", () => failing(500, "internal_server_error"), 503, "ledger_unavailable"],
         ["holder conflict", () => failing(409, "holder_conflict"), 409, "ledger_rejected"],
         ["ledger closed", () => failing(409, "ledger_closed"), 409, "ledger_rejected"],
-        ["ledger 400", () => invalid, 502, "ledger_bad_response"],
+        // Plane sent what the ledger won't take, which the caller can't fix.
+        ["ledger 400", () => invalid, 500, "internal_server_error"],
         ["schema-invalid", () => ({ status: 201, body: { reference: 1 } }), 502, "ledger_bad_response"],
         ["not JSON", () => ({ status: 201, raw: "not JSON" }), 502, "ledger_bad_response"],
         ["empty body", () => ({ status: 201, raw: "" }), 502, "ledger_bad_response"],
@@ -793,7 +914,7 @@ void test("a ledger failure is an error response and leaves the business created
         assert.equal(body.error.code, code, reason)
         assert.equal(business?.status, "created", reason)
         assert.equal(business.holderRef, null, reason)
-        assert.equal(business.ledger, null, reason)
+        assert.equal(business.primaryLedger.payableAccountRef, null, reason)
       }
 
       // A failed attempt, unreachable or answering garbage, leaves nothing in
@@ -811,24 +932,38 @@ void test("a ledger failure is an error response and leaves the business created
     }),
   ))
 
-void test("a missing or non-NGN catalog entry fails before the ledger is asked", () =>
+void test("a missing country default is unavailable and one in another currency a server error, creating nothing", () =>
   run(
     Effect.gen(function* () {
-      const catalogs: ReadonlyArray<Catalog.Interface> = [
-        { find: () => Effect.undefined },
-        { find: (slug) => Effect.succeed(new Catalog.Entry({ slug, currency: Currency.Code.make("USD"), scale: 2 })) },
+      const cases: ReadonlyArray<readonly [Catalog.Interface, object]> = [
+        [
+          { findCountryDefault: () => Effect.undefined },
+          {
+            status: 503,
+            json: { message: "Businesses can't be created in this country yet.", error: { code: "country_unavailable" } },
+          },
+        ],
+        [
+          {
+            findCountryDefault: () =>
+              Effect.succeed(
+                new Catalog.Entry({ slug: Ledger.Slug.make("eur_ng"), currency: Currency.Code.make("EUR"), scale: 2 }),
+              ),
+          },
+          {
+            status: 500,
+            json: { message: "The server could not complete the request.", error: { code: "internal_server_error" } },
+          },
+        ],
       ]
 
-      for (const catalog of catalogs) {
+      for (const [catalog, response] of cases) {
         const plane = yield* server({ catalog })
-        const { sub, authorization, id } = yield* withBusiness(plane)
+        const { authorization } = yield* exchange(plane, fingerprint())
 
-        assert.deepEqual(yield* openLedger(plane, authorization, id), {
-          status: 500,
-          json: { message: "The server could not complete the request.", error: { code: "internal_server_error" } },
-        })
+        assert.deepEqual(yield* createBusiness(plane, authorization), response)
+        assert.equal((yield* me(plane, authorization)).body.business, null)
         assert.equal(plane.ledger.requests.length, 0)
-        assert.equal((yield* stored(sub)).business?.status, "created")
       }
     }),
   ))

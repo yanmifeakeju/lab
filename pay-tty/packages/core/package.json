@@ -9,7 +9,6 @@
     "./currency": "./src/ledger/currency.ts",
     "./database": "./src/database/client.ts",
     "./ledger": "./src/ledger/ledger.ts",
-    "./ledgers": "./src/ledger/ledgers.ts",
     "./principal": "./src/principal/principal.ts",
     "./testing": "./src/testing/testing.ts",
     "./testing/setup": "./src/testing/setup.ts"

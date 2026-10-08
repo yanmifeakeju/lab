@@ -12,9 +12,12 @@ export const migrationsFolder = new URL("../../migrations", import.meta.url).pat
 
 const localHosts = new Set(["localhost", "127.0.0.1", "::1", "[::1]"])
 
-// The platform accounts every session needs, so the Ledgers layer can load.
+// Nigeria's default ledger, as scripts/seed.sh seeds it, with the platform
+// accounts shared by every business in it. No other country has one; tests
+// that need it add their own.
 export const seed = `
-  INSERT INTO ledgers (slug, currency, scale) VALUES ('ngn_ng', 'NGN', 2);
+  INSERT INTO ledgers (slug, currency, scale, country_code, is_country_default) VALUES
+    ('ngn_ng', 'NGN', 2, 'NG', true);
   INSERT INTO platform_accounts (ledger, label, ledger_account_ref) VALUES
     ('ngn_ng', 'cash', 'acct_test_cash'),
     ('ngn_ng', 'fee', 'acct_test_fee');

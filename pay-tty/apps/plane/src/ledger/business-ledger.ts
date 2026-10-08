@@ -1,19 +1,11 @@
 import { Business } from "@pay-tty/core/business";
-import { Catalog } from "@pay-tty/core/catalog";
 import { Database } from "@pay-tty/core/database";
-import { Ledger } from "@pay-tty/core/ledger";
 import type { Principal } from "@pay-tty/core/principal";
 import type { ApiErrorResponse } from "@pay-tty/ledger-client";
 import { Context, Effect, Layer, Result, Schema } from "effect";
 import * as HttpClientError from "effect/unstable/http/HttpClientError";
 
 import { LedgerClient } from "./client.ts";
-
-// Every business is NGN, and NGN businesses hold their account in this ledger.
-// A fixed pair, so a retry always asks for the same account.
-const currency = "NGN";
-
-const ledger = Ledger.ngn;
 
 export class NotFoundError extends Schema.TaggedError<NotFoundError>()(
   "BusinessLedger.NotFoundError",
@@ -53,8 +45,8 @@ export type Error =
 
 export interface Interface {
   /**
-   * Opens the business's payable account in its NGN ledger, records it as the
-   * default, and activates the business. Repeating it returns the business as
+   * Opens the business's payable account in the primary ledger saved when it
+   * was created, records it, and activates the business. Repeating it returns the business as
    * it is; a failure leaves it created, with nothing recorded.
    */
   readonly create: (
@@ -71,37 +63,37 @@ type LedgerFailure =
   | HttpClientError.HttpClientError
   | Schema.SchemaError;
 
-// Transport failures and the ledger's own 500s are worth retrying as-is. A
-// 400 means plane sent what the ledger won't take, an answer that isn't the
-// JSON promised is plane's to chase, and anything else is the ledger refusing
-// this business.
-const classify = (failure: LedgerFailure) => {
+// Transport failures and the ledger's own 500s are worth retrying as-is. An
+// answer that isn't the JSON promised is plane's to chase, and anything else
+// is the ledger refusing this business. A 400 means plane sent what the ledger
+// won't take, such as a catalog ledger it doesn't have: a defect, since the
+// caller can do nothing about it.
+const classify = (failure: LedgerFailure): Effect.Effect<never, Error> => {
   if (HttpClientError.isHttpClientError(failure)) {
     // The client reports an unparsable or missing body as an HTTP error too,
     // but the ledger did answer.
     return failure.reason instanceof HttpClientError.DecodeError ||
         failure.reason instanceof HttpClientError.EmptyBodyError
-      ? new BadResponseError({ reason: failure.reason.message })
-      : new UnavailableError();
+      ? Effect.fail(new BadResponseError({ reason: failure.reason.message }))
+      : Effect.fail(new UnavailableError());
   }
 
   if (Schema.isSchemaError(failure)) {
-    return new BadResponseError({ reason: failure.message });
+    return Effect.fail(new BadResponseError({ reason: failure.message }));
   }
 
   switch (failure.error.code) {
     case "internal_server_error":
-      return new UnavailableError();
+      return Effect.fail(new UnavailableError());
     case "validation_error":
-      return new BadResponseError({ reason: failure.message });
+      return Effect.die(failure);
     default:
-      return new RejectedError({ reason: failure.error.code });
+      return Effect.fail(new RejectedError({ reason: failure.error.code }));
   }
 };
 
 const make = Effect.gen(function* () {
   const businesses = yield* Business.Service;
-  const catalog = yield* Catalog.Service;
   const client = yield* LedgerClient.Service;
   const database = yield* Database;
 
@@ -113,38 +105,18 @@ const make = Effect.gen(function* () {
         return yield* new NotFoundError();
       }
 
-      // Checked before anything is returned, active or not: this endpoint
-      // only ever means NGN in ngn_ng, and never switches a default.
-      if (business.currencyCode !== currency) {
-        return yield* new ConflictError({
-          reason: `business currency is ${business.currencyCode}`,
-        });
-      }
-
-      if (business.ledger !== null && business.ledger.slug !== ledger) {
-        return yield* new ConflictError({
-          reason: `business already defaults to ${business.ledger.slug}`,
-        });
-      }
-
       if (business.status === "active") {
         return business;
       }
 
       // Recorded before an interruption: finish without asking the ledger.
-      if (business.ledger !== null) {
+      if (business.primaryLedger.payableAccountRef !== null) {
         return yield* businesses.activate(business.id);
       }
 
-      // The catalog is seeded with the ledger; without it, or in another
-      // currency, nothing can be recorded, so the ledger isn't asked.
-      const target = yield* catalog.find(ledger);
-
-      if (target === undefined || target.currency !== currency) {
-        return yield* Effect.die(
-          new Error(`catalog has no ${currency} ledger ${ledger}`),
-        );
-      }
+      // Saved at creation, so a retry asks for the same account even if the
+      // country's default has moved since.
+      const ledger = business.primaryLedger.slug;
 
       const created = yield* Effect.result(
         client.createPayableAccount({
@@ -153,8 +125,6 @@ const make = Effect.gen(function* () {
       );
 
       if (Result.isFailure(created)) {
-        const error = classify(created.failure);
-
         yield* Effect.logWarning(
           "ledger account creation failed",
           created.failure,
@@ -162,7 +132,7 @@ const make = Effect.gen(function* () {
           Effect.annotateLogs({ businessId: business.id }),
         );
 
-        return yield* error;
+        return yield* classify(created.failure);
       }
 
       const account = created.success;
@@ -182,7 +152,7 @@ const make = Effect.gen(function* () {
       }
 
       // Opened only once the ledger has answered, so no transaction waits on
-      // it. The holder, default account, and activation commit together.
+      // it. The holder, account, and activation commit together.
       return yield* database
         .transaction(
           Effect.gen(function* () {
@@ -193,7 +163,6 @@ const make = Effect.gen(function* () {
                 holderRef: account.holder_reference,
                 accountRef: account.reference,
               }),
-              { isDefault: true },
             );
 
             return yield* businesses.activate(business.id);

@@ -1,5 +1,5 @@
 import { Business } from "@pay-tty/core/business"
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
 import * as HttpApiEndpoint from "effect/unstable/httpapi/HttpApiEndpoint"
 import * as HttpApiGroup from "effect/unstable/httpapi/HttpApiGroup"
 
@@ -19,11 +19,12 @@ export class BusinessLedger extends Schema.Class<BusinessLedger>("BusinessLedger
 export class BusinessInfo extends Schema.Class<BusinessInfo>("BusinessInfo")({
   id: Schema.String,
   name: Schema.String,
-  // Assigned by the server; the default ledger's currency always matches.
+  country_code: Business.Country,
+  // Derived from the country by the server; the ledger's currency matches.
   currency_code: Schema.String,
   holder_ref: Schema.NullOr(Schema.String),
   status: Business.Status,
-  // The completed default ledger; null until its account is recorded.
+  // The completed primary ledger; null until its account is recorded.
   ledger: Schema.NullOr(BusinessLedger),
   created_at: Schema.String,
   updated_at: Schema.String,
@@ -33,17 +34,18 @@ export const businessInfo = (business: Business.Info) =>
   new BusinessInfo({
     id: business.id,
     name: business.name,
+    country_code: business.countryCode,
     currency_code: business.currencyCode,
     holder_ref: business.holderRef,
     status: business.status,
     ledger:
-      business.ledger === null
+      business.primaryLedger.payableAccountRef === null
         ? null
         : new BusinessLedger({
-            slug: business.ledger.slug,
-            currency: business.ledger.currency,
-            scale: business.ledger.scale,
-            payable_account_ref: business.ledger.payableAccountRef,
+            slug: business.primaryLedger.slug,
+            currency: business.primaryLedger.currency,
+            scale: business.primaryLedger.scale,
+            payable_account_ref: business.primaryLedger.payableAccountRef,
           }),
     created_at: business.createdAt.toISOString(),
     updated_at: business.updatedAt.toISOString(),
@@ -57,6 +59,8 @@ export class CreateBusinessRequest extends Schema.Class<CreateBusinessRequest>("
       expected: "a string containing non-whitespace",
     }),
   ),
+  // Only an absent key defaults; null or an unlisted code is refused.
+  country_code: Business.Country.annotate({ default: "NG" }).pipe(Schema.withDecodingDefaultKey(Effect.succeed("NG"))),
 }) {}
 
 export const business = HttpApiGroup.make("business")
@@ -64,10 +68,11 @@ export const business = HttpApiGroup.make("business")
     HttpApiEndpoint.post("createBusiness", "/business", {
       payload: CreateBusinessRequest,
       success: BusinessInfo,
+      error: ServiceUnavailable,
     }),
   )
   .add(
-    // No body: the ledger and currency are the server's, not the caller's.
+    // No body: the ledger is the one saved when the business was created.
     HttpApiEndpoint.post("createBusinessLedger", "/business/:businessId/ledger", {
       params: { businessId: Schema.String },
       success: BusinessInfo,

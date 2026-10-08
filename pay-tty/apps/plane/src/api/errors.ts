@@ -91,11 +91,12 @@ export class BadGateway extends Schema.Error<BadGateway>("BadGatewayResponse")(
   { httpApiStatus: 502 },
 ) {}
 
-// The ledger couldn't be reached or failed on its side; retrying is safe.
+// The ledger couldn't be reached or failed on its side, or no ledger is
+// configured for the business's country yet; retrying is safe.
 export class ServiceUnavailable extends Schema.Error<ServiceUnavailable>("ServiceUnavailableResponse")(
   {
     message: Schema.NonEmptyString,
-    error: Schema.Struct({ code: Schema.Literal("ledger_unavailable") }),
+    error: Schema.Struct({ code: Schema.Literals(["ledger_unavailable", "country_unavailable"]) }),
   },
   { httpApiStatus: 503 },
 ) {}

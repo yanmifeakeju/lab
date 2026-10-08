@@ -1,11 +1,10 @@
 import { sql } from "drizzle-orm"
 import {
-  boolean,
   check,
+  foreignKey,
   index,
   pgEnum,
   pgTable,
-  primaryKey,
   text,
   uniqueIndex,
 } from "drizzle-orm/pg-core"
@@ -18,6 +17,12 @@ export const statuses = ["created", "active"] as const
 
 export const status = pgEnum("business_status", statuses)
 
+// The countries a business can be created in, and the currency each trades
+// in. The checks on businesses spell out the same pairs.
+export const currencies = { NG: "NGN", US: "USD" } as const
+
+export const countries = ["NG", "US"] as const satisfies ReadonlyArray<keyof typeof currencies>
+
 export const businesses = pgTable(
   "businesses",
   {
@@ -25,15 +30,43 @@ export const businesses = pgTable(
     // Fixed at creation: the ledger holder carries this name and rejects a
     // different one when the business onboards onto another ledger.
     name: text("name").notNull(),
-    // Assigned by the server; every business is NGN for now.
-    currencyCode: text("currency_code").default("NGN").notNull(),
-    // Active once the holder and default payable account are recorded.
-    status: status("status").default("created").notNull(),
-    // One holder across every ledger the business is in.
+    countryCode: text("country_code").default("NG").notNull(),
+    // Derived from the country by the server, never the caller's.
+    currencyCode: text("currency_code").notNull(),
+    // The country's default ledger when the business was created; kept even
+    // if that default moves.
+    primaryLedger: text("primary_ledger").notNull(),
+    // Recorded together once the ledger has created the account.
+    primaryPayableAccountRef: text("primary_payable_account_ref"),
     ledgerHolderRef: text("ledger_holder_ref"),
+    status: status("status").default("created").notNull(),
     ...timestamps,
   },
-  (table) => [check("businesses_currency_code_valid", sql`${table.currencyCode} ~ '^[A-Z]{3}$'`)],
+  (table) => [
+    check("businesses_country_code_valid", sql`${table.countryCode} in ('NG', 'US')`),
+    check(
+      "businesses_currency_code_matches_country",
+      sql`(${table.countryCode}, ${table.currencyCode}) in (('NG', 'NGN'), ('US', 'USD'))`,
+    ),
+    check(
+      "businesses_holder_with_account",
+      sql`(${table.ledgerHolderRef} is null) = (${table.primaryPayableAccountRef} is null)`,
+    ),
+    check(
+      "businesses_active_has_account",
+      sql`${table.status} <> 'active' or ${table.primaryPayableAccountRef} is not null`,
+    ),
+    // Through the currency too, so the primary ledger is always in the
+    // business's currency.
+    foreignKey({
+      name: "businesses_primary_ledger_fk",
+      columns: [table.primaryLedger, table.currencyCode],
+      foreignColumns: [ledgers.slug, ledgers.currency],
+    })
+      .onDelete("restrict")
+      .onUpdate("cascade"),
+    uniqueIndex("businesses_primary_payable_account_ref_unique").on(table.primaryPayableAccountRef),
+  ],
 )
 
 export const businessPrincipals = pgTable(
@@ -50,28 +83,27 @@ export const businessPrincipals = pgTable(
   (table) => [index("business_principals_business_id_idx").on(table.businessId)],
 )
 
-// The ledgers a business is in, with its payable account in each. A row is
-// written only once the ledger has created that account.
-export const businessLedgers = pgTable(
-  "business_ledgers",
-  {
-    businessId: text("business_id")
-      .notNull()
-      .references(() => businesses.id, { onDelete: "cascade" }),
-    ledger: text("ledger")
-      .notNull()
-      .references(() => ledgers.slug, { onDelete: "restrict", onUpdate: "cascade" }),
-    isDefault: boolean("is_default").default(false).notNull(),
-    payableAccountRef: text("payable_account_ref").notNull(),
-    ...createdAt,
-  },
-  (table) => [
-    primaryKey({ columns: [table.businessId, table.ledger] }),
-    uniqueIndex("business_ledgers_payable_account_ref_unique").on(table.payableAccountRef),
-    // Uniqueness only: a business has no default until its first account is
-    // recorded, and activation requires one.
-    uniqueIndex("business_ledgers_default_unique")
-      .on(table.businessId)
-      .where(sql`${table.isDefault}`),
-  ],
-)
+// Deferred until a business needs accounts beyond its primary one, which
+// now lives on businesses. Kept as reference for that design; not a table.
+//
+// export const businessLedgers = pgTable(
+//   "business_ledgers",
+//   {
+//     businessId: text("business_id")
+//       .notNull()
+//       .references(() => businesses.id, { onDelete: "cascade" }),
+//     ledger: text("ledger")
+//       .notNull()
+//       .references(() => ledgers.slug, { onDelete: "restrict", onUpdate: "cascade" }),
+//     isDefault: boolean("is_default").default(false).notNull(),
+//     payableAccountRef: text("payable_account_ref").notNull(),
+//     ...createdAt,
+//   },
+//   (table) => [
+//     primaryKey({ columns: [table.businessId, table.ledger] }),
+//     uniqueIndex("business_ledgers_payable_account_ref_unique").on(table.payableAccountRef),
+//     uniqueIndex("business_ledgers_default_unique")
+//       .on(table.businessId)
+//       .where(sql`${table.isDefault}`),
+//   ],
+// )

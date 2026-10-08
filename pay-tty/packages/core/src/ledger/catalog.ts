@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm"
+import { and, eq } from "drizzle-orm"
 import { Context, Effect, Layer, Schema } from "effect"
 
 import { Database } from "../database/client.ts"
@@ -13,8 +13,11 @@ export class Entry extends Schema.Class<Entry>("Catalog.Entry")({
 }) {}
 
 export interface Interface {
-  /** One ledger's catalog row, read when asked rather than at startup. */
-  readonly find: (slug: Ledger.Slug) => Effect.Effect<Entry | undefined>
+  /**
+   * The ledger a new business from this country opens its account in, read
+   * when asked rather than at startup.
+   */
+  readonly findCountryDefault: (countryCode: string) => Effect.Effect<Entry | undefined>
 }
 
 export class Service extends Context.Service<Service, Interface>()("Catalog") {}
@@ -22,8 +25,13 @@ export class Service extends Context.Service<Service, Interface>()("Catalog") {}
 const make = Effect.gen(function* () {
   const database = yield* Database
 
-  const find = Effect.fn("Catalog.find")(function* (slug: Ledger.Slug) {
-    const rows = yield* database.use((db) => db.select().from(ledgers).where(eq(ledgers.slug, slug)))
+  const findCountryDefault = Effect.fn("Catalog.findCountryDefault")(function* (countryCode: string) {
+    const rows = yield* database.use((db) =>
+      db
+        .select()
+        .from(ledgers)
+        .where(and(eq(ledgers.countryCode, countryCode), eq(ledgers.isCountryDefault, true))),
+    )
 
     const row = rows[0]
 
@@ -32,7 +40,7 @@ const make = Effect.gen(function* () {
       : new Entry({ slug: Ledger.Slug.make(row.slug), currency: Currency.Code.make(row.currency), scale: row.scale })
   })
 
-  return Service.of({ find })
+  return Service.of({ findCountryDefault })
 })
 
 export const layer = Layer.effect(Service)(make)

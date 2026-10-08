@@ -12,7 +12,9 @@ import { BusinessLedger } from "../src/ledger/business-ledger.ts";
 import { LedgerClient } from "../src/ledger/client.ts";
 import { Token } from "../src/token/token.ts";
 
-const DomainLive = Layer.mergeAll(Principal.layer, Business.layer, Catalog.layer);
+const DomainLive = Layer.mergeAll(Principal.layer, Business.layer).pipe(
+  Layer.provide(Catalog.layer),
+);
 
 // The ledger service's HTTP API, at LEDGER_BASE_URL over fetch.
 const LedgerClientLive = LedgerClient.layer.pipe(Layer.provide(FetchHttpClient.layer));

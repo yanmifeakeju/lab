@@ -1,13 +1,14 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { eq, sql } from "drizzle-orm"
+import { eq } from "drizzle-orm"
 import { Cause, Effect, Exit, Predicate } from "effect"
 import { ulid } from "ulid"
 
 import { Business } from "../src/business/business.ts"
-import { businesses, businessLedgers, businessPrincipals } from "../src/business/sql.ts"
+import { businesses } from "../src/business/sql.ts"
 import { Database } from "../src/database/client.ts"
+import { Catalog } from "../src/ledger/catalog.ts"
 import { Currency } from "../src/ledger/currency.ts"
 import { Ledger } from "../src/ledger/ledger.ts"
 import { ledgers } from "../src/ledger/sql.ts"
@@ -15,70 +16,61 @@ import { Principal } from "../src/principal/principal.ts"
 import { Testing } from "../src/testing/testing.ts"
 import { runtime } from "./runtime.ts"
 
-const details = new Business.Details({ name: "Acme Ltd" })
-
-const usd = Ledger.Slug.make("usd_us")
-
-const asDefault = { isDefault: true }
-
-const additional = { isDefault: false }
+const nigeria = new Business.Details({ name: "Acme Ltd", countryCode: "NG" })
 
 const account = (holderRef: string, accountRef = `acct_${ulid()}`) =>
   new Business.PayableAccount({ holderRef, accountRef })
 
-const register = Effect.gen(function* () {
-  const principals = yield* Principal.Service
-  const service = yield* Business.Service
-
-  const principal = yield* principals.ensure({ issuer: "business-test", subject: ulid() })
-  const business = yield* service.create(principal.id, details)
-
-  return { principal, business, service }
-})
-
-// Only inside a rolled-back test: committed tests share the database.
-const addUsd = Effect.gen(function* () {
-  const database = yield* Database
-
-  yield* database.use((db) => db.insert(ledgers).values({ slug: usd, currency: "USD", scale: 2 }))
-})
-
-const accounts = (id: Business.ID) =>
+// A principal and its new business, with no ledger account yet.
+const createBusiness = (details = nigeria) =>
   Effect.gen(function* () {
-    const database = yield* Database
-
-    return yield* database.use((db) =>
-      db.select().from(businessLedgers).where(eq(businessLedgers.businessId, id)),
-    )
-  })
-
-const holderRef = (id: Business.ID) =>
-  Effect.gen(function* () {
-    const database = yield* Database
-
-    const rows = yield* database.use((db) =>
-      db.select({ ref: businesses.ledgerHolderRef }).from(businesses).where(eq(businesses.id, id)),
-    )
-
-    return rows[0]?.ref
-  })
-
-const principalOf = (id: Business.ID) =>
-  Effect.gen(function* () {
-    const database = yield* Database
-
-    const rows = yield* database.use((db) =>
-      db.select().from(businessPrincipals).where(eq(businessPrincipals.businessId, id)),
-    )
-
-    return Principal.ID.make(rows[0]?.principalId ?? "")
-  })
-
-const reload = (id: Business.ID) =>
-  Effect.gen(function* () {
+    const principals = yield* Principal.Service
     const service = yield* Business.Service
 
-    return yield* service.findByPrincipal(yield* principalOf(id))
+    const principal = yield* principals.ensure({ issuer: "business-test", subject: ulid() })
+    const business = yield* service.create(principal.id, details)
+
+    return { principal, business, service, ledger: business.primaryLedger.slug }
+  })
+
+// A catalog ledger only this test sees, so only inside a rolled-back test.
+const addLedger = (currency: string, countryCode: string | null = null) =>
+  Effect.gen(function* () {
+    const slug = Ledger.Slug.make(`${currency.toLowerCase()}_test_${ulid().toLowerCase()}`)
+
+    yield* Testing.addLedger(slug, currency, 2, countryCode)
+
+    return slug
+  })
+
+// The seed configures no US ledger; these tests stand one in.
+const addUsDefault = Effect.gen(function* () {
+  const slug = yield* addLedger("USD", "US")
+
+  yield* Testing.makeCountryDefault(slug)
+
+  return slug
+})
+
+const countryDefault = (countryCode: string) =>
+  Effect.gen(function* () {
+    const catalog = yield* Catalog.Service
+
+    const entry = yield* catalog.findCountryDefault(countryCode)
+
+    assert.ok(entry !== undefined, countryCode)
+
+    return entry
+  })
+
+// The business as stored, read without going through the service.
+const stored = (id: Business.ID) =>
+  Effect.gen(function* () {
+    const database = yield* Database
+
+    const rows = yield* database.use((db) => db.select().from(businesses).where(eq(businesses.id, id)))
+
+    return rows[0]
   })
 
 const dies = <A, E>(exit: Exit.Exit<A, E>) => Exit.isFailure(exit) && Cause.hasDies(exit.cause)
@@ -86,59 +78,76 @@ const dies = <A, E>(exit: Exit.Exit<A, E>) => Exit.isFailure(exit) && Cause.hasD
 const conflicts = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.map(Effect.flip(effect), Predicate.isTagged("Business.ConflictError"))
 
-// The pg error a failed query raised, which Drizzle wraps.
-const pgError = <A, E>(exit: Exit.Exit<A, E>) => {
+// The constraint a failed query violated; pg's error is the cause Drizzle wraps.
+const violated = <A, E>(exit: Exit.Exit<A, E>) => {
   if (Exit.isSuccess(exit)) {
     return undefined
   }
 
   const defect = Cause.squash(exit.cause)
-
-  return defect instanceof Error && defect.cause instanceof Error ? defect.cause : undefined
-}
-
-const violated = <A, E>(exit: Exit.Exit<A, E>) => {
-  const error = pgError(exit)
+  const error = defect instanceof Error && defect.cause instanceof Error ? defect.cause : undefined
 
   return error !== undefined && "constraint" in error ? error.constraint : undefined
 }
 
-const sqlState = <A, E>(exit: Exit.Exit<A, E>) => {
-  const error = pgError(exit)
-
-  return error !== undefined && "code" in error ? error.code : undefined
-}
-
-void test("create links an NGN business, created without a ledger or holder", () =>
+void test("create saves an NG business in NGN, with its country's default ledger and no account", () =>
   runtime.runPromise(
     Testing.rolledBack(
       Effect.gen(function* () {
-        const { business } = yield* register
+        const { business } = yield* createBusiness()
+        const primary = yield* countryDefault("NG")
 
         assert.match(business.id, /^biz_/)
         assert.equal(business.name, "Acme Ltd")
+        assert.equal(business.countryCode, "NG")
         assert.equal(business.currencyCode, "NGN")
         assert.equal(business.status, "created")
         assert.equal(business.holderRef, null)
-        assert.equal(business.ledger, null)
-        assert.equal((yield* accounts(business.id)).length, 0)
+        assert.deepEqual(
+          business.primaryLedger,
+          new Business.PrimaryLedger({
+            slug: primary.slug,
+            currency: primary.currency,
+            scale: primary.scale,
+            payableAccountRef: null,
+          }),
+        )
       }),
     ),
   ))
 
-void test("create is idempotent per principal and found by it", () =>
+void test("create saves a US business in USD, with the US default ledger", () =>
   runtime.runPromise(
     Testing.rolledBack(
       Effect.gen(function* () {
-        const { principal, business, service } = yield* register
+        const usd = yield* addUsDefault
+        const { business } = yield* createBusiness(new Business.Details({ name: "Acme Inc", countryCode: "US" }))
 
-        const again = yield* service.create(principal.id, new Business.Details({ name: "Other" }))
+        assert.equal(business.countryCode, "US")
+        assert.equal(business.currencyCode, "USD")
+        assert.equal(business.primaryLedger.slug, usd)
+        assert.equal(business.primaryLedger.currency, "USD")
+        assert.equal(business.primaryLedger.payableAccountRef, null)
+      }),
+    ),
+  ))
+
+void test("maps each country to its currency", () => {
+  assert.equal(Business.currencyOf("NG"), "NGN")
+  assert.equal(Business.currencyOf("US"), "USD")
+})
+
+void test("create is idempotent per principal and found by it, whatever country is asked for", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const { principal, business, service } = yield* createBusiness()
+
+        const again = yield* service.create(principal.id, new Business.Details({ name: "Other", countryCode: "US" }))
         const found = yield* service.findByPrincipal(principal.id)
 
-        assert.equal(again.id, business.id)
-        assert.equal(again.name, "Acme Ltd")
-        assert.equal(found?.id, business.id)
-        assert.equal(found?.ledger, null)
+        assert.deepEqual(again, business)
+        assert.deepEqual(found, business)
       }),
     ),
   ))
@@ -163,7 +172,7 @@ void test("create for an unknown principal is a defect", () =>
       Effect.gen(function* () {
         const service = yield* Business.Service
 
-        const exit = yield* Effect.exit(service.create(Principal.ID.make(`prn_${ulid()}`), details))
+        const exit = yield* Effect.exit(service.create(Principal.ID.make(`prn_${ulid()}`), nigeria))
 
         assert.ok(dies(exit))
       }),
@@ -180,7 +189,7 @@ void test("concurrent creates for one principal make one business", () =>
       const principal = yield* principals.ensure({ issuer: "business-test", subject: ulid() })
 
       const created = yield* Effect.all(
-        Array.from({ length: 8 }, () => service.create(principal.id, details)),
+        Array.from({ length: 8 }, () => service.create(principal.id, nigeria)),
         { concurrency: "unbounded" },
       )
 
@@ -188,58 +197,129 @@ void test("concurrent creates for one principal make one business", () =>
     }),
   ))
 
-void test("records the default account with its holder; repeating it is a no-op", () =>
+void test("moving a country's default retargets new businesses, not existing ones", () =>
   runtime.runPromise(
     Testing.rolledBack(
       Effect.gen(function* () {
-        const { business, service } = yield* register
+        const before = yield* createBusiness()
+        const moved = Ledger.Slug.make(`ngn_alt_${ulid().toLowerCase()}`)
+
+        yield* Testing.addLedger(moved, "NGN", 2, "NG")
+        yield* Testing.makeCountryDefault(moved)
+
+        const after = yield* createBusiness()
+
+        assert.equal(after.ledger, moved)
+        assert.notEqual(before.ledger, moved)
+        assert.equal((yield* before.service.findByPrincipal(before.principal.id))?.primaryLedger.slug, before.ledger)
+
+        // The existing business still records into its saved ledger.
+        yield* before.service.recordPayableAccount(before.business.id, before.ledger, account("hld_1"))
+
+        assert.equal((yield* before.service.activate(before.business.id)).primaryLedger.slug, before.ledger)
+      }),
+    ),
+  ))
+
+void test("a country without a default ledger is unavailable and creates nothing, with no fallback", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const principals = yield* Principal.Service
+        const service = yield* Business.Service
+
+        const principal = yield* principals.ensure({ issuer: "business-test", subject: ulid() })
+
+        const error = yield* Effect.flip(service.create(principal.id, new Business.Details({ name: "Acme Inc", countryCode: "US" })))
+
+        assert.deepEqual(error, new Business.CountryUnavailableError({ countryCode: "US" }))
+        assert.equal(yield* service.findByPrincipal(principal.id), undefined)
+      }),
+    ),
+  ))
+
+void test("a default ledger in another currency than its country's is a defect and creates nothing", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const principals = yield* Principal.Service
+        const service = yield* Business.Service
+
+        yield* Testing.makeCountryDefault(yield* addLedger("EUR", "US"))
+
+        const principal = yield* principals.ensure({ issuer: "business-test", subject: ulid() })
+
+        assert.ok(dies(yield* Testing.attempt(service.create(principal.id, new Business.Details({ name: "Acme Inc", countryCode: "US" })))))
+        assert.equal(yield* service.findByPrincipal(principal.id), undefined)
+      }),
+    ),
+  ))
+
+void test("records the primary account with its holder; repeating it is a no-op", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const { principal, business, service, ledger } = yield* createBusiness()
         const payable = account("hld_1")
 
-        yield* service.recordPayableAccount(business.id, Ledger.ngn, payable, asDefault)
-        yield* service.recordPayableAccount(business.id, Ledger.ngn, payable, asDefault)
+        yield* service.recordPayableAccount(business.id, ledger, payable)
+        yield* service.recordPayableAccount(business.id, ledger, payable)
 
-        const recorded = yield* reload(business.id)
+        const recorded = yield* service.findByPrincipal(principal.id)
 
         assert.equal(recorded?.holderRef, "hld_1")
+        assert.equal(recorded.status, "created")
         assert.deepEqual(
-          recorded?.ledger,
-          new Business.DefaultLedger({
-            slug: Ledger.ngn,
+          recorded.primaryLedger,
+          new Business.PrimaryLedger({
+            slug: ledger,
             currency: Currency.Code.make("NGN"),
             scale: 2,
             payableAccountRef: payable.accountRef,
           }),
         )
-        assert.equal((yield* accounts(business.id)).length, 1)
       }),
     ),
   ))
 
-void test("a second account for the same ledger conflicts and keeps the first", () =>
+void test("a different account, holder, or ledger conflicts and keeps what was recorded", () =>
   runtime.runPromise(
     Testing.rolledBack(
       Effect.gen(function* () {
-        const { business, service } = yield* register
+        const { business, service, ledger } = yield* createBusiness()
         const first = account("hld_1")
 
-        yield* service.recordPayableAccount(business.id, Ledger.ngn, first, asDefault)
+        yield* service.recordPayableAccount(business.id, ledger, first)
 
-        assert.ok(yield* conflicts(service.recordPayableAccount(business.id, Ledger.ngn, account("hld_1"), asDefault)))
-        assert.equal((yield* reload(business.id))?.ledger?.payableAccountRef, first.accountRef)
+        assert.ok(yield* conflicts(service.recordPayableAccount(business.id, ledger, account("hld_1"))))
+        assert.ok(yield* conflicts(service.recordPayableAccount(business.id, ledger, account("hld_2", first.accountRef))))
+        assert.ok(
+          yield* conflicts(service.recordPayableAccount(business.id, yield* addLedger("NGN"), first)),
+        )
+
+        const row = yield* stored(business.id)
+
+        assert.equal(row?.ledgerHolderRef, "hld_1")
+        assert.equal(row.primaryPayableAccountRef, first.accountRef)
+        assert.equal(row.primaryLedger, ledger)
       }),
     ),
   ))
 
-void test("a different holder conflicts", () =>
+void test("a ledger other than the saved primary conflicts before anything is recorded", () =>
   runtime.runPromise(
     Testing.rolledBack(
       Effect.gen(function* () {
-        const { business, service } = yield* register
+        const { business, service } = yield* createBusiness()
 
-        yield* service.recordPayableAccount(business.id, Ledger.ngn, account("hld_1"), asDefault)
+        assert.ok(
+          yield* conflicts(service.recordPayableAccount(business.id, yield* addLedger("NGN"), account("hld_1"))),
+        )
 
-        assert.ok(yield* conflicts(service.recordPayableAccount(business.id, Ledger.ngn, account("hld_2"), asDefault)))
-        assert.equal(yield* holderRef(business.id), "hld_1")
+        const row = yield* stored(business.id)
+
+        assert.equal(row?.ledgerHolderRef, null)
+        assert.equal(row.primaryPayableAccountRef, null)
       }),
     ),
   ))
@@ -251,7 +331,7 @@ void test("recording for an unknown business fails with NotFoundError", () =>
         const service = yield* Business.Service
 
         const error = yield* Effect.flip(
-          service.recordPayableAccount(Business.ID.make(`biz_${ulid()}`), Ledger.ngn, account("hld_1"), asDefault),
+          service.recordPayableAccount(Business.ID.make(`biz_${ulid()}`), Ledger.Slug.make("ngn_ng"), account("hld_1")),
         )
 
         assert.equal(error._tag, "Business.NotFoundError")
@@ -259,155 +339,71 @@ void test("recording for an unknown business fails with NotFoundError", () =>
     ),
   ))
 
-// Committed, so the record's own transaction is what rolls back.
-void test("records the holder and the account together or not at all", () =>
+// Committed, so another business's account is visible as it would be.
+void test("another business's account conflicts and records nothing", () =>
   runtime.runPromise(
     Effect.gen(function* () {
-      const { business: taken, service } = yield* register
-      const { business } = yield* register
+      const taken = yield* createBusiness()
+      const { business, service, ledger } = yield* createBusiness()
       const shared = account(`hld_${ulid()}`)
 
-      yield* service.recordPayableAccount(taken.id, Ledger.ngn, shared, asDefault)
+      yield* service.recordPayableAccount(taken.business.id, taken.ledger, shared)
 
-      // The account ref already belongs to another business, which is only
-      // found after the holder has been set.
       assert.ok(
-        yield* conflicts(
-          service.recordPayableAccount(business.id, Ledger.ngn, account(`hld_${ulid()}`, shared.accountRef), asDefault),
-        ),
+        yield* conflicts(service.recordPayableAccount(business.id, ledger, account(`hld_${ulid()}`, shared.accountRef))),
       )
-      assert.equal(yield* holderRef(business.id), null)
-      assert.equal((yield* accounts(business.id)).length, 0)
+
+      const row = yield* stored(business.id)
+
+      assert.equal(row?.ledgerHolderRef, null)
+      assert.equal(row.primaryPayableAccountRef, null)
     }),
   ))
 
 // Committed: the business row lock only serialises separate connections.
-void test("concurrent records of the same account make one default membership", () =>
+void test("concurrent records of the same account record it once", () =>
   runtime.runPromise(
     Effect.gen(function* () {
-      const { business, service } = yield* register
+      const { business, service, ledger } = yield* createBusiness()
       const payable = account(`hld_${ulid()}`)
 
       yield* Effect.all(
-        Array.from({ length: 8 }, () =>
-          service.recordPayableAccount(business.id, Ledger.ngn, payable, asDefault),
-        ),
+        Array.from({ length: 8 }, () => service.recordPayableAccount(business.id, ledger, payable)),
         { concurrency: "unbounded" },
       )
 
-      const rows = yield* accounts(business.id)
+      const row = yield* stored(business.id)
 
-      assert.equal(rows.length, 1)
-      assert.equal(rows[0]?.isDefault, true)
-      assert.equal(rows[0]?.payableAccountRef, payable.accountRef)
+      assert.equal(row?.ledgerHolderRef, payable.holderRef)
+      assert.equal(row.primaryPayableAccountRef, payable.accountRef)
     }),
   ))
 
-void test("an additional ledger keeps the default, and is never shown as one", () =>
+void test("activation requires the primary account, and repeating it changes nothing", () =>
   runtime.runPromise(
     Testing.rolledBack(
       Effect.gen(function* () {
-        const { business, service } = yield* register
-
-        yield* addUsd
-
-        // Recorded first, but not asked to be the default.
-        yield* service.recordPayableAccount(business.id, usd, account("hld_1"), additional)
-
-        assert.equal((yield* reload(business.id))?.ledger, null)
-
-        const ngn = account("hld_1")
-
-        yield* service.recordPayableAccount(business.id, Ledger.ngn, ngn, asDefault)
-        yield* service.recordPayableAccount(business.id, Ledger.ngn, ngn, additional)
-
-        assert.ok(yield* conflicts(service.recordPayableAccount(business.id, usd, account("hld_1"), asDefault)))
-
-        const recorded = yield* reload(business.id)
-
-        assert.equal(recorded?.ledger?.slug, Ledger.ngn)
-        assert.equal(recorded?.ledger?.payableAccountRef, ngn.accountRef)
-        assert.equal((yield* accounts(business.id)).filter((row) => row.isDefault).length, 1)
-      }),
-    ),
-  ))
-
-void test("a default must be in the business's currency", () =>
-  runtime.runPromise(
-    Testing.rolledBack(
-      Effect.gen(function* () {
-        const { business, service } = yield* register
-
-        yield* addUsd
-
-        // Behind a savepoint, so the refusal rolls back like it would on its own.
-        assert.ok(
-          yield* conflicts(
-            Effect.flatMap(Testing.attempt(service.recordPayableAccount(business.id, usd, account("hld_1"), asDefault)), (exit) => exit),
-          ),
-        )
-        assert.equal(yield* holderRef(business.id), null)
-        assert.equal((yield* accounts(business.id)).length, 0)
-      }),
-    ),
-  ))
-
-void test("activation requires the holder and a default ledger", () =>
-  runtime.runPromise(
-    Testing.rolledBack(
-      Effect.gen(function* () {
-        const { business, service } = yield* register
-
-        yield* addUsd
+        const { business, service, ledger } = yield* createBusiness()
 
         assert.ok(dies(yield* Effect.exit(service.activate(business.id))))
-
-        // A holder and an account, but not a default one.
-        yield* service.recordPayableAccount(business.id, usd, account("hld_1"), additional)
-
-        assert.ok(dies(yield* Effect.exit(service.activate(business.id))))
-        assert.equal((yield* reload(business.id))?.status, "created")
+        assert.equal((yield* stored(business.id))?.status, "created")
 
         const payable = account("hld_1")
 
-        yield* service.recordPayableAccount(business.id, Ledger.ngn, payable, asDefault)
+        yield* service.recordPayableAccount(business.id, ledger, payable)
 
         const active = yield* service.activate(business.id)
 
         assert.equal(active.status, "active")
         assert.equal(active.holderRef, "hld_1")
         assert.equal(active.currencyCode, "NGN")
-        assert.equal(active.ledger?.slug, Ledger.ngn)
-        assert.equal(active.ledger?.currency, "NGN")
-        assert.equal(active.ledger?.scale, 2)
-        assert.equal(active.ledger?.payableAccountRef, payable.accountRef)
+        assert.equal(active.primaryLedger.slug, ledger)
+        assert.equal(active.primaryLedger.currency, "NGN")
+        assert.equal(active.primaryLedger.scale, 2)
+        assert.equal(active.primaryLedger.payableAccountRef, payable.accountRef)
 
         // Again: unchanged, not even its timestamp.
         assert.deepEqual(yield* service.activate(business.id), active)
-      }),
-    ),
-  ))
-
-void test("activation refuses a default ledger in another currency", () =>
-  runtime.runPromise(
-    Testing.rolledBack(
-      Effect.gen(function* () {
-        const database = yield* Database
-        const { business, service } = yield* register
-
-        yield* addUsd
-
-        // Written directly: recording refuses this, so only a bypass of it
-        // can leave such a default behind.
-        yield* database.use((db) =>
-          db.update(businesses).set({ ledgerHolderRef: "hld_1" }).where(eq(businesses.id, business.id)),
-        )
-        yield* database.use((db) =>
-          db.insert(businessLedgers).values({ businessId: business.id, ledger: usd, isDefault: true, payableAccountRef: `acct_${ulid()}` }),
-        )
-
-        assert.ok(dies(yield* Effect.exit(service.activate(business.id))))
-        assert.equal((yield* reload(business.id))?.status, "created")
       }),
     ),
   ))
@@ -423,57 +419,107 @@ void test("activate fails with NotFoundError for an unknown business", () =>
     ),
   ))
 
-void test("the database rejects account rows that break the model", () =>
+void test("the database rejects business rows that break the model", () =>
   runtime.runPromise(
     Testing.rolledBack(
       Effect.gen(function* () {
         const database = yield* Database
-        const { business, service } = yield* register
-        const { business: other } = yield* register
+        const { business, service, ledger } = yield* createBusiness()
+        const usd = yield* addLedger("USD")
         const ref = `acct_${ulid()}`
 
-        yield* addUsd
-        yield* service.recordPayableAccount(business.id, Ledger.ngn, account("hld_1", ref), asDefault)
+        yield* service.recordPayableAccount(business.id, ledger, account("hld_1", ref))
 
-        const insert = (row: typeof businessLedgers.$inferInsert) =>
-          Testing.attempt(database.use((db) => db.insert(businessLedgers).values(row)))
+        const valid = {
+          id: `biz_${ulid()}`,
+          name: "Direct Ltd",
+          countryCode: "NG",
+          currencyCode: "NGN",
+          primaryLedger: ledger,
+        } satisfies typeof businesses.$inferInsert
 
-        assert.equal(
-          violated(yield* insert({ businessId: business.id, ledger: Ledger.ngn, payableAccountRef: `acct_${ulid()}` })),
-          "business_ledgers_business_id_ledger_pk",
-        )
-        assert.equal(
-          violated(yield* insert({ businessId: other.id, ledger: usd, payableAccountRef: ref })),
-          "business_ledgers_payable_account_ref_unique",
-        )
+        const insert = (row: Partial<typeof businesses.$inferInsert>) =>
+          Testing.attempt(database.use((db) => db.insert(businesses).values({ ...valid, ...row })))
 
-        // Raw SQL, since the row type won't admit a missing ref. 23502 is
-        // not_null_violation.
-        for (const isDefault of [false, true]) {
-          const exit = yield* Testing.attempt(
-            database.use((db) =>
-              db.execute(
-                sql`insert into business_ledgers (business_id, ledger, is_default) values (${other.id}, ${usd}, ${isDefault})`,
-              ),
-            ),
-          )
+        const update = (row: Partial<typeof businesses.$inferInsert>) =>
+          Testing.attempt(database.use((db) => db.update(businesses).set(row).where(eq(businesses.id, business.id))))
 
-          assert.equal(sqlState(exit), "23502")
+        const rejected: ReadonlyArray<readonly [string, Partial<typeof businesses.$inferInsert>, string]> = [
+          ["unlisted country", { countryCode: "GB" }, "businesses_country_code_valid"],
+          ["three-letter country", { countryCode: "USA" }, "businesses_country_code_valid"],
+          ["NG in USD", { currencyCode: "USD", primaryLedger: usd }, "businesses_currency_code_matches_country"],
+          ["US in NGN", { countryCode: "US" }, "businesses_currency_code_matches_country"],
+          ["holder alone", { ledgerHolderRef: "hld_2" }, "businesses_holder_with_account"],
+          ["account alone", { primaryPayableAccountRef: `acct_${ulid()}` }, "businesses_holder_with_account"],
+          ["active without account", { status: "active" }, "businesses_active_has_account"],
+          ["ledger in another currency", { countryCode: "US", currencyCode: "USD" }, "businesses_primary_ledger_fk"],
+          ["unknown ledger", { primaryLedger: "missing" }, "businesses_primary_ledger_fk"],
+          ["another business's account", { ledgerHolderRef: "hld_2", primaryPayableAccountRef: ref }, "businesses_primary_payable_account_ref_unique"],
+        ]
+
+        for (const [reason, row, constraint] of rejected) {
+          assert.equal(violated(yield* insert(row)), constraint, reason)
         }
 
+        // Nor can an existing business be moved out of its currency, or
+        // activated with its account cleared.
+        assert.equal(violated(yield* update({ currencyCode: "USD" })), "businesses_currency_code_matches_country")
         assert.equal(
-          violated(yield* insert({ businessId: business.id, ledger: usd, isDefault: true, payableAccountRef: `acct_${ulid()}` })),
-          "business_ledgers_default_unique",
+          violated(yield* update({ countryCode: "US", currencyCode: "USD" })),
+          "businesses_primary_ledger_fk",
         )
         assert.equal(
-          violated(yield* insert({ businessId: business.id, ledger: "missing", payableAccountRef: `acct_${ulid()}` })),
-          "business_ledgers_ledger_ledgers_slug_fk",
+          violated(yield* update({ status: "active", ledgerHolderRef: null, primaryPayableAccountRef: null })),
+          "businesses_active_has_account",
         )
 
-        // A further ledger with its own account is fine.
+        // Omitting the country defaults it to Nigeria.
+        const { countryCode: _omitted, ...withoutCountry } = valid
+
         assert.ok(
-          Exit.isSuccess(yield* insert({ businessId: business.id, ledger: usd, payableAccountRef: `acct_${ulid()}` })),
+          Exit.isSuccess(yield* Testing.attempt(database.use((db) => db.insert(businesses).values(withoutCountry)))),
         )
+      }),
+    ),
+  ))
+
+void test("the database rejects catalog rows that break the country defaults", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const database = yield* Database
+        const { ledger } = yield* createBusiness()
+
+        const insert = (row: typeof ledgers.$inferInsert) =>
+          Testing.attempt(database.use((db) => db.insert(ledgers).values(row)))
+
+        const slug = () => `ledger_${ulid().toLowerCase()}`
+
+        assert.equal(
+          violated(yield* insert({ slug: slug(), currency: "NGN", scale: 2, countryCode: "NG", isCountryDefault: true })),
+          "ledgers_country_default_unique",
+        )
+        assert.equal(
+          violated(yield* insert({ slug: slug(), currency: "NGN", scale: 2, isCountryDefault: true })),
+          "ledgers_country_default_has_country",
+        )
+        assert.equal(
+          violated(yield* insert({ slug: slug(), currency: "NGN", scale: 2, countryCode: "NGA" })),
+          "ledgers_country_code_valid",
+        )
+
+        // A ledger in use can't change currency under its businesses.
+        assert.equal(
+          violated(
+            yield* Testing.attempt(
+              database.use((db) => db.update(ledgers).set({ currency: "USD" }).where(eq(ledgers.slug, ledger))),
+            ),
+          ),
+          "businesses_currency_code_matches_country",
+        )
+
+        // A non-default ledger in a country with one is fine.
+        assert.ok(Exit.isSuccess(yield* insert({ slug: slug(), currency: "NGN", scale: 2, countryCode: "NG" })))
       }),
     ),
   ))

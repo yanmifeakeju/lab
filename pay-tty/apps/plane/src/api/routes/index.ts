@@ -7,13 +7,13 @@ import { health } from "./health.ts"
 import { me } from "./me.ts"
 import { session } from "./session.ts"
 
-export const api = HttpApi.make("control-plane")
+export const api = HttpApi.make("plane")
   .add(health)
   .add(session)
   .add(me)
   .add(business)
   .middleware(SchemaErrorMiddleware)
-  .annotate(OpenApi.Title, "Control plane")
+  .annotate(OpenApi.Title, "Plane")
   // Report every failing field rather than the first, like the ledger API.
   // Unknown fields are dropped, not rejected: these options also apply when
   // encoding responses, where "error" would reject the error class's own

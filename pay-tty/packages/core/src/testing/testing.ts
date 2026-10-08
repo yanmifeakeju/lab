@@ -1,7 +1,6 @@
-import { eq, sql } from "drizzle-orm"
+import { and, eq, sql } from "drizzle-orm"
 import { Data, Effect, Exit } from "effect"
 
-import { businesses } from "../business/sql.ts"
 import { Database } from "../database/client.ts"
 import { ledgers } from "../ledger/sql.ts"
 
@@ -44,20 +43,56 @@ export const attempt = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   })
 
 /** Adds a catalog ledger, as the seed script does. */
-export const addLedger = (slug: string, currency: string, scale: number) =>
+export const addLedger = (
+  slug: string,
+  currency: string,
+  scale: number,
+  countryCode: string | null = null,
+) =>
   Effect.gen(function* () {
     const database = yield* Database
 
-    yield* database.use((db) => db.insert(ledgers).values({ slug, currency, scale }))
+    yield* database.use((db) => db.insert(ledgers).values({ slug, currency, scale, countryCode }))
   })
 
-/** Overwrites a business's stored currency, which no API ever changes. */
-export const setCurrency = (businessId: string, currencyCode: string) =>
+/** Makes the ledger its country's default for new businesses, in place of any other. */
+export const makeCountryDefault = (slug: string) =>
+  Effect.gen(function* () {
+    const database = yield* Database
+
+    yield* database.transaction(
+      Effect.gen(function* () {
+        const rows = yield* database.use((db) =>
+          db.select({ countryCode: ledgers.countryCode }).from(ledgers).where(eq(ledgers.slug, slug)),
+        )
+
+        const countryCode = rows[0]?.countryCode
+
+        if (countryCode === undefined || countryCode === null) {
+          return yield* Effect.die(new Error(`ledger ${slug} has no country`))
+        }
+
+        yield* database.use((db) =>
+          db
+            .update(ledgers)
+            .set({ isCountryDefault: false })
+            .where(and(eq(ledgers.countryCode, countryCode), eq(ledgers.isCountryDefault, true))),
+        )
+        yield* database.use((db) => db.update(ledgers).set({ isCountryDefault: true }).where(eq(ledgers.slug, slug)))
+      }),
+    )
+  })
+
+/** Leaves the country with no default ledger, so new businesses there fail. */
+export const clearCountryDefault = (countryCode: string) =>
   Effect.gen(function* () {
     const database = yield* Database
 
     yield* database.use((db) =>
-      db.update(businesses).set({ currencyCode }).where(eq(businesses.id, businessId)),
+      db
+        .update(ledgers)
+        .set({ isCountryDefault: false })
+        .where(and(eq(ledgers.countryCode, countryCode), eq(ledgers.isCountryDefault, true))),
     )
   })
 
