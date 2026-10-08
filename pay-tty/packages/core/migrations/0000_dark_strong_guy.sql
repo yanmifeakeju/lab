@@ -17,6 +17,7 @@ CREATE TABLE "businesses" (
 	"status" "business_status" DEFAULT 'created' NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "businesses_name_trimmed" CHECK ("businesses"."name" !~ '^[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]|[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]$'),
 	CONSTRAINT "businesses_country_code_valid" CHECK ("businesses"."country_code" in ('NG', 'US')),
 	CONSTRAINT "businesses_currency_code_matches_country" CHECK (("businesses"."country_code", "businesses"."currency_code") in (('NG', 'NGN'), ('US', 'USD'))),
 	CONSTRAINT "businesses_holder_with_account" CHECK (("businesses"."ledger_holder_ref" is null) = ("businesses"."primary_payable_account_ref" is null)),

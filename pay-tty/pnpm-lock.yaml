@@ -39,43 +39,6 @@ importers:
         specifier: 7.0.2
         version: 7.0.2
 
-  apps/app:
-    dependencies:
-      '@pay-tty/ledger-client':
-        specifier: workspace:*
-        version: link:../../packages/ledger-client
-      effect:
-        specifier: 4.0.0-rc.117
-        version: 4.0.0-rc.117
-
-  apps/control-plane:
-    dependencies:
-      '@effect/platform-node':
-        specifier: 4.0.0-rc.117
-        version: 4.0.0-rc.117(effect@4.0.0-rc.117)(redis@6.2.1)
-      '@pay-tty/ledger-client':
-        specifier: workspace:*
-        version: link:../../packages/ledger-client
-      drizzle-orm:
-        specifier: ^0.45.3
-        version: 0.45.3(@types/pg@8.23.1)(pg@8.23.0)
-      effect:
-        specifier: 4.0.0-rc.117
-        version: 4.0.0-rc.117
-      pg:
-        specifier: ^8.23.0
-        version: 8.23.0
-      ulid:
-        specifier: ^3.0.2
-        version: 3.0.2
-    devDependencies:
-      '@types/pg':
-        specifier: ^8.23.1
-        version: 8.23.1
-      drizzle-kit:
-        specifier: ^0.31.11
-        version: 0.31.11
-
   apps/plane:
     dependencies:
       '@effect/platform-node':

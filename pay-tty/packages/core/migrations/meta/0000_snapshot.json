@@ -1,5 +1,5 @@
 {
-  "id": "cfd6abfb-f076-4e7d-b82b-a7433679fb10",
+  "id": "aaa9deea-8bc3-444f-ac9c-ab8b83a68d2b",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -187,6 +187,10 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
+        "businesses_name_trimmed": {
+          "name": "businesses_name_trimmed",
+          "value": "\"businesses\".\"name\" !~ '^[\\t\\n\\v\\f\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]|[\\t\\n\\v\\f\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]$'"
+        },
         "businesses_country_code_valid": {
           "name": "businesses_country_code_valid",
           "value": "\"businesses\".\"country_code\" in ('NG', 'US')"

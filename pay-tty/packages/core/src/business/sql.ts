@@ -23,6 +23,10 @@ export const currencies = { NG: "NGN", US: "USD" } as const
 
 export const countries = ["NG", "US"] as const satisfies ReadonlyArray<keyof typeof currencies>
 
+// Exactly what JavaScript's String.prototype.trim() removes, so a name core
+// accepts is one the database accepts. Postgres's own \s differs by locale.
+const space = String.raw`[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]`
+
 export const businesses = pgTable(
   "businesses",
   {
@@ -43,6 +47,7 @@ export const businesses = pgTable(
     ...timestamps,
   },
   (table) => [
+    check("businesses_name_trimmed", sql`${table.name} !~ ${sql.raw(`'^${space}|${space}$'`)}`),
     check("businesses_country_code_valid", sql`${table.countryCode} in ('NG', 'US')`),
     check(
       "businesses_currency_code_matches_country",

@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 
 import { eq } from "drizzle-orm"
-import { Cause, Effect, Exit, Predicate } from "effect"
+import { Cause, Effect, Exit, Predicate, Schema } from "effect"
 import { ulid } from "ulid"
 
 import { Business } from "../src/business/business.ts"
@@ -137,17 +137,37 @@ void test("maps each country to its currency", () => {
   assert.equal(Business.currencyOf("US"), "USD")
 })
 
-void test("create is idempotent per principal and found by it, whatever country is asked for", () =>
+void test("an identical create is idempotent per principal and found by it", () =>
   runtime.runPromise(
     Testing.rolledBack(
       Effect.gen(function* () {
         const { principal, business, service } = yield* createBusiness()
 
-        const again = yield* service.create(principal.id, new Business.Details({ name: "Other", countryCode: "US" }))
+        const again = yield* service.create(principal.id, nigeria)
         const found = yield* service.findByPrincipal(principal.id)
 
         assert.deepEqual(again, business)
         assert.deepEqual(found, business)
+      }),
+    ),
+  ))
+
+void test("a repeat create with another name or country conflicts and changes nothing", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const { principal, business, service } = yield* createBusiness()
+
+        // US has no default ledger here; the conflict is found first.
+        for (const details of [
+          new Business.Details({ name: "Other Ltd", countryCode: "NG" }),
+          new Business.Details({ name: "Acme Ltd", countryCode: "US" }),
+          new Business.Details({ name: "acme ltd", countryCode: "NG" }),
+        ]) {
+          assert.ok(yield* conflicts(service.create(principal.id, details)), `${details.name}/${details.countryCode}`)
+        }
+
+        assert.deepEqual(yield* service.findByPrincipal(principal.id), business)
       }),
     ),
   ))
@@ -479,6 +499,46 @@ void test("the database rejects business rows that break the model", () =>
         assert.ok(
           Exit.isSuccess(yield* Testing.attempt(database.use((db) => db.insert(businesses).values(withoutCountry)))),
         )
+      }),
+    ),
+  ))
+
+void test("a business name must be trimmed, by the same rule in core and the database", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const database = yield* Database
+        const { ledger } = yield* createBusiness()
+
+        // What JavaScript trims, and some it doesn't: NEL, zero-width space,
+        // and the Mongolian vowel separator, which Unicode no longer counts.
+        const candidates = [
+          "\t", "\n", "\v", "\f", "\r", " ", "\u00a0", "\u1680", "\u2000", "\u2007", "\u200a",
+          "\u2028", "\u2029", "\u202f", "\u205f", "\u3000", "\ufeff", "\u0085", "\u200b", "\u180e",
+        ]
+
+        for (const character of candidates) {
+          const code = `U+${character.codePointAt(0)?.toString(16).padStart(4, "0")}`
+          const trims = (character + "x").trim() !== character + "x"
+
+          assert.equal(Schema.is(Business.Details.fields.name)(`${character}Acme`), !trims, code)
+
+          for (const [where, name] of [["leading", `${character}Acme`], ["trailing", `Acme${character}`]] as const) {
+            const exit = yield* Testing.attempt(
+              database.use((db) =>
+                db.insert(businesses).values({
+                  id: `biz_${ulid()}`,
+                  name,
+                  countryCode: "NG",
+                  currencyCode: "NGN",
+                  primaryLedger: ledger,
+                }),
+              ),
+            )
+
+            assert.equal(violated(exit), trims ? "businesses_name_trimmed" : undefined, `${where} ${code}`)
+          }
+        }
       }),
     ),
   ))

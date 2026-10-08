@@ -30,7 +30,8 @@ export type Country = typeof Country.Type
 export const currencyOf = (country: Country) => Currency.Code.make(currencies[country])
 
 export class Details extends Schema.Class<Details>("Business.Details")({
-  name: Schema.NonEmptyString,
+  // Trimmed by the caller: a repeat is compared with the stored name as is.
+  name: Schema.NonEmptyString.check(Schema.isTrimmed()),
   countryCode: Country,
 }) {}
 
@@ -81,14 +82,15 @@ export class ConflictError extends Schema.TaggedError<ConflictError>()(
 export interface Interface {
   readonly findByPrincipal: (principalId: Principal.ID) => Effect.Effect<Info | undefined>
   /**
-   * Idempotent per principal: a repeat returns the business already created,
-   * whatever country it asks for. Fails if the country has no default ledger,
-   * and dies if that ledger isn't in the country's currency.
+   * Idempotent per principal: an identical repeat returns the business
+   * already created, and one with another name or country conflicts. Fails if
+   * the country has no default ledger, and dies if that ledger isn't in the
+   * country's currency.
    */
   readonly create: (
     principalId: Principal.ID,
     details: Details,
-  ) => Effect.Effect<Info, CountryUnavailableError>
+  ) => Effect.Effect<Info, CountryUnavailableError | ConflictError>
   /**
    * Records the account the ledger created in the business's primary ledger,
    * with its holder. Repeating it is a no-op; a different ledger, holder, or
@@ -193,15 +195,23 @@ const make = Effect.gen(function* () {
 
         const links = yield* database.use((db) =>
           db
-            .select({ businessId: businessPrincipals.businessId })
+            .select({ id: businesses.id, name: businesses.name, countryCode: businesses.countryCode })
             .from(businessPrincipals)
+            .innerJoin(businesses, eq(businesses.id, businessPrincipals.businessId))
             .where(eq(businessPrincipals.principalId, principalId)),
         )
 
         const existing = links[0]
 
         if (existing !== undefined) {
-          return existing.businessId
+          if (existing.name !== details.name || existing.countryCode !== details.countryCode) {
+            return yield* new ConflictError({
+              id: ID.make(existing.id),
+              message: `exists as ${existing.name}/${existing.countryCode}, asked for ${details.name}/${details.countryCode}`,
+            })
+          }
+
+          return existing.id
         }
 
         const currencyCode = currencyOf(details.countryCode)

@@ -32,7 +32,7 @@ export const BusinessLive = HttpApiBuilder.group(
     handlers
       // Records the business in its country's default ledger and links it to
       // the caller, nothing more. A principal that already has one gets it back
-      // unchanged.
+      // unchanged for the same name and country, and a conflict otherwise.
       .handle("createBusiness", ({ payload }) =>
         Effect.gen(function* () {
           const businesses = yield* Business.Service;
@@ -47,16 +47,22 @@ export const BusinessLive = HttpApiBuilder.group(
               }),
             )
             .pipe(
-              Effect.catchTag("Business.CountryUnavailableError", (error) =>
-                Effect.logWarning("business not created", error).pipe(
-                  Effect.andThen(
-                    new ServiceUnavailable({
-                      message:
-                        "Businesses can't be created in this country yet.",
-                      error: { code: "country_unavailable" },
-                    }),
-                  ),
-                )),
+              Effect.tapError((error) =>
+                Effect.logWarning("business not created", error)
+              ),
+              Effect.catchTags({
+                "Business.CountryUnavailableError": () =>
+                  new ServiceUnavailable({
+                    message: "Businesses can't be created in this country yet.",
+                    error: { code: "country_unavailable" },
+                  }),
+                "Business.ConflictError": () =>
+                  new Conflict({
+                    message:
+                      "This account already has a business with a different name or country.",
+                    error: { code: "conflict" },
+                  }),
+              }),
             );
 
           return businessInfo(business);

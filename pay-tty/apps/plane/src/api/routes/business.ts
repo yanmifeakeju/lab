@@ -1,5 +1,5 @@
 import { Business } from "@pay-tty/core/business"
-import { Effect, Schema } from "effect"
+import { Effect, Schema, SchemaTransformation } from "effect"
 import * as HttpApiEndpoint from "effect/unstable/httpapi/HttpApiEndpoint"
 import * as HttpApiGroup from "effect/unstable/httpapi/HttpApiGroup"
 
@@ -52,12 +52,20 @@ export const businessInfo = (business: Business.Info) =>
   })
 
 export class CreateBusinessRequest extends Schema.Class<CreateBusinessRequest>("CreateBusinessRequest")({
+  // Trimmed before the length checks, so surrounding whitespace neither counts
+  // toward the limit nor reaches the ledger as part of the holder's name.
   name: Schema.String.check(
-    Schema.isMinLength(1).annotate({ expected: "a value with a length of at least 1" }),
-    Schema.isMaxLength(255).annotate({ expected: "a value with a length of at most 255" }),
     Schema.isPattern(new RegExp(".*\\S.*")).annotate({
       expected: "a string containing non-whitespace",
     }),
+  ).pipe(
+    Schema.decodeTo(
+      Schema.Trimmed.check(
+        Schema.isMinLength(1).annotate({ expected: "a value with a length of at least 1" }),
+        Schema.isMaxLength(255).annotate({ expected: "a value with a length of at most 255" }),
+      ),
+      SchemaTransformation.trim(),
+    ),
   ),
   // Only an absent key defaults; null or an unlisted code is refused.
   country_code: Business.Country.annotate({ default: "NG" }).pipe(Schema.withDecodingDefaultKey(Effect.succeed("NG"))),
@@ -68,7 +76,7 @@ export const business = HttpApiGroup.make("business")
     HttpApiEndpoint.post("createBusiness", "/business", {
       payload: CreateBusinessRequest,
       success: BusinessInfo,
-      error: ServiceUnavailable,
+      error: [Conflict, ServiceUnavailable],
     }),
   )
   .add(

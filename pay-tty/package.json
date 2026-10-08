@@ -8,8 +8,8 @@
     "node": ">=24"
   },
   "scripts": {
-    "dev": "turbo run dev --filter=@pay-tty/app",
-    "start": "turbo run start --filter=@pay-tty/app",
+    "dev": "turbo run dev --filter=@pay-tty/plane",
+    "start": "turbo run start --filter=@pay-tty/plane",
     "generate:client": "pnpm --filter @pay-tty/ledger-client generate",
     "generate:client:check": "pnpm --filter @pay-tty/ledger-client generate:check",
     "test": "pnpm test:anti-slop && turbo run test",

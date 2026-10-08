@@ -366,7 +366,12 @@ void test("POST /business without a country records a created Nigerian NGN busin
     }),
   ))
 
-void test("repeating POST /business returns the business unchanged, whatever name is sent", () =>
+const renamed = {
+  status: 409,
+  json: { message: "This account already has a business with a different name or country.", error: { code: "conflict" } },
+}
+
+void test("repeating POST /business returns the business unchanged; another name or country conflicts", () =>
   run(
     Effect.gen(function* () {
       const plane = yield* server()
@@ -374,16 +379,26 @@ void test("repeating POST /business returns the business unchanged, whatever nam
       const { authorization } = yield* exchange(plane, sub)
 
       const first = yield* created(plane, authorization)
-      const again = yield* created(plane, authorization, { body: { name: "Renamed Ltd" } })
 
-      assert.equal(again.status, 200)
-      assert.deepEqual(again.json, first.json)
+      // Omitting the country and sending NG are the same request.
+      for (const body of [{ name: "Acme Ltd" }, { name: "Acme Ltd", country_code: "NG" }]) {
+        const again = yield* created(plane, authorization, { body })
 
-      const { business } = yield* stored(sub)
+        assert.equal(again.status, 200)
+        assert.deepEqual(again.json, first.json)
+      }
 
-      assert.ok(business !== undefined)
-      assert.equal(business.name, "Acme Ltd")
-      assert.equal(business.status, "created")
+      const changed = {
+        "another name": { name: "Renamed Ltd" },
+        "another country": { name: "Acme Ltd", country_code: "US" },
+        "another case": { name: "acme ltd" },
+      }
+
+      for (const [reason, body] of Object.entries(changed)) {
+        assert.deepEqual(yield* createBusiness(plane, authorization, { body }), renamed, reason)
+      }
+
+      assert.deepEqual((yield* me(plane, authorization)).body.business, first.body)
     }),
   ))
 
@@ -411,10 +426,11 @@ void test("POST /business saves an explicit country with its currency and defaul
         assert.equal(business.primaryLedger.payableAccountRef, null)
         assert.deepEqual((yield* me(plane, authorization)).body.business, response.body)
 
-        // Nor does a repeat asking for the other country change it.
-        const again = yield* created(plane, authorization, { body: { name: "Acme", country_code: country === "US" ? "NG" : "US" } })
-
-        assert.deepEqual(again.json, response.json)
+        // A repeat asking for the other country conflicts.
+        assert.deepEqual(
+          yield* createBusiness(plane, authorization, { body: { name: "Acme", country_code: country === "US" ? "NG" : "US" } }),
+          renamed,
+        )
       })
 
       yield* check("NG", "NGN", "ngn_ng")
@@ -474,7 +490,7 @@ void test("POST /business returns an existing active business without touching i
       yield* businesses.recordPayableAccount(active.id, active.primaryLedger.slug, account)
 
       const before = yield* businesses.activate(active.id)
-      const response = yield* created(plane, authorization, { body: { name: "Other Ltd" } })
+      const response = yield* created(plane, authorization, { body: { name: "Active Ltd" } })
 
       assert.equal(response.body.id, active.id)
       assert.equal(response.body.name, "Active Ltd")
@@ -493,16 +509,35 @@ void test("concurrent POST /business for one principal settles on one business",
   run(
     Effect.gen(function* () {
       const plane = yield* server()
-      const { authorization } = yield* exchange(plane, fingerprint())
+      const same = yield* exchange(plane, fingerprint())
 
       const responses = yield* Effect.all(
-        Array.from({ length: 8 }, (_, index) => created(plane, authorization, { body: { name: `Acme ${index}` } })),
+        Array.from({ length: 8 }, () => created(plane, same.authorization)),
         { concurrency: "unbounded" },
       )
 
       assert.equal(new Set(responses.map(({ body }) => body.id)).size, 1)
-      assert.equal(new Set(responses.map(({ body }) => body.name)).size, 1)
-      assert.equal((yield* me(plane, authorization)).body.business?.id, responses[0]?.body.id)
+      assert.equal((yield* me(plane, same.authorization)).body.business?.id, responses[0]?.body.id)
+
+      // Differing names: one wins, and the rest learn theirs wasn't created.
+      const differing = yield* exchange(plane, fingerprint())
+
+      const races = yield* Effect.all(
+        Array.from({ length: 8 }, (_, index) => createBusiness(plane, differing.authorization, { body: { name: `Acme ${index}` } })),
+        { concurrency: "unbounded" },
+      )
+
+      const winners = races.filter(({ status }) => status === 200)
+
+      assert.equal(winners.length, 1)
+
+      for (const race of races.filter(({ status }) => status !== 200)) {
+        assert.deepEqual(race, renamed)
+      }
+
+      const winner = yield* Schema.decodeUnknownEffect(BusinessInfo)(winners[0]?.json)
+
+      assert.deepEqual((yield* me(plane, differing.authorization)).body.business, winner)
     }),
   ))
 
@@ -564,6 +599,27 @@ void test("POST /business rejects an invalid name with a 400 and creates nothing
 
       // The bound itself is accepted.
       assert.equal((yield* created(plane, authorization, { body: { name: "a".repeat(255) } })).body.name.length, 255)
+    }),
+  ))
+
+void test("POST /business trims the name, so a repeat differing only in surrounding whitespace is the same request", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const sub = fingerprint()
+      const { authorization } = yield* exchange(plane, sub)
+
+      const first = yield* created(plane, authorization, { body: { name: " \tAcme Ltd\u3000\n" } })
+
+      assert.equal(first.body.name, "Acme Ltd")
+      assert.equal((yield* stored(sub)).business?.name, "Acme Ltd")
+      assert.deepEqual((yield* created(plane, authorization, { body: { name: "Acme Ltd " } })).json, first.json)
+
+      // Surrounding whitespace doesn't count toward the limit.
+      const other = yield* exchange(plane, fingerprint())
+      const padded = yield* created(plane, other.authorization, { body: { name: `  ${"a".repeat(255)}  ` } })
+
+      assert.equal(padded.body.name.length, 255)
     }),
   ))
 
@@ -669,7 +725,8 @@ void test("with a US default configured, a US business opens its account there, 
 
       // Repeating either step changes nothing.
       assert.deepEqual((yield* opened(plane, authorization, id)).json, response.json)
-      assert.deepEqual((yield* created(plane, authorization, { body: { name: "Other", country_code: "NG" } })).json, response.json)
+      assert.deepEqual((yield* created(plane, authorization, { body: { name: "Acme Inc", country_code: "US" } })).json, response.json)
+      assert.deepEqual(yield* createBusiness(plane, authorization, { body: { name: "Acme Inc", country_code: "NG" } }), renamed)
       assert.equal(plane.ledger.requests.length, 1)
     })),
   ))
