@@ -3,7 +3,7 @@ import { test } from "node:test"
 
 import { Effect, SubscriptionRef } from "effect"
 
-import { Session, State } from "../src/session.ts"
+import { Operation, type Popup, Session, type State, View } from "../src/session.ts"
 import { active, business, failure, fakePlane, inTurn, me, type Reply, scenario, sessions, unauthorized } from "./support.ts"
 
 // The session over the fake; its methods keep the client they were made
@@ -16,6 +16,12 @@ const current = (session: Session.Interface) => SubscriptionRef.get(session.stat
 const loadThen = <A>(next: (session: Session.Interface) => Effect.Effect<A>) => (session: Session.Interface) =>
   Effect.andThen(session.load, Effect.andThen(next(session), current(session)))
 
+const idle = (view: View, popup: Popup | null = null): State => ({ view, pending: false, popup })
+
+const loadFailed = idle(View.Unknown(), { message: "Couldn't load your account.", retry: Operation.Load(), close: null })
+
+const paths = (plane: ReturnType<typeof fakePlane>) => plane.calls.map(({ method, path }) => `${method} ${path}`)
+
 void test(
   "a key with no business exchanges its fingerprint, loads /me, and shows the form",
   scenario(
@@ -24,7 +30,7 @@ void test(
 
       const state = yield* run(plane, loadThen(() => Effect.void))
 
-      assert.deepEqual(state, State.NoBusiness({ pending: false, error: null }))
+      assert.deepEqual(state, idle(View.NoBusiness()))
       assert.deepEqual(
         plane.calls.map(({ method, path, authorization, body }) => [method, path, authorization, body]),
         [
@@ -42,30 +48,39 @@ void test(
     Effect.gen(function* () {
       const state = yield* run(fakePlane({ me: me(active) }), loadThen(() => Effect.void))
 
-      assert.deepEqual(state, State.HasBusiness({ business: active, pending: false, error: null }))
+      assert.deepEqual(state, idle(View.HasBusiness({ business: active })))
     }),
   ),
 )
 
 void test(
-  "a failed load is an error, never the form, and loading again recovers",
+  "a failed load leaves the business unknown with Retry alone, and Retry recovers",
   scenario(
     Effect.gen(function* () {
       const plane = fakePlane({ me: inTurn("unreachable", { status: 500, body: {} }, me(null)()) })
 
       yield* run(plane, (session) =>
         Effect.gen(function* () {
-          for (const reason of ["unreachable", "500"]) {
-            yield* session.load
-
-            assert.ok(State.$is("LoadFailed")(yield* current(session)), reason)
-          }
-
           yield* session.load
 
-          assert.ok(State.$is("NoBusiness")(yield* current(session)))
+          assert.deepEqual(yield* current(session), loadFailed, "unreachable")
+
+          // Nothing to close to.
+          yield* session.close
+
+          assert.deepEqual(yield* current(session), loadFailed)
+
+          yield* session.retry
+
+          assert.deepEqual(yield* current(session), loadFailed, "500")
+
+          yield* session.retry
+
+          assert.deepEqual(yield* current(session), idle(View.NoBusiness()))
         }),
       )
+
+      assert.deepEqual(paths(plane), ["POST /session", "GET /me", "GET /me", "GET /me"])
     }),
   ),
 )
@@ -76,8 +91,8 @@ void test(
     Effect.gen(function* () {
       const plane = fakePlane({ session: () => failure(403, "forbidden") })
 
-      assert.ok(State.$is("LoadFailed")(yield* run(plane, loadThen(() => Effect.void))))
-      assert.deepEqual(plane.calls.map(({ path }) => path), ["/session"])
+      assert.deepEqual(yield* run(plane, loadThen(() => Effect.void)), loadFailed)
+      assert.deepEqual(paths(plane), ["POST /session"])
     }),
   ),
 )
@@ -86,9 +101,9 @@ void test(
   "a token is reused until it nears expiry, then exchanged again",
   scenario(
     Effect.gen(function* () {
-      const lasting = fakePlane({ me: me(null) })
+      const lasting = fakePlane({ me: inTurn("unreachable", me(null)()) })
 
-      yield* run(lasting, (session) => Effect.andThen(session.load, session.load))
+      yield* run(lasting, (session) => Effect.andThen(session.load, session.retry))
 
       assert.deepEqual(lasting.calls.map(({ path, authorization }) => [path, authorization]), [
         ["/session", null],
@@ -97,9 +112,9 @@ void test(
       ])
 
       // Inside the renewal margin from the start, so every request renews.
-      const expiring = fakePlane({ session: sessions(30), me: me(null) })
+      const expiring = fakePlane({ session: sessions(30), me: inTurn("unreachable", me(null)()) })
 
-      yield* run(expiring, (session) => Effect.andThen(session.load, session.load))
+      yield* run(expiring, (session) => Effect.andThen(session.load, session.retry))
 
       assert.deepEqual(expiring.calls.map(({ path, authorization }) => [path, authorization]), [
         ["/session", null],
@@ -119,7 +134,7 @@ void test(
         me: (call) => (call.authorization === "Bearer tok_1" ? unauthorized : me(null)()),
       })
 
-      assert.ok(State.$is("NoBusiness")(yield* run(recovering, loadThen(() => Effect.void))))
+      assert.deepEqual(yield* run(recovering, loadThen(() => Effect.void)), idle(View.NoBusiness()))
       assert.deepEqual(recovering.calls.map(({ path, authorization }) => [path, authorization]), [
         ["/session", null],
         ["/me", "Bearer tok_1"],
@@ -129,7 +144,7 @@ void test(
 
       const refused = fakePlane({ me: () => unauthorized })
 
-      assert.ok(State.$is("LoadFailed")(yield* run(refused, loadThen(() => Effect.void))))
+      assert.deepEqual(yield* run(refused, loadThen(() => Effect.void)), loadFailed)
       assert.equal(refused.calls.length, 4)
     }),
   ),
@@ -143,28 +158,41 @@ void test(
 
       const state = yield* run(plane, loadThen((session) => session.createBusiness("  Acme Ltd \t")))
 
-      assert.deepEqual(state, State.HasBusiness({ business: business(), pending: false, error: null }))
+      assert.deepEqual(state, idle(View.HasBusiness({ business: business() })))
       assert.deepEqual(plane.calls.at(-1)?.body, { name: "Acme Ltd", country_code: "NG" })
     }),
   ),
 )
 
 void test(
-  "a blank name is refused without asking plane",
+  "a blank name is refused without asking plane, and Close just dismisses it",
   scenario(
     Effect.gen(function* () {
       const plane = fakePlane({ me: me(null) })
 
-      const state = yield* run(plane, loadThen((session) => session.createBusiness(" \t ")))
+      yield* run(plane, (session) =>
+        Effect.gen(function* () {
+          yield* session.load
+          yield* session.createBusiness(" \t ")
 
-      assert.deepEqual(state, State.NoBusiness({ pending: false, error: "Enter a business name." }))
-      assert.equal(plane.calls.some(({ path }) => path === "/business"), false)
+          assert.deepEqual(
+            yield* current(session),
+            idle(View.NoBusiness(), { message: "Enter a business name.", retry: null, close: "dismiss" }),
+          )
+
+          yield* session.close
+
+          assert.deepEqual(yield* current(session), idle(View.NoBusiness()))
+        }),
+      )
+
+      assert.deepEqual(paths(plane), ["POST /session", "GET /me"])
     }),
   ),
 )
 
 void test(
-  "plane's refusals keep the form with a message; a conflict shows the business that won",
+  "plane's refusals of a create are Close-only; anything else offers Retry",
   scenario(
     Effect.gen(function* () {
       const tooLong: Reply = {
@@ -178,48 +206,126 @@ void test(
         },
       }
 
-      const cases: ReadonlyArray<readonly [Reply, string]> = [
-        [tooLong, "Enter a business name of at most 255 characters."],
-        [failure(503, "country_unavailable"), "Businesses can't be created in this country yet."],
-        [{ status: 500, body: {} }, "Couldn't create the business. Try again."],
-        ["unreachable", "Couldn't create the business. Try again."],
+      const retryable: Popup = {
+        message: "Couldn't create the business.",
+        retry: Operation.CreateBusiness({ name: "Acme Ltd" }),
+        close: "refresh",
+      }
+
+      const cases: ReadonlyArray<readonly [Reply, Popup]> = [
+        [tooLong, { message: "Enter a business name of at most 255 characters.", retry: null, close: "dismiss" }],
+        [failure(409, "conflict"), { message: "This key already has a business.", retry: null, close: "refresh" }],
+        [
+          failure(503, "country_unavailable"),
+          { message: "Businesses can't be created in this country yet.", retry: null, close: "refresh" },
+        ],
+        [{ status: 500, body: {} }, retryable],
+        ["unreachable", retryable],
       ]
 
-      for (const [reply, error] of cases) {
+      for (const [reply, popup] of cases) {
         const plane = fakePlane({ me: me(null), createBusiness: () => reply })
 
         const state = yield* run(plane, loadThen((session) => session.createBusiness("Acme Ltd")))
 
-        assert.deepEqual(state, State.NoBusiness({ pending: false, error }), error)
+        assert.deepEqual(state, idle(View.NoBusiness(), popup), popup.message)
       }
-
-      // Another connection for this key created one first.
-      const raced = fakePlane({ me: inTurn(me(null)(), me(active)()), createBusiness: () => failure(409, "conflict") })
-
-      const state = yield* run(raced, loadThen((session) => session.createBusiness("Acme Ltd")))
-
-      assert.deepEqual(state, State.HasBusiness({ business: active, pending: false, error: null }))
     }),
   ),
 )
 
 void test(
-  "a submit while one is in flight sends nothing",
+  "Close after a create conflict reloads /me once and shows the business that won",
   scenario(
     Effect.gen(function* () {
-      const plane = fakePlane({ me: me(null), createBusiness: () => ({ status: 200, body: business() }) })
+      const plane = fakePlane({ me: inTurn(me(null)(), me(active)()), createBusiness: () => failure(409, "conflict") })
 
-      yield* run(
+      const state = yield* run(plane, loadThen((session) => Effect.andThen(session.createBusiness("Acme Ltd"), session.close)))
+
+      assert.deepEqual(state, idle(View.HasBusiness({ business: active })))
+      assert.deepEqual(paths(plane), ["POST /session", "GET /me", "POST /business", "GET /me"])
+    }),
+  ),
+)
+
+void test(
+  "Close after a lost create answer finds the business that was made",
+  scenario(
+    Effect.gen(function* () {
+      const plane = fakePlane({ me: inTurn(me(null)(), me(business())()), createBusiness: () => "unreachable" })
+
+      const state = yield* run(plane, loadThen((session) => Effect.andThen(session.createBusiness("Acme Ltd"), session.close)))
+
+      assert.deepEqual(state, idle(View.HasBusiness({ business: business() })))
+      assert.deepEqual(paths(plane), ["POST /session", "GET /me", "POST /business", "GET /me"])
+    }),
+  ),
+)
+
+void test(
+  "Close with still no business shows the form again",
+  scenario(
+    Effect.gen(function* () {
+      const plane = fakePlane({ me: me(null), createBusiness: () => failure(503, "country_unavailable") })
+
+      const state = yield* run(plane, loadThen((session) => Effect.andThen(session.createBusiness("Acme Ltd"), session.close)))
+
+      assert.deepEqual(state, idle(View.NoBusiness()))
+    }),
+  ),
+)
+
+void test(
+  "Retry repeats the create with the name that was submitted",
+  scenario(
+    Effect.gen(function* () {
+      const plane = fakePlane({
+        me: me(null),
+        createBusiness: inTurn("unreachable", { status: 200, body: business() }),
+      })
+
+      const state = yield* run(
         plane,
-        loadThen((session) =>
-          Effect.andThen(
-            SubscriptionRef.set(session.state, State.NoBusiness({ pending: true, error: null })),
-            session.createBusiness("Acme Ltd"),
-          ),
-        ),
+        loadThen((session) => Effect.andThen(session.createBusiness(" Acme Ltd "), session.retry)),
       )
 
-      assert.equal(plane.calls.some(({ path }) => path === "/business"), false)
+      assert.deepEqual(state, idle(View.HasBusiness({ business: business() })))
+      assert.deepEqual(
+        plane.calls.filter(({ path }) => path === "/business").map(({ body }) => body),
+        [
+          { name: "Acme Ltd", country_code: "NG" },
+          { name: "Acme Ltd", country_code: "NG" },
+        ],
+      )
+    }),
+  ),
+)
+
+void test(
+  "nothing is sent while a request is in flight or a popup is open",
+  scenario(
+    Effect.gen(function* () {
+      const plane = fakePlane({ me: me(null), createBusiness: () => "unreachable" })
+
+      yield* run(plane, (session) =>
+        Effect.gen(function* () {
+          yield* session.load
+          yield* SubscriptionRef.update(session.state, (state) => ({ ...state, pending: true }))
+          yield* session.createBusiness("Acme Ltd")
+          yield* SubscriptionRef.update(session.state, (state) => ({ ...state, pending: false }))
+
+          assert.deepEqual(paths(plane), ["POST /session", "GET /me"])
+
+          yield* session.createBusiness("Acme Ltd")
+          // The popup is open now.
+          yield* session.createBusiness("Acme Ltd")
+          yield* SubscriptionRef.update(session.state, (state) => ({ ...state, pending: true }))
+          yield* session.retry
+          yield* session.close
+        }),
+      )
+
+      assert.deepEqual(paths(plane), ["POST /session", "GET /me", "POST /business"])
     }),
   ),
 )
@@ -233,41 +339,125 @@ void test(
       const state = yield* run(plane, loadThen((session) => session.openLedger))
       const call = plane.calls.at(-1)
 
-      assert.deepEqual(state, State.HasBusiness({ business: active, pending: false, error: null }))
+      assert.deepEqual(state, idle(View.HasBusiness({ business: active })))
       assert.deepEqual([call?.method, call?.path, call?.body], ["POST", "/business/biz_1/ledger", null])
     }),
   ),
 )
 
 void test(
-  "a failed ledger call keeps the created business with a message",
+  "a ledger refusal is Close-only; a temporary failure offers Retry",
   scenario(
     Effect.gen(function* () {
-      const refused = "The ledger couldn't open an account for this business. Contact support."
-      const retry = "Couldn't open the account. Try again."
+      const refused: Popup = {
+        message: "The ledger couldn't open an account for this business. Contact support.",
+        retry: null,
+        close: "refresh",
+      }
 
-      const cases: ReadonlyArray<readonly [Reply, string]> = [
-        [failure(409, "ledger_rejected"), refused],
-        [failure(409, "conflict"), refused],
-        [failure(503, "ledger_unavailable"), retry],
-        [failure(502, "ledger_bad_response"), retry],
-        [{ status: 500, body: {} }, retry],
-        ["unreachable", retry],
+      const retryable: Popup = {
+        message: "Couldn't open the account.",
+        retry: Operation.OpenLedger({ business: business() }),
+        close: "refresh",
+      }
+
+      const cases: ReadonlyArray<readonly [string, Reply, Popup]> = [
+        ["ledger_rejected", failure(409, "ledger_rejected"), refused],
+        ["conflict", failure(409, "conflict"), refused],
+        [
+          "not_found",
+          failure(404, "not_found"),
+          { message: "This business couldn't be found.", retry: null, close: "refresh" },
+        ],
+        ["ledger_unavailable", failure(503, "ledger_unavailable"), retryable],
+        ["ledger_bad_response", failure(502, "ledger_bad_response"), retryable],
+        ["500", { status: 500, body: {} }, retryable],
+        ["unreachable", "unreachable", retryable],
       ]
 
-      for (const [reply, error] of cases) {
+      for (const [name, reply, popup] of cases) {
         const plane = fakePlane({ me: me(business()), openLedger: () => reply })
 
         const state = yield* run(plane, loadThen((session) => session.openLedger))
 
-        assert.deepEqual(state, State.HasBusiness({ business: business(), pending: false, error }), error)
+        assert.deepEqual(state, idle(View.HasBusiness({ business: business() }), popup), name)
       }
     }),
   ),
 )
 
 void test(
-  "an active business never asks to open again, and one plane no longer finds is reloaded",
+  "a refused ledger call can't be resent from its popup, and Close reloads without resending",
+  scenario(
+    Effect.gen(function* () {
+      for (const code of ["conflict", "ledger_rejected"]) {
+        const plane = fakePlane({ me: me(business()), openLedger: () => failure(409, code) })
+
+        const state = yield* run(
+          plane,
+          loadThen((session) =>
+            Effect.gen(function* () {
+              yield* session.openLedger
+              yield* session.openLedger
+              yield* session.retry
+              yield* session.close
+            }),
+          ),
+        )
+
+        assert.deepEqual(state, idle(View.HasBusiness({ business: business() })), code)
+        assert.deepEqual(paths(plane), ["POST /session", "GET /me", "POST /business/biz_1/ledger", "GET /me"], code)
+      }
+    }),
+  ),
+)
+
+void test(
+  "Retry repeats a temporary ledger failure and its success clears the popup",
+  scenario(
+    Effect.gen(function* () {
+      const plane = fakePlane({
+        me: me(business()),
+        openLedger: inTurn(failure(503, "ledger_unavailable"), failure(502, "ledger_bad_response"), {
+          status: 200,
+          body: active,
+        }),
+      })
+
+      yield* run(plane, (session) =>
+        Effect.gen(function* () {
+          yield* session.load
+          yield* session.openLedger
+          yield* session.retry
+
+          // Another failure keeps the popup, still offering Retry.
+          assert.equal((yield* current(session)).popup?.message, "Couldn't open the account.")
+
+          yield* session.retry
+
+          assert.deepEqual(yield* current(session), idle(View.HasBusiness({ business: active })))
+        }),
+      )
+    }),
+  ),
+)
+
+void test(
+  "a failed refresh shows its own popup, never the form, and doesn't load again by itself",
+  scenario(
+    Effect.gen(function* () {
+      const plane = fakePlane({ me: inTurn(me(null)(), "unreachable"), createBusiness: () => failure(409, "conflict") })
+
+      const state = yield* run(plane, loadThen((session) => Effect.andThen(session.createBusiness("Acme Ltd"), session.close)))
+
+      assert.deepEqual(state, loadFailed)
+      assert.deepEqual(paths(plane), ["POST /session", "GET /me", "POST /business", "GET /me"])
+    }),
+  ),
+)
+
+void test(
+  "an active business never asks to open again, and one plane no longer finds is reloaded on Close",
   scenario(
     Effect.gen(function* () {
       const activePlane = fakePlane({ me: me(active), openLedger: () => ({ status: 200, body: active }) })
@@ -278,9 +468,9 @@ void test(
 
       const gone = fakePlane({ me: inTurn(me(business())(), me(null)()), openLedger: () => failure(404, "not_found") })
 
-      const state = yield* run(gone, loadThen((session) => session.openLedger))
+      const state = yield* run(gone, loadThen((session) => Effect.andThen(session.openLedger, session.close)))
 
-      assert.deepEqual(state, State.NoBusiness({ pending: false, error: null }))
+      assert.deepEqual(state, idle(View.NoBusiness()))
     }),
   ),
 )

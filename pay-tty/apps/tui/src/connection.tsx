@@ -28,9 +28,10 @@ export const connect = (
       const run = yield* FiberSet.makeRuntime()
 
       const actions = {
-        retry: () => void run(session.load),
         createBusiness: (name: string) => void run(session.createBusiness(name)),
         openLedger: () => void run(session.openLedger),
+        retry: () => void run(session.retry),
+        close: () => void run(session.close),
         quit: end,
       }
 
