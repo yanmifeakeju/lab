@@ -23,18 +23,30 @@ export type UnauthorizedResponseEncoded = { readonly "message": string, readonly
 export const UnauthorizedResponseEncoded = Schema.Struct({ "message": Schema.String.check(Schema.isMinLength(1).annotate({ "expected": "a value with a length of at least 1" })), "error": Schema.Struct({ "code": Schema.Literal("unauthorized") }) }).annotate({ "identifier": "UnauthorizedResponseEncoded" })
 export type CreateBusinessRequestEncoded = { readonly "name": string, readonly "country_code"?: "NG" | "US" }
 export const CreateBusinessRequestEncoded = Schema.Struct({ "name": Schema.String.check(Schema.isPattern(new RegExp(".*\\S.*")).annotate({ "expected": "a string matching the RegExp .*\\S.*" })), "country_code": Schema.optionalKey(Schema.Literals(["NG", "US"]).annotate({ "default": "NG" })) }).annotate({ "identifier": "CreateBusinessRequestEncoded" })
-export type ConflictResponseEncoded = { readonly "message": string, readonly "error": { readonly "code": "conflict" | "ledger_rejected" } }
-export const ConflictResponseEncoded = Schema.Struct({ "message": Schema.String.check(Schema.isMinLength(1).annotate({ "expected": "a value with a length of at least 1" })), "error": Schema.Struct({ "code": Schema.Literals(["conflict", "ledger_rejected"]) }) }).annotate({ "identifier": "ConflictResponseEncoded" })
+export type ConflictResponseEncoded = { readonly "message": string, readonly "error": { readonly "code": "conflict" | "ledger_rejected" | "business_required" } }
+export const ConflictResponseEncoded = Schema.Struct({ "message": Schema.String.check(Schema.isMinLength(1).annotate({ "expected": "a value with a length of at least 1" })), "error": Schema.Struct({ "code": Schema.Literals(["conflict", "ledger_rejected", "business_required"]) }) }).annotate({ "identifier": "ConflictResponseEncoded" })
 export type ServiceUnavailableResponseEncoded = { readonly "message": string, readonly "error": { readonly "code": "ledger_unavailable" | "country_unavailable" } }
 export const ServiceUnavailableResponseEncoded = Schema.Struct({ "message": Schema.String.check(Schema.isMinLength(1).annotate({ "expected": "a value with a length of at least 1" })), "error": Schema.Struct({ "code": Schema.Literals(["ledger_unavailable", "country_unavailable"]) }) }).annotate({ "identifier": "ServiceUnavailableResponseEncoded" })
-export type NotFoundResponseEncoded = { readonly "message": string, readonly "error": { readonly "code": "not_found" } }
-export const NotFoundResponseEncoded = Schema.Struct({ "message": Schema.String.check(Schema.isMinLength(1).annotate({ "expected": "a value with a length of at least 1" })), "error": Schema.Struct({ "code": Schema.Literal("not_found") }) }).annotate({ "identifier": "NotFoundResponseEncoded" })
 export type BadGatewayResponseEncoded = { readonly "message": string, readonly "error": { readonly "code": "ledger_bad_response" } }
 export const BadGatewayResponseEncoded = Schema.Struct({ "message": Schema.String.check(Schema.isMinLength(1).annotate({ "expected": "a value with a length of at least 1" })), "error": Schema.Struct({ "code": Schema.Literal("ledger_bad_response") }) }).annotate({ "identifier": "BadGatewayResponseEncoded" })
+export type FixedPricingRequestEncoded = { readonly "mode": "fixed", readonly "amount_minor": number, readonly "suggested_amount_minor"?: never, readonly "minimum_amount_minor"?: never, readonly "maximum_amount_minor"?: never }
+export const FixedPricingRequestEncoded = Schema.Struct({ "mode": Schema.Literal("fixed"), "amount_minor": Schema.Number.check(Schema.isInt().annotate({ "expected": "an integer" })).check(Schema.isLessThanOrEqualTo(9007199254740991).annotate({ "expected": "a value less than or equal to 9007199254740991" })).check(Schema.isGreaterThan(0).annotate({ "expected": "a value greater than 0" })), "suggested_amount_minor": Schema.optionalKey(Schema.Never), "minimum_amount_minor": Schema.optionalKey(Schema.Never), "maximum_amount_minor": Schema.optionalKey(Schema.Never) }).annotate({ "identifier": "FixedPricingRequestEncoded" })
+export type CustomerChoosesPricingRequestEncoded = { readonly "mode": "customer_chooses", readonly "amount_minor"?: never, readonly "suggested_amount_minor"?: number | null, readonly "minimum_amount_minor"?: number | null, readonly "maximum_amount_minor"?: number | null }
+export const CustomerChoosesPricingRequestEncoded = Schema.Struct({ "mode": Schema.Literal("customer_chooses"), "amount_minor": Schema.optionalKey(Schema.Never), "suggested_amount_minor": Schema.optionalKey(Schema.Union([Schema.Number.check(Schema.isInt().annotate({ "expected": "an integer" })).check(Schema.isLessThanOrEqualTo(9007199254740991).annotate({ "expected": "a value less than or equal to 9007199254740991" })).check(Schema.isGreaterThan(0).annotate({ "expected": "a value greater than 0" })), Schema.Null])), "minimum_amount_minor": Schema.optionalKey(Schema.Union([Schema.Number.check(Schema.isInt().annotate({ "expected": "an integer" })).check(Schema.isLessThanOrEqualTo(9007199254740991).annotate({ "expected": "a value less than or equal to 9007199254740991" })).check(Schema.isGreaterThan(0).annotate({ "expected": "a value greater than 0" })), Schema.Null])), "maximum_amount_minor": Schema.optionalKey(Schema.Union([Schema.Number.check(Schema.isInt().annotate({ "expected": "an integer" })).check(Schema.isLessThanOrEqualTo(9007199254740991).annotate({ "expected": "a value less than or equal to 9007199254740991" })).check(Schema.isGreaterThan(0).annotate({ "expected": "a value greater than 0" })), Schema.Null])) }).annotate({ "identifier": "CustomerChoosesPricingRequestEncoded" })
+export type FixedPricingEncoded = { readonly "mode": "fixed", readonly "amount_minor": number }
+export const FixedPricingEncoded = Schema.Struct({ "mode": Schema.Literal("fixed"), "amount_minor": Schema.Number.check(Schema.isInt().annotate({ "expected": "an integer" })) }).annotate({ "identifier": "FixedPricingEncoded" })
+export type CustomerChoosesPricingEncoded = { readonly "mode": "customer_chooses", readonly "suggested_amount_minor": number | null, readonly "minimum_amount_minor": number | null, readonly "maximum_amount_minor": number | null }
+export const CustomerChoosesPricingEncoded = Schema.Struct({ "mode": Schema.Literal("customer_chooses"), "suggested_amount_minor": Schema.Union([Schema.Number.check(Schema.isInt().annotate({ "expected": "an integer" })), Schema.Null]), "minimum_amount_minor": Schema.Union([Schema.Number.check(Schema.isInt().annotate({ "expected": "an integer" })), Schema.Null]), "maximum_amount_minor": Schema.Union([Schema.Number.check(Schema.isInt().annotate({ "expected": "an integer" })), Schema.Null]) }).annotate({ "identifier": "CustomerChoosesPricingEncoded" })
 export type ValidationErrorEncoded = { readonly "code": "validation_error", readonly "details": readonly [ValidationErrorDetailEncoded, ...Array<ValidationErrorDetailEncoded>] }
 export const ValidationErrorEncoded = Schema.Struct({ "code": Schema.Literal("validation_error"), "details": Schema.TupleWithRest(Schema.Tuple([ValidationErrorDetailEncoded]), [ValidationErrorDetailEncoded]) }).annotate({ "identifier": "ValidationErrorEncoded" })
 export type BusinessInfoEncoded = { readonly "id": string, readonly "name": string, readonly "country_code": "NG" | "US", readonly "currency_code": string, readonly "holder_ref": string | null, readonly "status": "created" | "active", readonly "ledger": BusinessLedgerEncoded | null, readonly "created_at": string, readonly "updated_at": string }
 export const BusinessInfoEncoded = Schema.Struct({ "id": Schema.String, "name": Schema.String, "country_code": Schema.Literals(["NG", "US"]), "currency_code": Schema.String, "holder_ref": Schema.Union([Schema.String, Schema.Null]), "status": Schema.Literals(["created", "active"]), "ledger": Schema.Union([BusinessLedgerEncoded, Schema.Null]), "created_at": Schema.String, "updated_at": Schema.String }).annotate({ "identifier": "BusinessInfoEncoded" })
+export type CreatePaymentLinkRequestEncoded = { readonly "title": string, readonly "description"?: string | null, readonly "pricing": FixedPricingRequestEncoded | CustomerChoosesPricingRequestEncoded }
+export const CreatePaymentLinkRequestEncoded = Schema.Struct({ "title": Schema.String.check(Schema.isPattern(new RegExp(".*\\S.*")).annotate({ "expected": "a string matching the RegExp .*\\S.*" })), "description": Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])), "pricing": Schema.Union([FixedPricingRequestEncoded, CustomerChoosesPricingRequestEncoded]) }).annotate({ "identifier": "CreatePaymentLinkRequestEncoded" })
+export type PaymentLinkEncoded = { readonly "id": string, readonly "business_id": string, readonly "title": string, readonly "description": string | null, readonly "currency_code": string, readonly "scale": number, readonly "pricing": FixedPricingEncoded | CustomerChoosesPricingEncoded, readonly "url": string, readonly "created_at": string }
+export const PaymentLinkEncoded = Schema.Struct({ "id": Schema.String, "business_id": Schema.String, "title": Schema.String, "description": Schema.Union([Schema.String, Schema.Null]), "currency_code": Schema.String, "scale": Schema.Number.check(Schema.isInt().annotate({ "expected": "an integer" })), "pricing": Schema.Union([FixedPricingEncoded, CustomerChoosesPricingEncoded]), "url": Schema.String, "created_at": Schema.String }).annotate({ "identifier": "PaymentLinkEncoded" })
+export type CreatedPaymentLinkEncoded = { readonly "id": string, readonly "business_id": string, readonly "title": string, readonly "description": string | null, readonly "currency_code": string, readonly "scale": number, readonly "pricing": FixedPricingEncoded | CustomerChoosesPricingEncoded, readonly "url": string, readonly "created_at": string }
+export const CreatedPaymentLinkEncoded = Schema.Struct({ "id": Schema.String, "business_id": Schema.String, "title": Schema.String, "description": Schema.Union([Schema.String, Schema.Null]), "currency_code": Schema.String, "scale": Schema.Number.check(Schema.isInt().annotate({ "expected": "an integer" })), "pricing": Schema.Union([FixedPricingEncoded, CustomerChoosesPricingEncoded]), "url": Schema.String, "created_at": Schema.String }).annotate({ "identifier": "CreatedPaymentLinkEncoded" })
 export type ValidationErrorResponseEncoded = { readonly "message": string, readonly "error": ValidationErrorEncoded }
 export const ValidationErrorResponseEncoded = Schema.Struct({ "message": Schema.String.check(Schema.isMinLength(1).annotate({ "expected": "a value with a length of at least 1" })), "error": ValidationErrorEncoded }).annotate({ "identifier": "ValidationErrorResponseEncoded" })
 export type MeResponseEncoded = { readonly "id": string, readonly "created_at": string, readonly "business": BusinessInfoEncoded | null }
@@ -70,20 +82,32 @@ export type BusinessCreateBusiness409 = ConflictResponseEncoded
 export const BusinessCreateBusiness409 = ConflictResponseEncoded
 export type BusinessCreateBusiness503 = ServiceUnavailableResponseEncoded
 export const BusinessCreateBusiness503 = ServiceUnavailableResponseEncoded
-export type BusinessCreateBusinessLedger200 = BusinessInfoEncoded
-export const BusinessCreateBusinessLedger200 = BusinessInfoEncoded
-export type BusinessCreateBusinessLedger400 = ValidationErrorResponseEncoded
-export const BusinessCreateBusinessLedger400 = ValidationErrorResponseEncoded
-export type BusinessCreateBusinessLedger401 = UnauthorizedResponseEncoded
-export const BusinessCreateBusinessLedger401 = UnauthorizedResponseEncoded
-export type BusinessCreateBusinessLedger404 = NotFoundResponseEncoded
-export const BusinessCreateBusinessLedger404 = NotFoundResponseEncoded
-export type BusinessCreateBusinessLedger409 = ConflictResponseEncoded
-export const BusinessCreateBusinessLedger409 = ConflictResponseEncoded
-export type BusinessCreateBusinessLedger502 = BadGatewayResponseEncoded
-export const BusinessCreateBusinessLedger502 = BadGatewayResponseEncoded
-export type BusinessCreateBusinessLedger503 = ServiceUnavailableResponseEncoded
-export const BusinessCreateBusinessLedger503 = ServiceUnavailableResponseEncoded
+export type AccountCreateAccount200 = BusinessInfoEncoded
+export const AccountCreateAccount200 = BusinessInfoEncoded
+export type AccountCreateAccount400 = ValidationErrorResponseEncoded
+export const AccountCreateAccount400 = ValidationErrorResponseEncoded
+export type AccountCreateAccount401 = UnauthorizedResponseEncoded
+export const AccountCreateAccount401 = UnauthorizedResponseEncoded
+export type AccountCreateAccount409 = ConflictResponseEncoded
+export const AccountCreateAccount409 = ConflictResponseEncoded
+export type AccountCreateAccount502 = BadGatewayResponseEncoded
+export const AccountCreateAccount502 = BadGatewayResponseEncoded
+export type AccountCreateAccount503 = ServiceUnavailableResponseEncoded
+export const AccountCreateAccount503 = ServiceUnavailableResponseEncoded
+export type PaymentLinksCreatePaymentLinkParams = { readonly "idempotency-key": string }
+export const PaymentLinksCreatePaymentLinkParams = Schema.Struct({ "idempotency-key": Schema.String.check(Schema.isPattern(new RegExp("^[!-~]{1,255}$")).annotate({ "expected": "a string matching the RegExp ^[!-~]{1,255}$" })) })
+export type PaymentLinksCreatePaymentLinkRequestJson = CreatePaymentLinkRequestEncoded
+export const PaymentLinksCreatePaymentLinkRequestJson = CreatePaymentLinkRequestEncoded
+export type PaymentLinksCreatePaymentLink200 = PaymentLinkEncoded
+export const PaymentLinksCreatePaymentLink200 = PaymentLinkEncoded
+export type PaymentLinksCreatePaymentLink201 = CreatedPaymentLinkEncoded
+export const PaymentLinksCreatePaymentLink201 = CreatedPaymentLinkEncoded
+export type PaymentLinksCreatePaymentLink400 = ValidationErrorResponseEncoded
+export const PaymentLinksCreatePaymentLink400 = ValidationErrorResponseEncoded
+export type PaymentLinksCreatePaymentLink401 = UnauthorizedResponseEncoded
+export const PaymentLinksCreatePaymentLink401 = UnauthorizedResponseEncoded
+export type PaymentLinksCreatePaymentLink409 = ConflictResponseEncoded
+export const PaymentLinksCreatePaymentLink409 = ConflictResponseEncoded
 
 export interface OperationConfig {
   /**
@@ -143,35 +167,6 @@ export const make = (
           )
       : (request) => Effect.flatMap(httpClient.execute(request), withOptionalResponse)
   }
-  const __encodePathParam = encodeURIComponent
-  const __makePathRequest = (
-    method: (url: string) => HttpClientRequest.HttpClientRequest,
-    parameters: ReadonlyArray<string>,
-    getPath: () => string,
-  ) => Effect.suspend(() => {
-    const fail = (description: string, cause?: unknown) => Effect.fail(
-      new HttpClientError.HttpClientError({
-        reason: new HttpClientError.InvalidUrlError({
-          request: method(""),
-          cause,
-          description,
-        }),
-      }),
-    )
-    if (parameters.some((value) => value === "" || /^(?:\.|%2e){1,2}$/i.test(value))) {
-      return fail("Path parameters must be non-empty and cannot be dot segments")
-    }
-    let path: string
-    try {
-      path = getPath()
-    } catch (cause) {
-      return fail("Failed to encode path parameter", cause)
-    }
-    if (path.split("/").some((segment) => /^(?:\.|%2e){1,2}$/i.test(segment))) {
-      return fail("Request paths cannot contain dot segments")
-    }
-    return Effect.succeed(method(path))
-  })
   const decodeSuccess =
     <Schema extends Schema.Constraint>(schema: Schema) =>
     (response: HttpClientResponse.HttpClientResponse) =>
@@ -220,20 +215,29 @@ export const make = (
       orElse: unexpectedStatus
     }))
     ),
-    "businessCreateBusinessLedger": (businessId, options) => __makePathRequest(HttpClientRequest.post, [businessId], () => "/business/" + __encodePathParam(businessId) + "/ledger").pipe(
-    Effect.flatMap((request) => request.pipe(
+    "accountCreateAccount": (options) => HttpClientRequest.post("/account").pipe(
       withResponse(options?.config)(HttpClientResponse.matchStatus({
-      "2xx": decodeSuccess(BusinessCreateBusinessLedger200),
-      "400": decodeError("BusinessCreateBusinessLedger400", BusinessCreateBusinessLedger400),
-      "401": decodeError("BusinessCreateBusinessLedger401", BusinessCreateBusinessLedger401),
-      "404": decodeError("BusinessCreateBusinessLedger404", BusinessCreateBusinessLedger404),
-      "409": decodeError("BusinessCreateBusinessLedger409", BusinessCreateBusinessLedger409),
-      "502": decodeError("BusinessCreateBusinessLedger502", BusinessCreateBusinessLedger502),
-      "503": decodeError("BusinessCreateBusinessLedger503", BusinessCreateBusinessLedger503),
+      "2xx": decodeSuccess(AccountCreateAccount200),
+      "400": decodeError("AccountCreateAccount400", AccountCreateAccount400),
+      "401": decodeError("AccountCreateAccount401", AccountCreateAccount401),
+      "409": decodeError("AccountCreateAccount409", AccountCreateAccount409),
+      "502": decodeError("AccountCreateAccount502", AccountCreateAccount502),
+      "503": decodeError("AccountCreateAccount503", AccountCreateAccount503),
       orElse: unexpectedStatus
     }))
-    ))
-  )
+    ),
+    "paymentLinksCreatePaymentLink": (options) => HttpClientRequest.post("/payment_links").pipe(
+      HttpClientRequest.setHeaders({ "idempotency-key": options.params["idempotency-key"] ?? undefined }),
+      HttpClientRequest.bodyJsonUnsafe(options.payload),
+      withResponse(options.config)(HttpClientResponse.matchStatus({
+      "200": decodeSuccess(PaymentLinksCreatePaymentLink200),
+      "201": decodeSuccess(PaymentLinksCreatePaymentLink201),
+      "400": decodeError("PaymentLinksCreatePaymentLink400", PaymentLinksCreatePaymentLink400),
+      "401": decodeError("PaymentLinksCreatePaymentLink401", PaymentLinksCreatePaymentLink401),
+      "409": decodeError("PaymentLinksCreatePaymentLink409", PaymentLinksCreatePaymentLink409),
+      orElse: unexpectedStatus
+    }))
+    )
   }
 }
 
@@ -243,7 +247,8 @@ export interface PlaneClient {
   readonly "sessionCreateSession": <Config extends OperationConfig>(options: { readonly payload: typeof SessionCreateSessionRequestJson.Encoded; readonly config?: Config | undefined }) => Effect.Effect<WithOptionalResponse<typeof SessionCreateSession200.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"SessionCreateSession400", typeof SessionCreateSession400.Type> | PlaneClientError<"SessionCreateSession403", typeof SessionCreateSession403.Type>>
   readonly "meMe": <Config extends OperationConfig>(options: { readonly config?: Config | undefined } | undefined) => Effect.Effect<WithOptionalResponse<typeof MeMe200.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"MeMe400", typeof MeMe400.Type> | PlaneClientError<"MeMe401", typeof MeMe401.Type>>
   readonly "businessCreateBusiness": <Config extends OperationConfig>(options: { readonly payload: typeof BusinessCreateBusinessRequestJson.Encoded; readonly config?: Config | undefined }) => Effect.Effect<WithOptionalResponse<typeof BusinessCreateBusiness200.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"BusinessCreateBusiness400", typeof BusinessCreateBusiness400.Type> | PlaneClientError<"BusinessCreateBusiness401", typeof BusinessCreateBusiness401.Type> | PlaneClientError<"BusinessCreateBusiness409", typeof BusinessCreateBusiness409.Type> | PlaneClientError<"BusinessCreateBusiness503", typeof BusinessCreateBusiness503.Type>>
-  readonly "businessCreateBusinessLedger": <Config extends OperationConfig>(businessId: string, options: { readonly config?: Config | undefined } | undefined) => Effect.Effect<WithOptionalResponse<typeof BusinessCreateBusinessLedger200.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"BusinessCreateBusinessLedger400", typeof BusinessCreateBusinessLedger400.Type> | PlaneClientError<"BusinessCreateBusinessLedger401", typeof BusinessCreateBusinessLedger401.Type> | PlaneClientError<"BusinessCreateBusinessLedger404", typeof BusinessCreateBusinessLedger404.Type> | PlaneClientError<"BusinessCreateBusinessLedger409", typeof BusinessCreateBusinessLedger409.Type> | PlaneClientError<"BusinessCreateBusinessLedger502", typeof BusinessCreateBusinessLedger502.Type> | PlaneClientError<"BusinessCreateBusinessLedger503", typeof BusinessCreateBusinessLedger503.Type>>
+  readonly "accountCreateAccount": <Config extends OperationConfig>(options: { readonly config?: Config | undefined } | undefined) => Effect.Effect<WithOptionalResponse<typeof AccountCreateAccount200.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"AccountCreateAccount400", typeof AccountCreateAccount400.Type> | PlaneClientError<"AccountCreateAccount401", typeof AccountCreateAccount401.Type> | PlaneClientError<"AccountCreateAccount409", typeof AccountCreateAccount409.Type> | PlaneClientError<"AccountCreateAccount502", typeof AccountCreateAccount502.Type> | PlaneClientError<"AccountCreateAccount503", typeof AccountCreateAccount503.Type>>
+  readonly "paymentLinksCreatePaymentLink": <Config extends OperationConfig>(options: { readonly params: typeof PaymentLinksCreatePaymentLinkParams.Encoded; readonly payload: typeof PaymentLinksCreatePaymentLinkRequestJson.Encoded; readonly config?: Config | undefined }) => Effect.Effect<WithOptionalResponse<typeof PaymentLinksCreatePaymentLink200.Type | typeof PaymentLinksCreatePaymentLink201.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"PaymentLinksCreatePaymentLink400", typeof PaymentLinksCreatePaymentLink400.Type> | PlaneClientError<"PaymentLinksCreatePaymentLink401", typeof PaymentLinksCreatePaymentLink401.Type> | PlaneClientError<"PaymentLinksCreatePaymentLink409", typeof PaymentLinksCreatePaymentLink409.Type>>
 }
 
 export interface PlaneClientError<Tag extends string, E> {

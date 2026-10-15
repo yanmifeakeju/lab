@@ -9,7 +9,7 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core"
 
-import { createdAt, timestamps } from "../database/columns.ts"
+import { createdAt, space, timestamps } from "../database/columns.ts"
 import { ledgers } from "../ledger/sql.ts"
 import { principals } from "../principal/sql.ts"
 
@@ -22,10 +22,6 @@ export const status = pgEnum("business_status", statuses)
 export const currencies = { NG: "NGN", US: "USD" } as const
 
 export const countries = ["NG", "US"] as const satisfies ReadonlyArray<keyof typeof currencies>
-
-// Exactly what JavaScript's String.prototype.trim() removes, so a name core
-// accepts is one the database accepts. Postgres's own \s differs by locale.
-const space = String.raw`[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]`
 
 export const businesses = pgTable(
   "businesses",

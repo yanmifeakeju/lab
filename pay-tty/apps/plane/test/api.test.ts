@@ -7,22 +7,27 @@ import { Database, layer as DatabaseLayer } from "@pay-tty/core/database"
 import { Catalog } from "@pay-tty/core/catalog"
 import { Currency } from "@pay-tty/core/currency"
 import { Ledger } from "@pay-tty/core/ledger"
+import { Payments } from "@pay-tty/core/payments"
 import { Principal } from "@pay-tty/core/principal"
 import { Testing } from "@pay-tty/core/testing"
-import { Clock, Effect, Encoding, Layer, Schema, type Scope } from "effect"
+import { Cause, Clock, Effect, Encoding, Exit, Layer, Schema, type Scope } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import { decodeJwt, type JWTHeaderParameters, type JWTPayload, SignJWT } from "jose"
 import { ulid } from "ulid"
 
 import { BusinessInfo, BusinessLedger } from "../src/api/business/routes.ts"
 import { MeResponse } from "../src/api/me/routes.ts"
+import { CustomerChoosesPricing, FixedPricing, PaymentLink } from "../src/api/payment_links/routes.ts"
 import { SessionResponse } from "../src/api/session/routes.ts"
 import { ApiLive } from "../src/api/server.ts"
 import { AuthenticationLive } from "../src/api/middleware/authentication.ts"
 import { UnknownErrorResponse } from "../src/api/middleware/defect.ts"
 import { BusinessLedger as BusinessLedgerService } from "../src/ledger/business-ledger.ts"
+import { PaymentLinkUrls } from "../src/payment_links/urls.ts"
 import { Token } from "../src/token/token.ts"
 import { created as accountCreated, current, failing, fakeLedger, invalid, keys, previous, secret, type FakeLedger, type Payload, type Reply } from "./support.ts"
+
+const linkBaseUrl = "https://pay.test/links"
 
 // The core services over the test database, for preparing businesses and
 // reading back what plane stored.
@@ -37,6 +42,7 @@ interface ServerOptions {
   readonly businesses?: Business.Interface
   // A stand-in catalog for creating businesses.
   readonly catalog?: Catalog.Interface
+  readonly linkBaseUrl?: string
 }
 
 // The server as bin/api.ts composes it, with the ledger faked. Requests run
@@ -58,9 +64,11 @@ const server = (options: ServerOptions = {}) =>
         ledger,
         app: HttpRouter.toWebHandler(
           Layer.mergeAll(ApiLive, UnknownErrorResponse).pipe(
-            Layer.provideMerge(Layer.mergeAll(AuthenticationLive, ledgerEndpoint)),
+            Layer.provideMerge(
+              Layer.mergeAll(AuthenticationLive, ledgerEndpoint, Layer.orDie(PaymentLinkUrls.layerFrom(options.linkBaseUrl ?? linkBaseUrl))),
+            ),
             Layer.provideMerge(Token.layerFrom(keys)),
-            Layer.provideMerge(Layer.mergeAll(Principal.layer, Business.layer)),
+            Layer.provideMerge(Layer.mergeAll(Principal.layer, Business.layer, Payments.layer)),
             Layer.provideMerge(
               options.catalog === undefined ? Catalog.layer : Layer.succeed(Catalog.Service, options.catalog),
             ),
@@ -76,10 +84,12 @@ const server = (options: ServerOptions = {}) =>
 
 type Server = Effect.Success<ReturnType<typeof server>>
 
+type Body = string | number | boolean | null | ReadonlyArray<Body> | { readonly [key: string]: Body }
+
 interface Call {
   readonly method: "GET" | "POST" | "PUT"
   readonly path: string
-  readonly body?: Readonly<Record<string, string | number | null>>
+  readonly body?: { readonly [key: string]: Body }
   readonly authorization?: string | undefined
   readonly headers?: Readonly<Record<string, string>>
 }
@@ -142,18 +152,44 @@ const created = (server: Server, authorization: string, extra: Partial<Call> = {
     ),
   )
 
-const ledgerPath = (businessId: string) => `/business/${encodeURIComponent(businessId)}/ledger`
+const openAccount = (server: Server, authorization: string, extra: Partial<Call> = {}) =>
+  send(server, { method: "POST", path: "/account", authorization, ...extra })
 
-const openLedger = (server: Server, authorization: string, businessId: string, extra: Partial<Call> = {}) =>
-  send(server, { method: "POST", path: ledgerPath(businessId), authorization, ...extra })
-
-// A successful ledger creation, decoded strictly.
-const opened = (server: Server, authorization: string, businessId: string, extra: Partial<Call> = {}) =>
-  openLedger(server, authorization, businessId, extra).pipe(
+// A successful account opening, decoded strictly.
+const opened = (server: Server, authorization: string, extra: Partial<Call> = {}) =>
+  openAccount(server, authorization, extra).pipe(
     Effect.flatMap(({ status, json }) =>
       Effect.map(Schema.decodeUnknownEffect(BusinessInfo)(json, strict), (body) => ({ status, json, body })),
     ),
   )
+
+const fixedLink = { title: "Consulting", pricing: { mode: "fixed", amount_minor: 250_000 } }
+
+const createLink = (
+  server: Server,
+  authorization: string | undefined,
+  body: { readonly [key: string]: Body },
+  idempotencyKey: string | undefined,
+) =>
+  send(server, {
+    method: "POST",
+    path: "/payment_links",
+    body,
+    authorization,
+    headers: idempotencyKey === undefined ? {} : { "idempotency-key": idempotencyKey },
+  })
+
+// A link creation that succeeded, decoded strictly.
+const createdLink = Effect.fnUntraced(function* (
+  server: Server,
+  authorization: string,
+  body: { readonly [key: string]: Body },
+  idempotencyKey: string,
+) {
+  const { status, json } = yield* createLink(server, authorization, body, idempotencyKey)
+
+  return { status, json, body: yield* Schema.decodeUnknownEffect(PaymentLink)(json, strict) }
+})
 
 const ErrorBody = Schema.Struct({ message: Schema.String, error: Schema.Struct({ code: Schema.String }) })
 
@@ -207,7 +243,7 @@ void test("serves health without a token", () =>
     }),
   ))
 
-void test("publishes exactly /health, /session, /me, /business, and its ledger", () =>
+void test("publishes exactly /health, /session, /me, /business, /account, and /payment_links", () =>
   run(
     Effect.gen(function* () {
       const plane = yield* server()
@@ -239,7 +275,14 @@ void test("publishes exactly /health, /session, /me, /business, and its ledger",
       )(json)
 
       assert.equal(status, 200)
-      assert.deepEqual(Object.keys(paths).sort(), ["/business", "/business/{businessId}/ledger", "/health", "/me", "/session"])
+      assert.deepEqual(Object.keys(paths).sort(), [
+        "/account",
+        "/business",
+        "/health",
+        "/me",
+        "/payment_links",
+        "/session",
+      ])
       assert.deepEqual(Object.keys(paths["/me"] ?? {}), ["get"])
       assert.deepEqual(Object.keys(paths["/business"] ?? {}), ["post"])
 
@@ -263,9 +306,10 @@ void test("publishes exactly /health, /session, /me, /business, and its ledger",
 
       assert.equal(success.content["application/json"].schema.$ref, "#/components/schemas/BusinessInfoEncoded")
 
-      assert.deepEqual(Object.keys(paths["/business/{businessId}/ledger"] ?? {}), ["post"])
+      // Neither route names the business; the caller's token does.
+      assert.deepEqual(Object.keys(paths["/account"] ?? {}), ["post"])
 
-      const ledger = paths["/business/{businessId}/ledger"]?.["post"]
+      const ledger = paths["/account"]?.["post"]
 
       assert.deepEqual(ledger?.security, paths["/me"]?.["get"]?.security)
       assert.equal(ledger?.requestBody, undefined)
@@ -274,8 +318,29 @@ void test("publishes exactly /health, /session, /me, /business, and its ledger",
         "#/components/schemas/BusinessInfoEncoded",
       )
 
-      for (const code of ["401", "404", "409", "502", "503"]) {
+      for (const code of ["401", "409", "502", "503"]) {
         assert.ok(code in (ledger?.responses ?? {}), code)
+      }
+
+      assert.deepEqual(Object.keys(paths["/payment_links"] ?? {}), ["post"])
+
+      const links = paths["/payment_links"]?.["post"]
+
+      assert.deepEqual(links?.security, paths["/me"]?.["get"]?.security)
+      assert.equal(links?.requestBody?.content["application/json"].schema.$ref, "#/components/schemas/CreatePaymentLinkRequestEncoded")
+
+      // A new link is a 201 and a repeat a 200, with the same body.
+      assert.equal(
+        (yield* Schema.decodeUnknownEffect(Body)(links?.responses["201"])).content["application/json"].schema.$ref,
+        "#/components/schemas/CreatedPaymentLinkEncoded",
+      )
+      assert.equal(
+        (yield* Schema.decodeUnknownEffect(Body)(links?.responses["200"])).content["application/json"].schema.$ref,
+        "#/components/schemas/PaymentLinkEncoded",
+      )
+
+      for (const code of ["400", "401", "409"]) {
+        assert.ok(code in (links?.responses ?? {}), code)
       }
     }),
   ))
@@ -678,7 +743,7 @@ void test("session, business, then ledger leaves an active NG business in NGN th
       const plane = yield* server()
       const { sub, authorization, id } = yield* withBusiness(plane)
 
-      const response = yield* opened(plane, authorization, id)
+      const response = yield* opened(plane, authorization)
       const { business } = yield* stored(sub)
       const reply = plane.ledger.replies[0]
 
@@ -709,7 +774,7 @@ void test("with a US default configured, a US business opens its account there, 
       const { authorization } = yield* exchange(plane, sub)
       const { id } = (yield* created(plane, authorization, { body: { name: "Acme Inc", country_code: "US" } })).body
 
-      const response = yield* opened(plane, authorization, id)
+      const response = yield* opened(plane, authorization)
       const reply = plane.ledger.replies[0]
 
       assert.ok(reply !== undefined && reply !== "unreachable" && "body" in reply && "reference" in reply.body)
@@ -724,7 +789,7 @@ void test("with a US default configured, a US business opens its account there, 
       assert.deepEqual((yield* me(plane, authorization)).body.business, response.body)
 
       // Repeating either step changes nothing.
-      assert.deepEqual((yield* opened(plane, authorization, id)).json, response.json)
+      assert.deepEqual((yield* opened(plane, authorization)).json, response.json)
       assert.deepEqual((yield* created(plane, authorization, { body: { name: "Acme Inc", country_code: "US" } })).json, response.json)
       assert.deepEqual(yield* createBusiness(plane, authorization, { body: { name: "Acme Inc", country_code: "NG" } }), renamed)
       assert.equal(plane.ledger.requests.length, 1)
@@ -737,8 +802,8 @@ void test("ledger creation ignores a caller-supplied ledger, currency, name, or 
       const plane = yield* server()
       const { authorization, id } = yield* withBusiness(plane)
 
-      const response = yield* opened(plane, authorization, id, {
-        path: `${ledgerPath(id)}?ledger=usd_us&currency_code=USD`,
+      const response = yield* opened(plane, authorization, {
+        path: "/account?ledger=usd_us&currency_code=USD",
         body: { ledger: "usd_us", currency_code: "USD", name: "Other Ltd", holder_ref: "hld_x", payable_account_ref: "acct_x" },
         headers: { "x-ledger": "usd_us" },
       })
@@ -756,10 +821,10 @@ void test("repeating ledger creation returns the business unchanged without aski
   run(
     Effect.gen(function* () {
       const plane = yield* server()
-      const { authorization, id } = yield* withBusiness(plane)
+      const { authorization } = yield* withBusiness(plane)
 
-      const first = yield* opened(plane, authorization, id)
-      const again = yield* opened(plane, authorization, id)
+      const first = yield* opened(plane, authorization)
+      const again = yield* opened(plane, authorization)
 
       assert.deepEqual(again.json, first.json)
       assert.equal(plane.ledger.requests.length, 1)
@@ -781,7 +846,7 @@ void test("an account recorded before an interruption is activated without askin
 
       yield* businesses.recordPayableAccount(Business.ID.make(id), ledger, account)
 
-      const response = yield* opened(plane, authorization, id)
+      const response = yield* opened(plane, authorization)
 
       assert.equal(response.body.status, "active")
       assert.equal(response.body.ledger?.payable_account_ref, account.accountRef)
@@ -800,9 +865,9 @@ void test("an account created before a local failure is recorded on retry", () =
       const lost = Business.Service.of({ ...businesses, activate: () => Effect.die(new Error("connection lost")) })
 
       const failing = yield* server({ ledger, businesses: lost })
-      const { sub, authorization, id } = yield* withBusiness(failing)
+      const { sub, authorization } = yield* withBusiness(failing)
 
-      const first = yield* openLedger(failing, authorization, id)
+      const first = yield* openAccount(failing, authorization)
 
       assert.equal(first.status, 500)
 
@@ -813,7 +878,7 @@ void test("an account created before a local failure is recorded on retry", () =
       assert.equal(interrupted.primaryLedger.payableAccountRef, null)
 
       const plane = yield* server({ ledger })
-      const resumed = yield* opened(plane, authorization, id)
+      const resumed = yield* opened(plane, authorization)
       const reply = ledger.replies[0]
 
       assert.ok(reply !== undefined && reply !== "unreachable" && "body" in reply && "reference" in reply.body && "holder_reference" in reply.body)
@@ -836,7 +901,7 @@ void test("a moved country default applies to new businesses, not to an existing
       const failing = yield* server({ ledger, businesses: lost })
       const existing = yield* withBusiness(failing)
 
-      assert.equal((yield* openLedger(failing, existing.authorization, existing.id)).status, 500)
+      assert.equal((yield* openAccount(failing, existing.authorization)).status, 500)
 
       const original = (yield* stored(existing.sub)).business?.primaryLedger.slug
       const moved = Ledger.Slug.make(`ngn_moved_${ulid().toLowerCase()}`)
@@ -851,10 +916,10 @@ void test("a moved country default applies to new businesses, not to an existing
       const { retried, later } = yield* Effect.gen(function* () {
         yield* Testing.makeCountryDefault(moved)
 
-        const retried = yield* opened(plane, existing.authorization, existing.id)
+        const retried = yield* opened(plane, existing.authorization)
         const later = yield* withBusiness(plane)
 
-        return { retried, later: yield* opened(plane, later.authorization, later.id) }
+        return { retried, later: yield* opened(plane, later.authorization) }
       }).pipe(Effect.ensuring(Effect.orDie(Testing.makeCountryDefault(original))))
 
       assert.equal(retried.body.status, "active")
@@ -871,10 +936,10 @@ void test("concurrent ledger creation for one business settles on one account", 
   run(
     Effect.gen(function* () {
       const plane = yield* server()
-      const { authorization, id } = yield* withBusiness(plane)
+      const { authorization } = yield* withBusiness(plane)
 
       const responses = yield* Effect.all(
-        Array.from({ length: 8 }, () => opened(plane, authorization, id)),
+        Array.from({ length: 8 }, () => opened(plane, authorization)),
         { concurrency: "unbounded" },
       )
 
@@ -884,22 +949,17 @@ void test("concurrent ledger creation for one business settles on one account", 
     }),
   ))
 
-void test("another principal's or an unknown business is not found, before the ledger is asked", () =>
+void test("a caller without a business is told to create one, before the ledger is asked", () =>
   run(
     Effect.gen(function* () {
       const plane = yield* server()
-      const owner = yield* withBusiness(plane)
-      const other = yield* withBusiness(plane)
       const stranger = yield* exchange(plane, fingerprint())
 
-      const notFound = { message: "No such business.", error: { code: "not_found" } }
-
-      assert.deepEqual(yield* openLedger(plane, other.authorization, owner.id), { status: 404, json: notFound })
-      assert.deepEqual(yield* openLedger(plane, stranger.authorization, owner.id), { status: 404, json: notFound })
-      assert.deepEqual(yield* openLedger(plane, owner.authorization, `biz_${ulid()}`), { status: 404, json: notFound })
-      assert.deepEqual(yield* openLedger(plane, owner.authorization, "not-an-id"), { status: 404, json: notFound })
+      assert.deepEqual(yield* openAccount(plane, stranger.authorization), {
+        status: 409,
+        json: { message: "Create a business first.", error: { code: "business_required" } },
+      })
       assert.equal(plane.ledger.requests.length, 0)
-      assert.equal((yield* me(plane, owner.authorization)).body.business?.status, "created")
       assert.equal((yield* me(plane, stranger.authorization)).body.business, null)
     }),
   ))
@@ -921,11 +981,11 @@ void test("an account the ledger already gave another business is a conflict, an
       const first = yield* withBusiness(plane)
       const second = yield* withBusiness(plane)
 
-      assert.equal((yield* opened(plane, first.authorization, first.id)).body.ledger?.payable_account_ref, reference)
+      assert.equal((yield* opened(plane, first.authorization)).body.ledger?.payable_account_ref, reference)
 
       const before = (yield* stored(second.sub)).business
 
-      assert.deepEqual(yield* openLedger(plane, second.authorization, second.id), {
+      assert.deepEqual(yield* openAccount(plane, second.authorization), {
         status: 409,
         json: { message: "The business's recorded ledger state conflicts with this request.", error: { code: "conflict" } },
       })
@@ -961,9 +1021,9 @@ void test("a ledger failure is an error response and leaves the business created
 
       for (const [reason, reply, status, code] of cases) {
         const plane = yield* server({ ledger: fakeLedger(reply) })
-        const { sub, authorization, id } = yield* withBusiness(plane)
+        const { sub, authorization } = yield* withBusiness(plane)
 
-        const response = yield* openLedger(plane, authorization, id)
+        const response = yield* openAccount(plane, authorization)
         const body = yield* Schema.decodeUnknownEffect(ErrorBody)(response.json)
         const { business } = yield* stored(sub)
 
@@ -978,11 +1038,11 @@ void test("a ledger failure is an error response and leaves the business created
       // the way of the next.
       for (const reply of ["unreachable", { status: 201, raw: "not JSON" }] satisfies ReadonlyArray<Reply>) {
         const plane = yield* server({ ledger: fakeLedger(() => reply) })
-        const { authorization, id } = yield* withBusiness(plane)
+        const { authorization } = yield* withBusiness(plane)
 
-        yield* openLedger(plane, authorization, id)
+        yield* openAccount(plane, authorization)
 
-        const retried = yield* opened(yield* server(), authorization, id)
+        const retried = yield* opened(yield* server(), authorization)
 
         assert.equal(retried.body.status, "active")
       }
@@ -1022,6 +1082,358 @@ void test("a missing country default is unavailable and one in another currency 
         assert.equal((yield* me(plane, authorization)).body.business, null)
         assert.equal(plane.ledger.requests.length, 0)
       }
+    }),
+  ))
+
+// A caller whose business has opened its account, as the terminal requires
+// before it offers payment links.
+const withActiveBusiness = Effect.fnUntraced(function* (server: Server) {
+  const caller = yield* withBusiness(server)
+
+  yield* opened(server, caller.authorization)
+
+  return caller
+})
+
+const tokenUrl = new RegExp(`^${linkBaseUrl}/[A-Za-z0-9_-]{43}$`)
+
+const validation = ({ status, json }: Effect.Success<ReturnType<typeof send>>) =>
+  Effect.map(
+    Schema.decodeUnknownEffect(
+      Schema.Struct({
+        message: Schema.String,
+        error: Schema.Struct({
+          code: Schema.Literal("validation_error"),
+          details: Schema.Array(Schema.Struct({ location: Schema.String, field: Schema.String, code: Schema.String })),
+        }),
+      }),
+    )(json),
+    (body) => {
+      assert.equal(status, 400)
+
+      // One field can fail several checks.
+      return [...new Set(body.error.details.map(({ location, field }) => `${location}:${field}`))]
+    },
+  )
+
+void test("POST /business/:id/payment_links creates a fixed link in the business's currency and scale, and asks no ledger", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { sub, authorization, id } = yield* withActiveBusiness(plane)
+      const before = (yield* me(plane, authorization)).body.business
+
+      const { status, json, body } = yield* createdLink(plane, authorization, fixedLink, ulid())
+
+      assert.equal(status, 201)
+      assert.match(body.id, /^plink_[0-9A-HJKMNP-TV-Z]{26}$/)
+      assert.match(body.url, tokenUrl)
+      assert.ok(!body.url.includes(body.id.slice(6)))
+      assert.deepEqual(json, {
+        id: body.id,
+        business_id: id,
+        title: "Consulting",
+        description: null,
+        currency_code: "NGN",
+        scale: 2,
+        pricing: { mode: "fixed", amount_minor: 250_000 },
+        url: body.url,
+        created_at: body.created_at,
+      })
+      assert.ok(!Number.isNaN(Date.parse(body.created_at)))
+
+      // Only the account opening reached the ledger, and the business is as it was.
+      assert.equal(plane.ledger.requests.length, 1)
+      assert.deepEqual((yield* me(plane, authorization)).body.business, before)
+      assert.equal((yield* stored(sub)).business?.status, "active")
+    }),
+  ))
+
+void test("a customer-chosen link may leave every amount unset; omitted and null settings are the same", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { authorization } = yield* withActiveBusiness(plane)
+
+      const open = yield* createdLink(plane, authorization, {
+        title: "Community fundraiser",
+        description: "Help equip the library",
+        pricing: { mode: "customer_chooses" },
+      }, ulid())
+
+      assert.equal(open.status, 201)
+      assert.deepEqual(open.body.pricing, new CustomerChoosesPricing({
+        mode: "customer_chooses",
+        suggested_amount_minor: null,
+        minimum_amount_minor: null,
+        maximum_amount_minor: null,
+      }))
+      assert.equal(open.body.description, "Help equip the library")
+
+      const key = ulid()
+
+      const suggested = yield* createdLink(plane, authorization, {
+        title: "Tips",
+        pricing: { mode: "customer_chooses", suggested_amount_minor: 250_000, minimum_amount_minor: null },
+      }, key)
+
+      assert.equal(suggested.status, 201)
+      assert.deepEqual(suggested.body.pricing, new CustomerChoosesPricing({
+        mode: "customer_chooses",
+        suggested_amount_minor: 250_000,
+        minimum_amount_minor: null,
+        maximum_amount_minor: null,
+      }))
+
+      // The same settings spelled the other way are a repeat, not a conflict.
+      const repeat = yield* createdLink(plane, authorization, {
+        title: "Tips",
+        description: null,
+        pricing: { mode: "customer_chooses", suggested_amount_minor: 250_000, maximum_amount_minor: null },
+      }, key)
+
+      assert.equal(repeat.status, 200)
+      assert.deepEqual(repeat.json, suggested.json)
+
+      const bounded = yield* createdLink(plane, authorization, {
+        title: "Donation",
+        pricing: {
+          mode: "customer_chooses",
+          suggested_amount_minor: 5_000,
+          minimum_amount_minor: 1_000,
+          maximum_amount_minor: Number.MAX_SAFE_INTEGER,
+        },
+      }, ulid())
+
+      assert.deepEqual(bounded.body.pricing, new CustomerChoosesPricing({
+        mode: "customer_chooses",
+        suggested_amount_minor: 5_000,
+        minimum_amount_minor: 1_000,
+        maximum_amount_minor: Number.MAX_SAFE_INTEGER,
+      }))
+    }),
+  ))
+
+void test("a retry after a lost response returns the original link; other content under its key conflicts", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { authorization } = yield* withActiveBusiness(plane)
+      const key = ulid()
+
+      // The first answer is the one the terminal never saw.
+      const first = yield* createdLink(plane, authorization, fixedLink, key)
+      const retried = yield* createdLink(plane, authorization, fixedLink, key)
+
+      assert.equal(first.status, 201)
+      assert.equal(retried.status, 200)
+      assert.deepEqual(retried.json, first.json)
+
+      // Surrounding whitespace and a blank description don't change the content.
+      const respaced = yield* createdLink(plane, authorization, { ...fixedLink, title: "  Consulting ", description: "   " }, key)
+
+      assert.equal(respaced.status, 200)
+      assert.deepEqual(respaced.json, first.json)
+
+      const changed: ReadonlyArray<{ readonly [key: string]: Body }> = [
+        { ...fixedLink, title: "Advice" },
+        { ...fixedLink, description: "Hourly" },
+        { ...fixedLink, pricing: { mode: "fixed", amount_minor: 250_001 } },
+        { ...fixedLink, pricing: { mode: "customer_chooses", suggested_amount_minor: 250_000 } },
+      ]
+
+      for (const body of changed) {
+        assert.deepEqual(yield* createLink(plane, authorization, body, key), {
+          status: 409,
+          json: { message: "This idempotency key already created a different payment link.", error: { code: "conflict" } },
+        })
+      }
+
+      assert.deepEqual((yield* createdLink(plane, authorization, fixedLink, key)).json, first.json)
+    }),
+  ))
+
+void test("a link's URL is its share token under the current base, so moving the base moves every link", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { authorization } = yield* withActiveBusiness(plane)
+      const key = ulid()
+
+      const first = yield* createdLink(plane, authorization, fixedLink, key)
+      const token = first.body.url.slice(`${linkBaseUrl}/`.length)
+
+      const moved = yield* server({ linkBaseUrl: "https://elsewhere.test/pay" })
+      const repeat = yield* createdLink(moved, authorization, fixedLink, key)
+
+      assert.equal(repeat.status, 200)
+      assert.equal(repeat.body.id, first.body.id)
+      assert.equal(repeat.body.url, `https://elsewhere.test/pay/${token}`)
+    }),
+  ))
+
+void test("the link base must be an absolute http(s) URL without credentials, query, or fragment", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      assert.equal(yield* PaymentLinkUrls.base("https://pay.example/links"), "https://pay.example/links/")
+      assert.equal(yield* PaymentLinkUrls.base("http://localhost:3000/l/"), "http://localhost:3000/l/")
+
+      for (const raw of ["", "/links", "pay.example/links", "ftp://pay.example", "https://u:p@pay.example", "https://pay.example/?a=1", "https://pay.example/?", "https://pay.example/#x"]) {
+        assert.ok(Exit.isFailure(yield* Effect.exit(PaymentLinkUrls.base(raw))), raw)
+      }
+
+      const unbuilt = yield* Effect.exit(Layer.build(PaymentLinkUrls.layerFrom("pay.example")).pipe(Effect.scoped))
+
+      assert.ok(Exit.isFailure(unbuilt) && !Cause.hasDies(unbuilt.cause))
+    }),
+  ))
+
+void test("concurrent identical creations settle on one link", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { authorization } = yield* withActiveBusiness(plane)
+      const key = ulid()
+
+      const responses = yield* Effect.all(
+        Array.from({ length: 8 }, () => createdLink(plane, authorization, fixedLink, key)),
+        { concurrency: "unbounded" },
+      )
+
+      assert.equal(new Set(responses.map(({ body }) => body.id)).size, 1)
+      assert.deepEqual(responses.map(({ status }) => status).sort((a, b) => a - b), [200, 200, 200, 200, 200, 200, 200, 201])
+    }),
+  ))
+
+void test("a key is scoped to the caller's business; a caller without one is told to create it, and nothing is saved", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const ours = yield* withActiveBusiness(plane)
+      const theirs = yield* withActiveBusiness(plane)
+      const stranger = yield* exchange(plane, fingerprint())
+      const key = ulid()
+
+      assert.deepEqual(yield* createLink(plane, stranger.authorization, fixedLink, key), {
+        status: 409,
+        json: { message: "Create a business first.", error: { code: "business_required" } },
+      })
+
+      // A business ID in the body chooses nothing.
+      const mine = yield* createdLink(plane, ours.authorization, { ...fixedLink, business_id: theirs.id }, key)
+      const yours = yield* createdLink(plane, theirs.authorization, { ...fixedLink, title: "Theirs" }, key)
+
+      assert.equal(mine.status, 201)
+      assert.equal(yours.status, 201)
+      assert.notEqual(mine.body.id, yours.body.id)
+      assert.equal(mine.body.business_id, ours.id)
+      assert.equal(yours.body.business_id, theirs.id)
+    }),
+  ))
+
+void test("a link takes its currency and scale from the business, whatever the request says", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { authorization, id } = yield* withActiveBusiness(plane)
+
+      const { status, body } = yield* createdLink(plane, authorization, {
+        ...fixedLink,
+        currency_code: "USD",
+        scale: 0,
+        url: "https://evil.test/x",
+        business_id: `biz_${ulid()}`,
+        ledger: "usd_us",
+        account_ref: "acct_x",
+        status: "active",
+        path: "/tmp/business.db",
+        pricing: { mode: "fixed", amount_minor: 100, currency: "USD" },
+      }, ulid())
+
+      assert.equal(status, 201)
+      assert.equal(body.business_id, id)
+      assert.equal(body.currency_code, "NGN")
+      assert.equal(body.scale, 2)
+      assert.match(body.url, tokenUrl)
+      assert.deepEqual(body.pricing, new FixedPricing({ mode: "fixed", amount_minor: 100 }))
+    }),
+  ))
+
+void test("a business whose account isn't open yet still gets links in its saved currency, and stays created", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { sub, authorization } = yield* withBusiness(plane)
+
+      const { status, body } = yield* createdLink(plane, authorization, fixedLink, ulid())
+
+      assert.equal(status, 201)
+      assert.equal(body.currency_code, "NGN")
+      assert.equal(body.scale, 2)
+      assert.equal((yield* stored(sub)).business?.status, "created")
+      assert.equal(plane.ledger.requests.length, 0)
+    }),
+  ))
+
+void test("invalid content or idempotency keys are a 400 naming each field, and save nothing", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { authorization } = yield* withActiveBusiness(plane)
+
+      const fixed = (pricing: { readonly [key: string]: Body }) => ({ ...fixedLink, pricing: { mode: "fixed", ...pricing } })
+      const chooses = (pricing: { readonly [key: string]: Body }) => ({ ...fixedLink, pricing: { mode: "customer_chooses", ...pricing } })
+
+      const cases: ReadonlyArray<readonly [string, { readonly [key: string]: Body }, ReadonlyArray<string>]> = [
+        ["no title", { pricing: fixedLink.pricing }, ["body:title"]],
+        ["blank title", { ...fixedLink, title: "  " }, ["body:title"]],
+        ["long title", { ...fixedLink, title: ` ${"x".repeat(256)} ` }, ["body:title"]],
+        ["title not a string", { ...fixedLink, title: 5 }, ["body:title"]],
+        ["long description", { ...fixedLink, description: "x".repeat(501) }, ["body:description"]],
+        ["no pricing", { title: "Consulting" }, ["body:pricing"]],
+        ["no mode", { ...fixedLink, pricing: { amount_minor: 100 } }, []],
+        ["unknown mode", { ...fixedLink, pricing: { mode: "donation", amount_minor: 100 } }, []],
+        ["fixed without amount", fixed({}), ["body:pricing.amount_minor"]],
+        ["fixed with null amount", fixed({ amount_minor: null }), ["body:pricing.amount_minor"]],
+        ["zero amount", fixed({ amount_minor: 0 }), ["body:pricing.amount_minor"]],
+        ["negative amount", fixed({ amount_minor: -100 }), ["body:pricing.amount_minor"]],
+        ["fractional amount", fixed({ amount_minor: 1.5 }), ["body:pricing.amount_minor"]],
+        ["unsafe amount", fixed({ amount_minor: Number.MAX_SAFE_INTEGER + 1 }), ["body:pricing.amount_minor"]],
+        ["amount as a string", fixed({ amount_minor: "100" }), ["body:pricing.amount_minor"]],
+        ["fixed with a suggestion", fixed({ amount_minor: 100, suggested_amount_minor: 100 }), ["body:pricing.suggested_amount_minor"]],
+        ["fixed with a null minimum", fixed({ amount_minor: 100, minimum_amount_minor: null }), ["body:pricing.minimum_amount_minor"]],
+        ["fixed with a maximum", fixed({ amount_minor: 100, maximum_amount_minor: 100 }), ["body:pricing.maximum_amount_minor"]],
+        ["customer chooses with an amount", chooses({ amount_minor: 100 }), ["body:pricing.amount_minor"]],
+        ["zero suggestion", chooses({ suggested_amount_minor: 0 }), ["body:pricing.suggested_amount_minor"]],
+        ["fractional minimum", chooses({ minimum_amount_minor: 0.5 }), ["body:pricing.minimum_amount_minor"]],
+        ["inverted bounds", chooses({ minimum_amount_minor: 200, maximum_amount_minor: 100 }), ["body:pricing.maximum_amount_minor"]],
+        ["suggestion below the minimum", chooses({ suggested_amount_minor: 99, minimum_amount_minor: 100 }), ["body:pricing.suggested_amount_minor"]],
+        ["suggestion above the maximum", chooses({ suggested_amount_minor: 101, maximum_amount_minor: 100 }), ["body:pricing.suggested_amount_minor"]],
+      ]
+
+      for (const [reason, body, fields] of cases) {
+        const key = ulid()
+        const response = yield* createLink(plane, authorization, body, key)
+        const details = yield* validation(response)
+
+        // An unmatched mode fails every member; its fields are the union's.
+        if (fields.length > 0) {
+          assert.deepEqual(details, fields, reason)
+        } else {
+          assert.ok(details.length > 0 && details.every((detail) => detail.startsWith("body:pricing")), reason)
+        }
+
+        // Nothing was saved under the key.
+        assert.equal((yield* createdLink(plane, authorization, fixedLink, key)).status, 201, reason)
+      }
+
+      for (const key of [undefined, "", " ", "has space", "x".repeat(256), "naïve"]) {
+        const response = yield* createLink(plane, authorization, fixedLink, key)
+
+        assert.deepEqual(yield* validation(response), ["header:idempotency-key"], `key ${String(key)}`)
+      }
+
+      assert.equal((yield* createdLink(plane, authorization, fixedLink, "x".repeat(255))).status, 201)
     }),
   ))
 
@@ -1076,10 +1488,11 @@ void test("accepts only tokens plane would have issued", () =>
         "garbage": "not-a-token",
       }
 
-      const routes: ReadonlyArray<Pick<Call, "method" | "path" | "body">> = [
+      const routes: ReadonlyArray<Pick<Call, "method" | "path" | "body" | "headers">> = [
         { method: "GET", path: "/me" },
         { method: "POST", path: "/business", body: { name: "Acme Ltd" } },
-        { method: "POST", path: ledgerPath(`biz_${ulid()}`) },
+        { method: "POST", path: "/account" },
+        { method: "POST", path: "/payment_links", body: fixedLink, headers: { "idempotency-key": ulid() } },
       ]
 
       for (const route of routes) {

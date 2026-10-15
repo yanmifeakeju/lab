@@ -1,4 +1,4 @@
-import { Effect, Match, SchemaIssue } from "effect"
+import { Effect, Match, Predicate, SchemaIssue } from "effect"
 import type * as HttpApiError from "effect/unstable/httpapi/HttpApiError"
 import * as HttpApiMiddleware from "effect/unstable/httpapi/HttpApiMiddleware"
 
@@ -56,12 +56,15 @@ const details = (
       MissingKey: () => detail("required", `${field} is required`),
       UnexpectedKey: () => detail("unknown_field", `${field} is not allowed`),
       InvalidType: (leaf) => detail("invalid_type", formatIssue(leaf)),
+      // A check across fields points its issue at the one that broke it.
       Filter: (filter) =>
-        detail(
-          filterCodes.get(String(filter.filter.annotations?.["representation"]?.id)) ??
-            "invalid_value",
-          formatIssue(filter),
-        ),
+        Predicate.isTagged(filter.issue, "Pointer")
+          ? details(filter.issue, location, path)
+          : detail(
+              filterCodes.get(String(filter.filter.annotations?.["representation"]?.id)) ??
+                "invalid_value",
+              formatIssue(filter),
+            ),
       // HttpApi decodes a payload as the union of the endpoint's payload
       // schemas; an AnyOf with no member issues means no member's type fit.
       AnyOf: (anyOf) =>

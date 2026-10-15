@@ -1,11 +1,13 @@
-import type {
-  AuthorizedClient,
-  BusinessInfoEncoded,
+import {
+  type AuthorizedClient,
+  type BusinessInfoEncoded,
+  CreatePaymentLinkRequestEncoded,
 } from "@pay-tty/plane-client";
 import {
   Clock,
   Data,
   Effect,
+  Encoding,
   Match,
   Ref,
   Result,
@@ -14,6 +16,7 @@ import {
 } from "effect";
 import * as HttpClientError from "effect/unstable/http/HttpClientError";
 
+import { type Form, type Link, type Request, toRequest } from "./payment-link.ts";
 import { Plane } from "./plane.ts";
 
 export type Business = BusinessInfoEncoded;
@@ -24,6 +27,9 @@ export type View = Data.TaggedEnum<{
   Unknown: {};
   NoBusiness: {};
   HasBusiness: { readonly business: Business };
+  /** The payment-link form, for a business whose account is open. */
+  CreatingLink: { readonly business: Business };
+  LinkCreated: { readonly business: Business; readonly link: Link };
 }>;
 
 export const View = Data.taggedEnum<View>();
@@ -33,7 +39,13 @@ export const View = Data.taggedEnum<View>();
 export type Operation = Data.TaggedEnum<{
   Load: {};
   CreateBusiness: { readonly name: string };
-  OpenLedger: { readonly business: Business };
+  OpenAccount: {};
+  // The key goes with the request, so Retry can't create a second link.
+  CreatePaymentLink: {
+    readonly business: Business;
+    readonly request: Request;
+    readonly key: string;
+  };
 }>;
 
 export const Operation = Data.taggedEnum<Operation>();
@@ -82,7 +94,13 @@ export interface Interface {
   /** Ignored unless the form is showing and idle. */
   readonly createBusiness: (name: string) => Effect.Effect<void>;
   /** Ignored unless a created business is showing and idle. */
-  readonly openLedger: Effect.Effect<void>;
+  readonly openAccount: Effect.Effect<void>;
+  /** Shows the link form; ignored unless an active business is showing and idle. */
+  readonly startPaymentLink: Effect.Effect<void>;
+  /** Ignored unless the form is showing and idle. */
+  readonly createPaymentLink: (form: Form) => Effect.Effect<void>;
+  /** Back to the business from the form or a created link, when idle. */
+  readonly back: Effect.Effect<void>;
   /** Repeats the failed operation; ignored unless the popup offers it. */
   readonly retry: Effect.Effect<void>;
   /** Ignored unless the popup offers it. */
@@ -123,10 +141,10 @@ const popupFor = (operation: Operation, failure: Failure): Popup => {
           close: "refresh" as const,
         })),
       ),
-    OpenLedger: () =>
+    OpenAccount: () =>
       Match.value(code).pipe(
-        Match.when("not_found", () => ({
-          message: "This business couldn't be found.",
+        Match.when("business_required", () => ({
+          message: "Create a business first.",
           retry: null,
           close: "refresh" as const,
         })),
@@ -145,8 +163,53 @@ const popupFor = (operation: Operation, failure: Failure): Popup => {
           close: "refresh" as const,
         })),
       ),
+    // Close keeps the form as typed. Submitting it unchanged reuses the key,
+    // so a link whose answer was lost comes back instead of a second one.
+    CreatePaymentLink: () =>
+      Match.value(code).pipe(
+        Match.when("validation_error", () => ({
+          message: "Plane refused the link's details. Check them and try again.",
+          retry: null,
+          close: "dismiss" as const,
+        })),
+        Match.when("conflict", () => ({
+          message:
+            "That request was already used for a different link, so no link was created. Submit again to create one.",
+          retry: null,
+          close: "dismiss" as const,
+        })),
+        Match.when("business_required", () => ({
+          message: "Create a business first.",
+          retry: null,
+          close: "refresh" as const,
+        })),
+        Match.orElse(() => ({
+          message: "Couldn't create the payment link.",
+          retry: operation,
+          close: "dismiss" as const,
+        })),
+      ),
   });
 };
+
+// Refusals that settle the submission: nothing was created under its key.
+const settles = (failure: Failure) => {
+  const code = codeOf(failure);
+
+  return code === "validation_error" || code === "conflict" || code === "business_required";
+};
+
+const sameRequest = Schema.toEquivalence(CreatePaymentLinkRequestEncoded);
+
+const idempotencyKey = Effect.sync(() =>
+  Encoding.encodeBase64Url(crypto.getRandomValues(new Uint8Array(16)))
+);
+
+interface Submission {
+  readonly businessId: string;
+  readonly request: Request;
+  readonly key: string;
+}
 
 /**
  * One connection's session, for the key that authenticated it. Nothing is
@@ -164,6 +227,10 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
   const token = yield* Ref.make<
     { readonly value: string; readonly expiresAt: number } | undefined
   >(undefined);
+
+  // The last link submission whose outcome is unknown, kept for this
+  // connection only.
+  const unresolved = yield* Ref.make<Submission | undefined>(undefined);
 
   // The SSH key already proved who this is; plane trades it for a token.
   const exchange = Effect.gen(function* () {
@@ -238,15 +305,29 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
               (business) => View.HasBusiness({ business }),
             ),
           // The business stays created whatever failed, so repeating this is safe.
-          OpenLedger: ({ business }) =>
+          OpenAccount: () =>
             Effect.map(
               authorized((client) =>
-                client.createBusinessLedger(business.id, undefined)
+                client.createAccount(undefined)
               ),
               (opened) => View.HasBusiness({ business: opened }),
             ),
+          CreatePaymentLink: ({ business, request, key }) =>
+            Effect.map(
+              authorized((client) =>
+                client.createPaymentLink({
+                  params: { "idempotency-key": key },
+                  payload: request,
+                })
+              ),
+              (link) => View.LinkCreated({ business, link }),
+            ),
         }),
       );
+
+      if (Operation.$is("CreatePaymentLink")(operation) && (Result.isSuccess(outcome) || settles(outcome.failure))) {
+        yield* Ref.set(unresolved, undefined);
+      }
 
       if (Result.isSuccess(outcome)) {
         return yield* succeed(outcome.success);
@@ -306,22 +387,78 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
     }
   });
 
-  const openLedger = Effect.gen(function* () {
-    const business = yield* SubscriptionRef.modify(
-      state,
-      (current) =>
-        View.$is("HasBusiness")(current.view) &&
-          current.view.business.status === "created" &&
-          current.popup === null &&
-          !current.pending
-          ? ([current.view.business, { ...current, pending: true }] as const)
-          : ([undefined, current] as const),
-    );
+  const openAccount = Effect.gen(function* () {
+    const showing = (current: State) =>
+      View.$is("HasBusiness")(current.view) &&
+      current.view.business.status === "created" &&
+      current.popup === null;
 
-    if (business !== undefined) {
-      yield* perform(Operation.OpenLedger({ business }));
+    if (yield* begin(showing, (current) => ({ ...current, pending: true }))) {
+      yield* perform(Operation.OpenAccount());
     }
   });
+
+  const startPaymentLink = Effect.asVoid(
+    begin(
+      (current) =>
+        View.$is("HasBusiness")(current.view) &&
+        current.view.business.ledger !== null &&
+        current.popup === null,
+      (current) =>
+        View.$is("HasBusiness")(current.view)
+          ? { ...current, view: View.CreatingLink({ business: current.view.business }) }
+          : current,
+    ),
+  );
+
+  const createPaymentLink = Effect.fnUntraced(function* (form: Form) {
+    const showing = (current: State) =>
+      View.$is("CreatingLink")(current.view) && current.popup === null;
+
+    const business = yield* SubscriptionRef.get(state).pipe(
+      Effect.map((current) =>
+        View.$is("CreatingLink")(current.view) ? current.view.business : undefined
+      ),
+    );
+
+    if (business?.ledger == null) {
+      return;
+    }
+
+    const request = toRequest(form, business.ledger.scale);
+
+    if (Result.isFailure(request)) {
+      return yield* begin(showing, (current) => ({
+        ...current,
+        popup: { message: request.failure, retry: null, close: "dismiss" },
+      }));
+    }
+
+    if (!(yield* begin(showing, (current) => ({ ...current, pending: true })))) {
+      return;
+    }
+
+    const fresh = yield* idempotencyKey;
+
+    const key = yield* Ref.modify(unresolved, (held) =>
+      held !== undefined && held.businessId === business.id && sameRequest(held.request, request.success)
+        ? ([held.key, held] as const)
+        : ([fresh, { businessId: business.id, request: request.success, key: fresh }] as const));
+
+    yield* perform(Operation.CreatePaymentLink({ business, request: request.success, key }));
+  });
+
+  const back = Effect.asVoid(
+    begin(
+      (current) =>
+        (View.$is("CreatingLink")(current.view) || View.$is("LinkCreated")(current.view)) &&
+        current.popup === null,
+      (current) =>
+        View.$is("CreatingLink")(current.view) || View.$is("LinkCreated")(current.view)
+          ? { ...current, view: View.HasBusiness({ business: current.view.business }) }
+          : current,
+    ),
+  );
 
   // The popup stays up while the retry runs; its answer replaces or clears it.
   const retry = Effect.gen(function* () {
@@ -360,7 +497,10 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
     state,
     load,
     createBusiness,
-    openLedger,
+    openAccount,
+    startPaymentLink,
+    createPaymentLink,
+    back,
     retry,
     close,
   } satisfies Interface;

@@ -64,20 +64,10 @@ export class Forbidden extends Schema.Error<Forbidden>("ForbiddenResponse")(
   { httpApiStatus: 403 },
 ) {}
 
-// The caller has no business with this ID; one owned by someone else is
-// answered the same way, so it can't be told apart.
-export class NotFound extends Schema.Error<NotFound>("NotFoundResponse")(
-  {
-    message: Schema.NonEmptyString,
-    error: Schema.Struct({ code: Schema.Literal("not_found") }),
-  },
-  { httpApiStatus: 404 },
-) {}
-
 export class Conflict extends Schema.Error<Conflict>("ConflictResponse")(
   {
     message: Schema.NonEmptyString,
-    error: Schema.Struct({ code: Schema.Literals(["conflict", "ledger_rejected"]) }),
+    error: Schema.Struct({ code: Schema.Literals(["conflict", "ledger_rejected", "business_required"]) }),
   },
   { httpApiStatus: 409 },
 ) {}
@@ -100,3 +90,9 @@ export class ServiceUnavailable extends Schema.Error<ServiceUnavailable>("Servic
   },
   { httpApiStatus: 503 },
 ) {}
+
+// The route acts on the caller's business, and there isn't one yet.
+export const businessRequired = new Conflict({
+  message: "Create a business first.",
+  error: { code: "business_required" },
+})

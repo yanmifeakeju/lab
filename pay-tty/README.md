@@ -22,8 +22,10 @@ the Go ledger.
 
 ## Plane's API
 
-`/me` and the business routes take `Authorization: Bearer <token>`; `/health`,
-`/openapi.json`, and the docs page are public.
+`/me`, `/business`, `/account`, and `/payment_links` take `Authorization:
+Bearer <token>`; `/health`, `/openapi.json`, and the docs page are public. A
+principal has at most one business, so routes that act on it take it from the
+token, never the URL. Without one they answer 409 `business_required`.
 
 - `POST /session` — exchanges an identity a trusted gateway verified,
   `{"issuer":"ssh","sub":"<key fingerprint>"}`, for a 15-minute access token.
@@ -38,9 +40,19 @@ the Go ledger.
   gets a 409 `conflict`. Only `NG`
   has a ledger today: a `US` business gets a 503 `country_unavailable` and
   nothing is created.
-- `POST /business/:businessId/ledger` — opens the business's payable account
+- `POST /account` — opens the business's payable account
   in its saved primary ledger, records it on the business, and makes the
   business `active`. No body. Repeating it returns the business unchanged.
+- `POST /payment_links` — creates a payment link from
+  `{"title":"…","description":"…","pricing":{…}}` with a required
+  `Idempotency-Key` header. `pricing` is `{"mode":"fixed","amount_minor":N}`
+  or `{"mode":"customer_chooses"}` with optional `suggested_amount_minor`,
+  `minimum_amount_minor`, and `maximum_amount_minor`; amounts are positive
+  safe integers at the business's scale, and the other mode's settings are
+  refused. Currency, scale, and URL come from the server. A new link is a
+  201; repeating the key with the same content returns the original as a 200,
+  and with other content a 409 `conflict`. Creating a link moves no money and
+  calls no ledger.
 
 A business is `created` until its ledger account is recorded, then `active`;
 there are no other states. A failed ledger call is an error response and
@@ -82,11 +94,17 @@ pnpm --filter @pay-tty/plane token:key   # prints a secret
 PLANE_TOKEN_KEYS=local:<that secret>
 PLANE_TOKEN_SIGNING_KEY_ID=local
 LEDGER_BASE_URL=http://localhost:8080
+PAYMENT_LINK_BASE_URL=http://localhost:3000/links
 ```
+
+Plane refuses to start without a valid `PAYMENT_LINK_BASE_URL`, an absolute
+http(s) URL with no query or fragment. A link's URL is it plus the link's
+random share token. Only the token is stored, so changing the base moves
+every link, old ones included. Nothing serves those URLs yet.
 
 ### The ledger
 
-Only `POST /business/:businessId/ledger` needs it. The ledger has its own
+Only `POST /account` needs it. The ledger has its own
 `DATABASE_URL` in `ledger/.env`, separate from plane's:
 
 ```sh
@@ -100,25 +118,39 @@ agree on a fresh setup. Plane's catalog mirrors each ledger's slug, currency,
 and scale by hand; which ledger is a country's default is plane's alone, set
 by its seed, and moving it only affects businesses created afterwards.
 
-### Run plane
+### Run everything
+
+Once the databases and `.env` files above are set up:
 
 ```sh
-pnpm dev     # plane with --watch
-pnpm start   # plane
+pnpm dev         # the ledger, plane, and the TUI together; Ctrl+C stops all three
+pnpm dev:plane   # plane alone, with --watch
+pnpm start       # plane alone
 ```
+
+`pnpm dev` runs each package's `dev` script through turbo. The ledger is in
+the workspace only for this: `ledger/package.json` runs `go run ./cmd/api`,
+which does not reload on change, so restart after editing Go code. Plane and
+the TUI reload on their own. None of them depend on another to start: plane
+calls the ledger only when an account is opened, and the TUI calls plane when
+someone connects.
 
 A local session, from token to active business:
 
 ```sh
 token=$(curl -s localhost:3000/session -H 'content-type: application/json' \
-  -d '{"issuer":"ssh","sub":"SHA256:local"}' | jq -r .accessToken)
+  -d '{"issuer":"ssh","sub":"SHA256:local"}' | jq -r .access_token)
 
 curl -s localhost:3000/me -H "authorization: Bearer $token"
 
-business=$(curl -s localhost:3000/business -H "authorization: Bearer $token" \
-  -H 'content-type: application/json' -d '{"name":"Acme Ltd"}' | jq -r .id)
+curl -s localhost:3000/business -H "authorization: Bearer $token" \
+  -H 'content-type: application/json' -d '{"name":"Acme Ltd"}'
 
-curl -s -X POST "localhost:3000/business/$business/ledger" -H "authorization: Bearer $token"
+curl -s -X POST localhost:3000/account -H "authorization: Bearer $token"
+
+curl -s localhost:3000/payment_links -H "authorization: Bearer $token" \
+  -H "idempotency-key: $(uuidgen)" -H 'content-type: application/json' \
+  -d '{"title":"Community fundraiser","pricing":{"mode":"customer_chooses","suggested_amount_minor":250000}}'
 ```
 
 ### Run the TUI
@@ -130,6 +162,10 @@ then:
 pnpm --filter @pay-tty/tui start   # or dev, with --watch
 ssh -p 2222 localhost
 ```
+
+Once the business's account is open, `p` opens the payment-link form: Tab
+moves between fields, ←/→ on the pricing row switches between a fixed amount
+and one the customer chooses, Enter creates the link, and Esc cancels.
 
 Ctrl+C or Ctrl+D disconnects. Any SSH key is accepted, and its fingerprint is
 the caller's identity. The

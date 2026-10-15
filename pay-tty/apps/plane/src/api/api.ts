@@ -1,10 +1,12 @@
 import * as HttpApi from "effect/unstable/httpapi/HttpApi"
 import * as OpenApi from "effect/unstable/httpapi/OpenApi"
 
+import { account } from "./account/routes.ts"
 import { business } from "./business/routes.ts"
 import { health } from "./health/routes.ts"
 import { me } from "./me/routes.ts"
 import { SchemaErrorMiddleware } from "./middleware/schema-error.ts"
+import { paymentLinks } from "./payment_links/routes.ts"
 import { session } from "./session/routes.ts"
 
 export const api = HttpApi.make("plane")
@@ -12,6 +14,8 @@ export const api = HttpApi.make("plane")
   .add(session)
   .add(me)
   .add(business)
+  .add(account)
+  .add(paymentLinks)
   .middleware(SchemaErrorMiddleware)
   .annotate(OpenApi.Title, "Plane")
   // Report every failing field rather than the first, like the ledger API.

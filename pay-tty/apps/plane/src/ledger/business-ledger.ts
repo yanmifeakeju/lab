@@ -1,16 +1,10 @@
 import { Business } from "@pay-tty/core/business";
 import { Database } from "@pay-tty/core/database";
-import type { Principal } from "@pay-tty/core/principal";
 import type { ApiErrorResponse } from "@pay-tty/ledger-client";
 import { Context, Effect, Layer, Result, Schema } from "effect";
 import * as HttpClientError from "effect/unstable/http/HttpClientError";
 
 import { LedgerClient } from "./client.ts";
-
-export class NotFoundError extends Schema.TaggedError<NotFoundError>()(
-  "BusinessLedger.NotFoundError",
-  {},
-) {}
 
 /** The business's recorded state rules the request out. */
 export class ConflictError extends Schema.TaggedError<ConflictError>()(
@@ -37,7 +31,6 @@ export class BadResponseError extends Schema.TaggedError<BadResponseError>()(
 ) {}
 
 export type Error =
-  | NotFoundError
   | ConflictError
   | RejectedError
   | UnavailableError
@@ -49,10 +42,7 @@ export interface Interface {
    * was created, records it, and activates the business. Repeating it returns the business as
    * it is; a failure leaves it created, with nothing recorded.
    */
-  readonly create: (
-    principalId: Principal.ID,
-    businessId: string,
-  ) => Effect.Effect<Business.Info, Error>;
+  readonly create: (business: Business.Info) => Effect.Effect<Business.Info, Error>;
 }
 
 export class Service
@@ -98,13 +88,7 @@ const make = Effect.gen(function* () {
   const database = yield* Database;
 
   const create = Effect.fn("BusinessLedger.create")(
-    function* (principalId: Principal.ID, businessId: string) {
-      const business = yield* businesses.findByPrincipal(principalId);
-
-      if (business === undefined || business.id !== businessId) {
-        return yield* new NotFoundError();
-      }
-
+    function* (business: Business.Info) {
       if (business.status === "active") {
         return business;
       }
@@ -175,7 +159,7 @@ const make = Effect.gen(function* () {
           ),
         );
     },
-    // The business was found above, so a missing one is a bug.
+    // A business is never deleted, so a missing one is a bug.
     Effect.catchTag("Business.NotFoundError", Effect.die),
   );
 

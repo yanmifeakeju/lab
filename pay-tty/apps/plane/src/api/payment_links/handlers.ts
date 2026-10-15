@@ -1,0 +1,46 @@
+import { Payments } from "@pay-tty/core/payments"
+import { Effect } from "effect"
+import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder"
+
+import { PaymentLinkUrls } from "../../payment_links/urls.ts"
+import { Conflict } from "../errors.ts"
+import { CurrentBusiness } from "../middleware/business.ts"
+import { api } from "../api.ts"
+import { bounds, paymentLink } from "./routes.ts"
+
+export const PaymentLinksLive = HttpApiBuilder.group(api, "paymentLinks", (handlers) =>
+  handlers.handle("createPaymentLink", ({ headers, payload }) =>
+    Effect.gen(function* () {
+      const business = yield* CurrentBusiness
+      const payments = yield* Payments.Service
+      const urls = yield* PaymentLinkUrls.Service
+
+      const { pricing } = payload
+
+      const details = new Payments.Details({
+        title: payload.title,
+        description: payload.description == null || payload.description === "" ? null : payload.description,
+        pricing:
+          pricing.mode === "fixed"
+            ? new Payments.Fixed({ amountMinor: BigInt(pricing.amount_minor) })
+            : new Payments.CustomerChooses(bounds(pricing)),
+      })
+
+      const { link, created } = yield* payments.createLink(business.id, headers["idempotency-key"], details).pipe(
+        Effect.tapError((error) => Effect.logWarning("payment link not created", error)),
+        Effect.catchTags({
+          // The middleware found it, and a business is never deleted.
+          "Business.NotFoundError": Effect.die,
+          "Payments.ConflictError": () =>
+            new Conflict({
+              message: "This idempotency key already created a different payment link.",
+              error: { code: "conflict" },
+            }),
+        }),
+      )
+
+      // Built from the current base, so moving it moves every link.
+      return paymentLink(link, urls.urlFor(link.shareToken), created)
+    }),
+  ),
+)

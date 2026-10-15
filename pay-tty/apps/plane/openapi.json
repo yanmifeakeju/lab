@@ -211,22 +211,13 @@
         }
       }
     },
-    "/business/{businessId}/ledger": {
+    "/account": {
       "post": {
         "tags": [
-          "business"
+          "account"
         ],
-        "operationId": "business.createBusinessLedger",
-        "parameters": [
-          {
-            "name": "businessId",
-            "in": "path",
-            "schema": {
-              "type": "string"
-            },
-            "required": true
-          }
-        ],
+        "operationId": "account.createAccount",
+        "parameters": [],
         "security": [
           {
             "bearer": []
@@ -263,16 +254,6 @@
               }
             }
           },
-          "404": {
-            "description": "NotFoundResponse",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NotFoundResponseEncoded"
-                }
-              }
-            }
-          },
           "409": {
             "description": "ConflictResponse",
             "content": {
@@ -303,6 +284,92 @@
               }
             }
           }
+        }
+      }
+    },
+    "/payment_links": {
+      "post": {
+        "tags": [
+          "paymentLinks"
+        ],
+        "operationId": "paymentLinks.createPaymentLink",
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "pattern": "^[!-~]{1,255}$"
+            },
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "PaymentLink",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentLinkEncoded"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "CreatedPaymentLink",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedPaymentLinkEncoded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationErrorResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponseEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedResponseEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictResponseEncoded"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePaymentLinkRequestEncoded"
+              }
+            }
+          },
+          "required": true
         }
       }
     }
@@ -665,7 +732,8 @@
                 "type": "string",
                 "enum": [
                   "conflict",
-                  "ledger_rejected"
+                  "ledger_rejected",
+                  "business_required"
                 ]
               }
             },
@@ -711,35 +779,6 @@
         ],
         "additionalProperties": false
       },
-      "NotFoundResponseEncoded": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string",
-            "minLength": 1
-          },
-          "error": {
-            "type": "object",
-            "properties": {
-              "code": {
-                "type": "string",
-                "enum": [
-                  "not_found"
-                ]
-              }
-            },
-            "required": [
-              "code"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "message",
-          "error"
-        ],
-        "additionalProperties": false
-      },
       "BadGatewayResponseEncoded": {
         "type": "object",
         "properties": {
@@ -768,6 +807,307 @@
           "error"
         ],
         "additionalProperties": false
+      },
+      "FixedPricingRequestEncoded": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "fixed"
+            ]
+          },
+          "amount_minor": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "suggested_amount_minor": {
+            "not": {}
+          },
+          "minimum_amount_minor": {
+            "not": {}
+          },
+          "maximum_amount_minor": {
+            "not": {}
+          }
+        },
+        "required": [
+          "mode",
+          "amount_minor"
+        ],
+        "additionalProperties": false
+      },
+      "CustomerChoosesPricingRequestEncoded": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "customer_chooses"
+            ]
+          },
+          "amount_minor": {
+            "not": {}
+          },
+          "suggested_amount_minor": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "minimum_amount_minor": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maximum_amount_minor": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "additionalProperties": false
+      },
+      "CreatePaymentLinkRequestEncoded": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "pattern": ".*\\S.*"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pricing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FixedPricingRequestEncoded"
+              },
+              {
+                "$ref": "#/components/schemas/CustomerChoosesPricingRequestEncoded"
+              }
+            ]
+          }
+        },
+        "required": [
+          "title",
+          "pricing"
+        ],
+        "additionalProperties": false
+      },
+      "FixedPricingEncoded": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "fixed"
+            ]
+          },
+          "amount_minor": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mode",
+          "amount_minor"
+        ],
+        "additionalProperties": false
+      },
+      "CustomerChoosesPricingEncoded": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "customer_chooses"
+            ]
+          },
+          "suggested_amount_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "minimum_amount_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maximum_amount_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "mode",
+          "suggested_amount_minor",
+          "minimum_amount_minor",
+          "maximum_amount_minor"
+        ],
+        "additionalProperties": false
+      },
+      "CreatedPaymentLinkEncoded": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "business_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currency_code": {
+            "type": "string"
+          },
+          "scale": {
+            "type": "integer"
+          },
+          "pricing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FixedPricingEncoded"
+              },
+              {
+                "$ref": "#/components/schemas/CustomerChoosesPricingEncoded"
+              }
+            ]
+          },
+          "url": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "business_id",
+          "title",
+          "description",
+          "currency_code",
+          "scale",
+          "pricing",
+          "url",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "PaymentLinkEncoded": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "business_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currency_code": {
+            "type": "string"
+          },
+          "scale": {
+            "type": "integer"
+          },
+          "pricing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FixedPricingEncoded"
+              },
+              {
+                "$ref": "#/components/schemas/CustomerChoosesPricingEncoded"
+              }
+            ]
+          },
+          "url": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "business_id",
+          "title",
+          "description",
+          "currency_code",
+          "scale",
+          "pricing",
+          "url",
+          "created_at"
+        ],
+        "additionalProperties": false
       }
     },
     "securitySchemes": {
@@ -790,6 +1130,12 @@
     },
     {
       "name": "business"
+    },
+    {
+      "name": "account"
+    },
+    {
+      "name": "paymentLinks"
     }
   ]
 }

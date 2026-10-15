@@ -2,7 +2,14 @@ import * as Effect from "effect/Effect"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
 
-import { type CreateBusinessRequestEncoded, make, type OperationConfig, type SessionRequestEncoded } from "./generated.ts"
+import {
+  type CreateBusinessRequestEncoded,
+  type CreatePaymentLinkRequestEncoded,
+  make,
+  type OperationConfig,
+  type PaymentLinksCreatePaymentLinkParams,
+  type SessionRequestEncoded,
+} from "./generated.ts"
 
 export * from "./generated.ts"
 
@@ -42,7 +49,10 @@ export const createClient = (httpClient: HttpClient.HttpClient, options: ClientO
           SessionCreateSession403: ({ cause }) => Effect.fail(cause),
         }),
       ),
-    /** The routes that take the access token `createSession` issued. */
+    /**
+     * The routes that take the access token `createSession` issued. Those
+     * acting on a business act on the token's.
+     */
     authorized: (token: string) => {
       const client = at(httpClient, options, token)
 
@@ -66,18 +76,29 @@ export const createClient = (httpClient: HttpClient.HttpClient, options: ClientO
               BusinessCreateBusiness503: ({ cause }) => Effect.fail(cause),
             }),
           ),
-        createBusinessLedger: <Config extends OperationConfig>(
-          businessId: string,
-          request: { readonly config?: Config } | undefined,
-        ) =>
-          client.businessCreateBusinessLedger(businessId, request).pipe(
+        createAccount: <Config extends OperationConfig>(request: { readonly config?: Config } | undefined) =>
+          client.accountCreateAccount(request).pipe(
             Effect.catchTags({
-              BusinessCreateBusinessLedger400: ({ cause }) => Effect.fail(cause),
-              BusinessCreateBusinessLedger401: ({ cause }) => Effect.fail(cause),
-              BusinessCreateBusinessLedger404: ({ cause }) => Effect.fail(cause),
-              BusinessCreateBusinessLedger409: ({ cause }) => Effect.fail(cause),
-              BusinessCreateBusinessLedger502: ({ cause }) => Effect.fail(cause),
-              BusinessCreateBusinessLedger503: ({ cause }) => Effect.fail(cause),
+              AccountCreateAccount400: ({ cause }) => Effect.fail(cause),
+              AccountCreateAccount401: ({ cause }) => Effect.fail(cause),
+              AccountCreateAccount409: ({ cause }) => Effect.fail(cause),
+              AccountCreateAccount502: ({ cause }) => Effect.fail(cause),
+              AccountCreateAccount503: ({ cause }) => Effect.fail(cause),
+            }),
+          ),
+        /** A new link answers 201 and a repeat of its key 200, with the same body. */
+        createPaymentLink: <Config extends OperationConfig>(
+          request: {
+            readonly params: PaymentLinksCreatePaymentLinkParams
+            readonly payload: CreatePaymentLinkRequestEncoded
+            readonly config?: Config
+          },
+        ) =>
+          client.paymentLinksCreatePaymentLink(request).pipe(
+            Effect.catchTags({
+              PaymentLinksCreatePaymentLink400: ({ cause }) => Effect.fail(cause),
+              PaymentLinksCreatePaymentLink401: ({ cause }) => Effect.fail(cause),
+              PaymentLinksCreatePaymentLink409: ({ cause }) => Effect.fail(cause),
             }),
           ),
       }

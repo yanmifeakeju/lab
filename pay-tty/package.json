@@ -8,7 +8,8 @@
     "node": ">=24"
   },
   "scripts": {
-    "dev": "turbo run dev --filter=@pay-tty/plane",
+    "dev": "turbo run dev --filter=@pay-tty/ledger --filter=@pay-tty/plane --filter=@pay-tty/tui",
+    "dev:plane": "turbo run dev --filter=@pay-tty/plane",
     "start": "turbo run start --filter=@pay-tty/plane",
     "generate:client": "pnpm --filter @pay-tty/plane openapi && pnpm --filter @pay-tty/ledger-client --filter @pay-tty/plane-client generate",
     "generate:client:check": "pnpm --filter @pay-tty/plane openapi:check && pnpm --filter @pay-tty/ledger-client --filter @pay-tty/plane-client generate:check",

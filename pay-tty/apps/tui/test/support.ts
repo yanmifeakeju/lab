@@ -1,4 +1,4 @@
-import { type BusinessInfoEncoded, createClient } from "@pay-tty/plane-client"
+import { type BusinessInfoEncoded, createClient, CreatePaymentLinkRequestEncoded, type PaymentLinkEncoded } from "@pay-tty/plane-client"
 import { Effect, Layer, Match, Schema } from "effect"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientError from "effect/unstable/http/HttpClientError"
@@ -11,6 +11,7 @@ export interface Call {
   readonly method: string
   readonly path: string
   readonly authorization: string | null
+  readonly idempotencyKey: string | null
   readonly body: unknown
 }
 
@@ -21,7 +22,8 @@ export interface Routes {
   readonly session?: (call: Call) => Reply
   readonly me?: (call: Call) => Reply
   readonly createBusiness?: (call: Call) => Reply
-  readonly openLedger?: (call: Call) => Reply
+  readonly openAccount?: (call: Call) => Reply
+  readonly createPaymentLink?: (call: Call) => Reply
 }
 
 export const business = (fields: Partial<BusinessInfoEncoded> = {}): BusinessInfoEncoded => ({
@@ -76,6 +78,7 @@ export const fakePlane = (routes: Routes) => {
         method: web.method,
         path: url.pathname,
         authorization: web.headers.get("authorization"),
+        idempotencyKey: web.headers.get("idempotency-key"),
         body: text === "" ? null : yield* Effect.orDie(Schema.decodeEffect(Json)(text)),
       }
 
@@ -85,7 +88,8 @@ export const fakePlane = (routes: Routes) => {
         Match.when("/session", () => session),
         Match.when("/me", () => routes.me),
         Match.when("/business", () => routes.createBusiness),
-        Match.orElse(() => routes.openLedger),
+        Match.when("/payment_links", () => routes.createPaymentLink),
+        Match.orElse(() => routes.openAccount),
       )
 
       const reply = route?.(call) ?? { status: 404, body: {} }
@@ -126,3 +130,41 @@ export const inTurn = (...replies: ReadonlyArray<Reply>) => {
   return (): Reply => (queue.length > 1 ? (queue.shift() ?? "unreachable") : (queue[0] ?? "unreachable"))
 }
 
+
+// What plane returns for a link created from this request.
+export const linkFor = (
+  request: CreatePaymentLinkRequestEncoded,
+  fields: Partial<PaymentLinkEncoded> = {},
+): PaymentLinkEncoded => ({
+    id: "plink_01K33YV8M82N9MXP4E7J6B1QWK",
+    business_id: "biz_1",
+    title: request.title,
+    description: request.description ?? null,
+    currency_code: "NGN",
+    scale: 2,
+    pricing:
+      request.pricing.mode === "fixed"
+        ? { mode: "fixed", amount_minor: request.pricing.amount_minor }
+        : {
+            mode: "customer_chooses",
+            suggested_amount_minor: request.pricing.suggested_amount_minor ?? null,
+            minimum_amount_minor: request.pricing.minimum_amount_minor ?? null,
+            maximum_amount_minor: request.pricing.maximum_amount_minor ?? null,
+          },
+    url: "https://pay.test/links/tok",
+    created_at: "2026-10-15T00:00:00.000Z",
+    ...fields,
+})
+
+// Plane's answer to a creation: the link, 201 when new.
+export const createdLink = (status = 201) => (call: Call): Reply =>
+  Schema.is(CreatePaymentLinkRequestEncoded)(call.body)
+    ? { status, body: linkFor(call.body) }
+    : failure(400, "validation_error")
+
+// These replies in order, then `rest` for every later call.
+export const first = (...replies: ReadonlyArray<Reply>) => (rest: (call: Call) => Reply) => {
+  const queue = [...replies]
+
+  return (call: Call): Reply => queue.shift() ?? rest(call)
+}

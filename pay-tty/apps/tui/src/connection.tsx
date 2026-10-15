@@ -3,6 +3,7 @@ import { Effect, FiberSet, Stream, SubscriptionRef } from "effect"
 import { createSignal } from "solid-js"
 
 import { App } from "./app.tsx"
+import type { Form } from "./payment-link.ts"
 import { Session, type State } from "./session.ts"
 
 /**
@@ -29,7 +30,10 @@ export const connect = (
 
       const actions = {
         createBusiness: (name: string) => void run(session.createBusiness(name)),
-        openLedger: () => void run(session.openLedger),
+        openAccount: () => void run(session.openAccount),
+        startPaymentLink: () => void run(session.startPaymentLink),
+        createPaymentLink: (form: Form) => void run(session.createPaymentLink(form)),
+        back: () => void run(session.back),
         retry: () => void run(session.retry),
         close: () => void run(session.close),
         quit: end,

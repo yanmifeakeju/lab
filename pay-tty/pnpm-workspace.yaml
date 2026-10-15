@@ -1,6 +1,7 @@
 packages:
   - "apps/*"
   - "packages/*"
+  - "ledger"
 
 allowBuilds:
   cpu-features: false
