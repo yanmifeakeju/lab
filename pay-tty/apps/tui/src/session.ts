@@ -174,11 +174,11 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
     });
 
     yield* Ref.set(token, {
-      value: session.accessToken,
-      expiresAt: now + session.expiresIn * 1000,
+      value: session.access_token,
+      expiresAt: now + session.expires_in * 1000,
     });
 
-    return session.accessToken;
+    return session.access_token;
   });
 
   const currentToken = Effect.gen(function* () {

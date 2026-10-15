@@ -435,23 +435,23 @@
       "SessionResponseEncoded": {
         "type": "object",
         "properties": {
-          "accessToken": {
+          "access_token": {
             "type": "string"
           },
-          "tokenType": {
+          "token_type": {
             "type": "string",
             "enum": [
               "Bearer"
             ]
           },
-          "expiresIn": {
+          "expires_in": {
             "type": "integer"
           }
         },
         "required": [
-          "accessToken",
-          "tokenType",
-          "expiresIn"
+          "access_token",
+          "token_type",
+          "expires_in"
         ],
         "additionalProperties": false
       },

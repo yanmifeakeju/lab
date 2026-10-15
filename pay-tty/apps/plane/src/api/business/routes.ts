@@ -4,7 +4,7 @@ import * as HttpApiEndpoint from "effect/unstable/httpapi/HttpApiEndpoint"
 import * as HttpApiGroup from "effect/unstable/httpapi/HttpApiGroup"
 
 import { BadGateway, Conflict, NotFound, ServiceUnavailable } from "../errors.ts"
-import { Authentication } from "./middleware.ts"
+import { Authentication } from "../middleware/authentication.ts"
 
 // Snake case on the wire, timestamps as ISO 8601 strings; `businessInfo` maps
 // core's camelCase and dates explicitly. /me and /business share it.

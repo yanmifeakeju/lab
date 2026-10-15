@@ -5,9 +5,24 @@ import { createServer } from "node:http"
 import { NodeHttpServer } from "@effect/platform-node"
 import { Config, Layer } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
+import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder"
+import * as HttpApiScalar from "effect/unstable/httpapi/HttpApiScalar"
 
-import { ApiLive } from "./handlers/index.ts"
+import { api } from "./api.ts"
+import { BusinessLive } from "./business/handlers.ts"
+import { HealthLive } from "./health/handlers.ts"
+import { MeLive } from "./me/handlers.ts"
 import { UnknownErrorResponse } from "./middleware/defect.ts"
+import { SchemaErrorLive } from "./middleware/schema-error.ts"
+import { SessionLive } from "./session/handlers.ts"
+
+export const ApiLive = Layer.mergeAll(
+  HttpApiBuilder.layer(api, { openapiPath: "/openapi.json" }),
+  HttpApiScalar.layer(api),
+).pipe(
+  Layer.provide(Layer.mergeAll(HealthLive, SessionLive, MeLive, BusinessLive)),
+  Layer.provide(SchemaErrorLive),
+)
 
 const ServerLive = NodeHttpServer.layerConfig(createServer, {
   port: Config.Port("PORT").pipe(Config.withDefault(3000)),

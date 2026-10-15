@@ -9,7 +9,13 @@ import {
   ValidationErrorDetail,
   type DetailCode,
 } from "../errors.ts"
-import { SchemaErrorMiddleware } from "../routes/middleware.ts"
+
+// Declared on the whole API so a request that fails its schema is answered as
+// a 400 the client can read, not a defect.
+export class SchemaErrorMiddleware extends HttpApiMiddleware.Service<SchemaErrorMiddleware>()(
+  "SchemaErrorMiddleware",
+  { error: InvalidRequestError },
+) {}
 
 const formatIssue = SchemaIssue.makeFormatterDefault()
 

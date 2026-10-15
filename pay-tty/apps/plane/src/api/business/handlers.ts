@@ -10,8 +10,8 @@ import {
   ServiceUnavailable,
 } from "../errors.ts";
 import { CurrentPrincipal } from "../principal.ts";
-import { businessInfo } from "../routes/business.ts";
-import { api } from "../routes/index.ts";
+import { api } from "../api.ts";
+import { businessInfo } from "./routes.ts";
 
 // Fixed messages: the reasons carry account refs and upstream detail, so
 // they are logged, not sent.

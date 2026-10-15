@@ -14,10 +14,10 @@ import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import { decodeJwt, type JWTHeaderParameters, type JWTPayload, SignJWT } from "jose"
 import { ulid } from "ulid"
 
-import { BusinessInfo, BusinessLedger } from "../src/api/routes/business.ts"
-import { MeResponse } from "../src/api/routes/me.ts"
-import { SessionResponse } from "../src/api/routes/session.ts"
-import { ApiLive } from "../src/api/handlers/index.ts"
+import { BusinessInfo, BusinessLedger } from "../src/api/business/routes.ts"
+import { MeResponse } from "../src/api/me/routes.ts"
+import { SessionResponse } from "../src/api/session/routes.ts"
+import { ApiLive } from "../src/api/server.ts"
 import { AuthenticationLive } from "../src/api/middleware/authentication.ts"
 import { UnknownErrorResponse } from "../src/api/middleware/defect.ts"
 import { BusinessLedger as BusinessLedgerService } from "../src/ledger/business-ledger.ts"
@@ -120,7 +120,7 @@ const exchange = Effect.fnUntraced(function* (server: Server, sub: string) {
   // Exactly the token fields, whether or not the principal has a business.
   const session = yield* Schema.decodeUnknownEffect(SessionResponse)(json, strict)
 
-  return { session, authorization: `Bearer ${session.accessToken}` }
+  return { session, authorization: `Bearer ${session.access_token}` }
 })
 
 // Decoded strictly, so a 401 or a malformed body fails the test here.
@@ -286,9 +286,9 @@ void test("a session exchange issues a bearer token and creates only the princip
       const plane = yield* server()
       const { session, authorization } = yield* exchange(plane, fingerprint())
 
-      assert.equal(session.tokenType, "Bearer")
-      assert.equal(session.expiresIn, 900)
-      assert.match(decodeJwt(session.accessToken).sub ?? "", /^prn_/)
+      assert.equal(session.token_type, "Bearer")
+      assert.equal(session.expires_in, 900)
+      assert.match(decodeJwt(session.access_token).sub ?? "", /^prn_/)
       assert.equal((yield* me(plane, authorization)).body.business, null)
     }),
   ))
@@ -303,8 +303,8 @@ void test("repeated exchanges for one identity name the same principal", () =>
       const second = yield* exchange(plane, sub)
       const other = yield* exchange(plane, fingerprint())
 
-      assert.equal(decodeJwt(second.session.accessToken).sub, decodeJwt(first.session.accessToken).sub)
-      assert.notEqual(decodeJwt(other.session.accessToken).sub, decodeJwt(first.session.accessToken).sub)
+      assert.equal(decodeJwt(second.session.access_token).sub, decodeJwt(first.session.access_token).sub)
+      assert.notEqual(decodeJwt(other.session.access_token).sub, decodeJwt(first.session.access_token).sub)
     }),
   ))
 
@@ -319,7 +319,7 @@ void test("/me names a new session's stored principal, with no business", () =>
       const { principal } = yield* stored(sub)
 
       assert.equal(first.status, 200)
-      assert.equal(first.body.id, decodeJwt(session.accessToken).sub)
+      assert.equal(first.body.id, decodeJwt(session.access_token).sub)
       assert.equal(first.body.id, principal.id)
       assert.equal(first.body.created_at, principal.createdAt.toISOString())
       assert.equal(first.body.business, null)
@@ -631,7 +631,7 @@ void test("identity fields in the body, query, or headers can't choose the owner
       const victim = fingerprint()
       const { authorization } = yield* exchange(plane, caller)
       const victimSession = yield* exchange(plane, victim)
-      const victimId = decodeJwt(victimSession.session.accessToken).sub ?? ""
+      const victimId = decodeJwt(victimSession.session.access_token).sub ?? ""
 
       const response = yield* created(plane, authorization, {
         path: `/business?issuer=ssh&sub=${encodeURIComponent(victim)}&principal_id=${victimId}`,
@@ -1046,7 +1046,7 @@ void test("accepts only tokens plane would have issued", () =>
     Effect.gen(function* () {
       const plane = yield* server()
       const { session, authorization } = yield* exchange(plane, fingerprint())
-      const principal = decodeJwt(session.accessToken).sub ?? ""
+      const principal = decodeJwt(session.access_token).sub ?? ""
 
       const accepted = (token: string) => Effect.map(send(plane, { method: "GET", path: "/me", authorization: `Bearer ${token}` }), ({ status }) => status === 200)
 
@@ -1089,7 +1089,7 @@ void test("accepts only tokens plane would have issued", () =>
           assert.deepEqual(response, { status: 401, json: unauthorized }, `${route.path}: ${reason}`)
         }
 
-        for (const header of [undefined, "", "Bearer", `Basic ${session.accessToken}`]) {
+        for (const header of [undefined, "", "Bearer", `Basic ${session.access_token}`]) {
           const response = yield* send(plane, { ...route, authorization: header })
 
           assert.deepEqual(response, { status: 401, json: unauthorized }, `${route.path}: authorization: ${header}`)

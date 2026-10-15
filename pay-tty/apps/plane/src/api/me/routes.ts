@@ -2,8 +2,8 @@ import { Schema } from "effect"
 import * as HttpApiEndpoint from "effect/unstable/httpapi/HttpApiEndpoint"
 import * as HttpApiGroup from "effect/unstable/httpapi/HttpApiGroup"
 
-import { Authentication } from "./middleware.ts"
-import { BusinessInfo } from "./business.ts"
+import { BusinessInfo } from "../business/routes.ts"
+import { Authentication } from "../middleware/authentication.ts"
 
 export class MeResponse extends Schema.Class<MeResponse>("MeResponse")({
   id: Schema.String,

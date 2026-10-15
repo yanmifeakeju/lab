@@ -3,9 +3,9 @@ import { Effect } from "effect"
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder"
 
 import { CurrentPrincipal } from "../principal.ts"
-import { businessInfo } from "../routes/business.ts"
-import { api } from "../routes/index.ts"
-import { MeResponse } from "../routes/me.ts"
+import { api } from "../api.ts"
+import { businessInfo } from "../business/routes.ts"
+import { MeResponse } from "./routes.ts"
 
 // A read: it never creates a business or opens its ledger.
 export const MeLive = HttpApiBuilder.group(api, "me", (handlers) =>

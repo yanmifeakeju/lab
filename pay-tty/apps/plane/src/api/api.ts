@@ -1,11 +1,11 @@
 import * as HttpApi from "effect/unstable/httpapi/HttpApi"
 import * as OpenApi from "effect/unstable/httpapi/OpenApi"
 
-import { business } from "./business.ts"
-import { SchemaErrorMiddleware } from "./middleware.ts"
-import { health } from "./health.ts"
-import { me } from "./me.ts"
-import { session } from "./session.ts"
+import { business } from "./business/routes.ts"
+import { health } from "./health/routes.ts"
+import { me } from "./me/routes.ts"
+import { SchemaErrorMiddleware } from "./middleware/schema-error.ts"
+import { session } from "./session/routes.ts"
 
 export const api = HttpApi.make("plane")
   .add(health)

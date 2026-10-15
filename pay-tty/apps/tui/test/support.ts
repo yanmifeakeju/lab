@@ -54,7 +54,7 @@ export const sessions = (expiresIn = 900) => {
   return (): Reply => {
     issued += 1
 
-    return { status: 200, body: { accessToken: `tok_${issued}`, tokenType: "Bearer", expiresIn } }
+    return { status: 200, body: { access_token: `tok_${issued}`, token_type: "Bearer", expires_in: expiresIn } }
   }
 }
 

@@ -4,8 +4,8 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder"
 
 import { Token } from "../../token/token.ts"
 import { Forbidden } from "../errors.ts"
-import { api } from "../routes/index.ts"
-import { SessionResponse } from "../routes/session.ts"
+import { api } from "../api.ts"
+import { SessionResponse } from "./routes.ts"
 
 // The identity issuers a gateway may assert.
 const issuers = new Set(["ssh"])
@@ -29,9 +29,9 @@ export const SessionLive = HttpApiBuilder.group(api, "session", (handlers) =>
       const issued = yield* tokens.issue(principal.id)
 
       return new SessionResponse({
-        accessToken: Redacted.value(issued.accessToken),
-        tokenType: "Bearer",
-        expiresIn: issued.expiresIn,
+        access_token: Redacted.value(issued.accessToken),
+        token_type: "Bearer",
+        expires_in: issued.expiresIn,
       })
     }),
   ),

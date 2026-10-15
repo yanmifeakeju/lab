@@ -46,17 +46,14 @@ type Service interface {
 
 const msgUnknownLedger = "ledger must name an existing ledger"
 
-// server implements the generated strict OpenAPI server interface. It stays
-// private because callers only need the fully configured http.Handler returned
-// by NewHandler.
 type server struct {
 	service Service
 }
 
 var _ api.StrictServerInterface = (*server)(nil)
 
-// NewHandler constructs the complete HTTP API, including routing, strict
-// request/response handling, and OpenAPI request validation.
+// NewHandler validates every request against the embedded spec before it
+// reaches the strict handlers.
 func NewHandler(service Service) (http.Handler, error) {
 	if service == nil {
 		return nil, errors.New("httpapi: service is required")
@@ -94,13 +91,10 @@ func NewHandler(service Service) (http.Handler, error) {
 	return mux, nil
 }
 
-// GetHealth implements api.StrictServerInterface.
 func (s *server) GetHealth(context.Context, api.GetHealthRequestObject) (api.GetHealthResponseObject, error) {
 	return api.GetHealth200JSONResponse{Status: "ok"}, nil
 }
 
-// CreatePayableAccount creates or returns a payable account for a ledger.
-// OpenAPI validation runs before this method is called.
 func (s *server) CreatePayableAccount(
 	ctx context.Context,
 	request api.CreatePayableAccountRequestObject,
@@ -125,13 +119,8 @@ func (s *server) CreatePayableAccount(
 		Status:          payableAccountStatus(result.Account.ClosedAt),
 		ClosedAt:        result.Account.ClosedAt,
 		Available:       int64(result.Account.Available()),
-		Balances: api.AccountBalances{
-			DebitsPending:  result.Account.Balances.DebitsPending,
-			CreditsPending: result.Account.Balances.CreditsPending,
-			DebitsPosted:   result.Account.Balances.DebitsPosted,
-			CreditsPosted:  result.Account.Balances.CreditsPosted,
-		},
-		CreatedAt: result.Account.CreatedAt,
+		Balances:        accountBalances(result.Account.Balances),
+		CreatedAt:       result.Account.CreatedAt,
 	}
 
 	if result.Created {
@@ -141,7 +130,6 @@ func (s *server) CreatePayableAccount(
 	return api.CreatePayableAccount200JSONResponse(response), nil
 }
 
-// GetAccount retrieves a payable account and its ledger balances.
 func (s *server) GetAccount(
 	ctx context.Context,
 	request api.GetAccountRequestObject,
@@ -162,16 +150,20 @@ func (s *server) GetAccount(
 		Status:          payableAccountStatus(result.ClosedAt),
 		ClosedAt:        result.ClosedAt,
 		Available:       int64(result.Available()),
-		Balances: api.AccountBalances{
-			DebitsPending:  result.Balances.DebitsPending,
-			CreditsPending: result.Balances.CreditsPending,
-			DebitsPosted:   result.Balances.DebitsPosted,
-			CreditsPosted:  result.Balances.CreditsPosted,
-		},
-		CreatedAt: result.CreatedAt,
+		Balances:        accountBalances(result.Balances),
+		CreatedAt:       result.CreatedAt,
 	}
 
 	return api.GetAccount200JSONResponse(response), nil
+}
+
+func accountBalances(b account.BalanceCounters) api.AccountBalances {
+	return api.AccountBalances{
+		DebitsPending:  b.DebitsPending,
+		CreditsPending: b.CreditsPending,
+		DebitsPosted:   b.DebitsPosted,
+		CreditsPosted:  b.CreditsPosted,
+	}
 }
 
 func payableAccountStatus(closedAt *time.Time) api.AccountStatus {
@@ -625,7 +617,6 @@ func postJournalEntryValidationResponse(field, message string) api.PostJournalEn
 	}
 }
 
-// GetAccountStatement retrieves the journal movements affecting one payable account.
 func (s *server) GetAccountStatement(
 	ctx context.Context,
 	request api.GetAccountStatementRequestObject,

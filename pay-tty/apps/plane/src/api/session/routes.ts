@@ -16,9 +16,9 @@ export class SessionRequest extends Schema.Class<SessionRequest>("SessionRequest
 }) {}
 
 export class SessionResponse extends Schema.Class<SessionResponse>("SessionResponse")({
-  accessToken: Schema.String,
-  tokenType: Schema.Literal("Bearer"),
-  expiresIn: Schema.Int,
+  access_token: Schema.String,
+  token_type: Schema.Literal("Bearer"),
+  expires_in: Schema.Int,
 }) {}
 
 export const session = HttpApiGroup.make("session").add(
