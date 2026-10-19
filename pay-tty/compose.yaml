@@ -68,9 +68,14 @@ services:
       ledger-migrate:
         condition: service_completed_successfully
 
+  # Built here as well: an image with no build is pulled from a registry,
+  # where pay-tty/ledger doesn't exist.
   ledger:
     <<: *service
     image: pay-tty/ledger
+    build:
+      context: .
+      dockerfile: ledger/Dockerfile
     environment:
       DATABASE_URL: *ledger-database
       SERVER_ADDRESS: :8080
