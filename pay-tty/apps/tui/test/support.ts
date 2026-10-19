@@ -1,5 +1,14 @@
-import { type BusinessInfoEncoded, createClient, CreatePaymentLinkRequestEncoded, type PaymentLinkEncoded } from "@pay-tty/plane-client"
-import { Effect, Layer, Match, Schema } from "effect"
+import {
+  type BusinessInfoEncoded,
+  createClient,
+  CreatePaymentLinkRequestEncoded,
+  type PayableLinkEncoded,
+  type PaymentEncoded,
+  type PaymentLinkEncoded,
+  SimulatePaymentRequestEncoded,
+  StartPaymentRequestEncoded,
+} from "@pay-tty/plane-client"
+import { DateTime, Effect, Layer, Match, Schema } from "effect"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientError from "effect/unstable/http/HttpClientError"
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
@@ -24,6 +33,9 @@ export interface Routes {
   readonly createBusiness?: (call: Call) => Reply
   readonly openAccount?: (call: Call) => Reply
   readonly createPaymentLink?: (call: Call) => Reply
+  readonly payableLink?: (call: Call) => Reply
+  readonly startPayment?: (call: Call) => Reply
+  readonly simulatePayment?: (call: Call) => Reply
 }
 
 export const business = (fields: Partial<BusinessInfoEncoded> = {}): BusinessInfoEncoded => ({
@@ -89,6 +101,9 @@ export const fakePlane = (routes: Routes) => {
         Match.when("/me", () => routes.me),
         Match.when("/business", () => routes.createBusiness),
         Match.when("/payment_links", () => routes.createPaymentLink),
+        Match.when((path) => path.endsWith("/simulate"), () => routes.simulatePayment),
+        Match.when((path) => path.endsWith("/payments"), () => routes.startPayment),
+        Match.when((path) => path.startsWith("/pay/"), () => routes.payableLink),
         Match.orElse(() => routes.openAccount),
       )
 
@@ -151,7 +166,7 @@ export const linkFor = (
             minimum_amount_minor: request.pricing.minimum_amount_minor ?? null,
             maximum_amount_minor: request.pricing.maximum_amount_minor ?? null,
           },
-    url: "https://pay.test/links/tok",
+    share_token: "tok",
     created_at: "2026-10-15T00:00:00.000Z",
     ...fields,
 })
@@ -168,3 +183,67 @@ export const first = (...replies: ReadonlyArray<Reply>) => (rest: (call: Call) =
 
   return (call: Call): Reply => queue.shift() ?? rest(call)
 }
+
+// The share token a customer test connects with.
+export const shareToken = "s".repeat(43)
+
+export const payable = (fields: Partial<PayableLinkEncoded> = {}): PayableLinkEncoded => ({
+  business_name: "Adaeze Studio",
+  title: "Logo design",
+  description: "Two concepts and one revision.",
+  currency_code: "NGN",
+  scale: 2,
+  pricing: { mode: "fixed", amount_minor: 2_500_000 },
+  active: true,
+  ...fields,
+})
+
+export const choosing = (bounds: Partial<{ suggested: number; minimum: number; maximum: number }> = {}) =>
+  payable({
+    title: "Tip jar",
+    description: null,
+    pricing: {
+      mode: "customer_chooses",
+      suggested_amount_minor: bounds.suggested ?? null,
+      minimum_amount_minor: bounds.minimum ?? null,
+      maximum_amount_minor: bounds.maximum ?? null,
+    },
+  })
+
+// A payment started now, pending for the usual window unless told otherwise.
+export const paymentOf = (fields: Partial<PaymentEncoded> = {}): PaymentEncoded => {
+  const now = DateTime.nowUnsafe()
+
+  return {
+    id: "pay_01K33YV8M82N9MXP4E7J6B1QWK",
+    amount_minor: 2_500_000,
+    currency_code: "NGN",
+    scale: 2,
+    status: "pending",
+    created_at: DateTime.formatIso(now),
+    expires_at: DateTime.formatIso(DateTime.add(now, { minutes: 30 })),
+    completed_at: null,
+    ...fields,
+  }
+}
+
+// Plane's answer to a start: a new pending payment of the requested amount,
+// or the link's own when none was sent.
+export const startedPayment = (fields: Partial<PaymentEncoded> = {}) => (call: Call): Reply => {
+  if (!Schema.is(StartPaymentRequestEncoded)(call.body)) {
+    return failure(400, "validation_error")
+  }
+
+  const payment = paymentOf(fields)
+
+  return { status: 201, body: { ...payment, amount_minor: call.body.amount_minor ?? payment.amount_minor } }
+}
+
+// Plane's answer to a simulated outcome: the payment, ended that way.
+export const simulated = (call: Call): Reply =>
+  Schema.is(SimulatePaymentRequestEncoded)(call.body)
+    ? {
+        status: 200,
+        body: paymentOf({ status: call.body.outcome, completed_at: DateTime.formatIso(DateTime.nowUnsafe()) }),
+      }
+    : failure(400, "validation_error")

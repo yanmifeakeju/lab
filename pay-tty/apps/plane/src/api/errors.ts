@@ -64,10 +64,26 @@ export class Forbidden extends Schema.Error<Forbidden>("ForbiddenResponse")(
   { httpApiStatus: 403 },
 ) {}
 
+// Nothing answers to this token or ID; the caller can't tell which part was wrong.
+export class NotFound extends Schema.Error<NotFound>("NotFoundResponse")(
+  {
+    message: Schema.NonEmptyString,
+    error: Schema.Struct({ code: Schema.Literal("not_found") }),
+  },
+  { httpApiStatus: 404 },
+) {}
+
 export class Conflict extends Schema.Error<Conflict>("ConflictResponse")(
   {
     message: Schema.NonEmptyString,
-    error: Schema.Struct({ code: Schema.Literals(["conflict", "ledger_rejected", "business_required"]) }),
+    error: Schema.Struct({ code: Schema.Literals([
+      "conflict",
+      "ledger_rejected",
+      "business_required",
+      "link_inactive",
+      "payment_expired",
+      "not_pending",
+    ]) }),
   },
   { httpApiStatus: 409 },
 ) {}

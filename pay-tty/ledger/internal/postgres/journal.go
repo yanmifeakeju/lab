@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/oklog/ulid/v2"
 
-	"yanmifeakeju.com/ledger/internal/journal"
+	"paytty.akeju.me/ledger/internal/journal"
 )
 
 // journalEntryRow is a journal_entries row.

@@ -11,8 +11,8 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"yanmifeakeju.com/ledger/internal/account"
-	"yanmifeakeju.com/ledger/internal/postgres"
+	"paytty.akeju.me/ledger/internal/account"
+	"paytty.akeju.me/ledger/internal/postgres"
 )
 
 func TestStore_CreatePayableAccount(t *testing.T) {

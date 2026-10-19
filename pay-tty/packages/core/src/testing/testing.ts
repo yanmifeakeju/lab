@@ -3,6 +3,7 @@ import { Data, Effect, Exit } from "effect"
 
 import { Database } from "../database/client.ts"
 import { ledgers } from "../ledger/sql.ts"
+import { paymentLinks, payments } from "../payments/sql.ts"
 
 class Discarded<A, E> extends Data.TaggedError("Testing.Discarded")<{
   readonly exit: Exit.Exit<A, E>
@@ -93,6 +94,27 @@ export const clearCountryDefault = (countryCode: string) =>
         .update(ledgers)
         .set({ isCountryDefault: false })
         .where(and(eq(ledgers.countryCode, countryCode), eq(ledgers.isCountryDefault, true))),
+    )
+  })
+
+/** Deactivates the link, as a merchant will once that exists. */
+export const deactivateLink = (id: string) =>
+  Effect.gen(function* () {
+    const database = yield* Database
+
+    yield* database.use((db) => db.update(paymentLinks).set({ deactivatedAt: sql`now()` }).where(eq(paymentLinks.id, id)))
+  })
+
+/** Moves a pending payment's window into the past, so it is due to expire. */
+export const lapsePayment = (id: string) =>
+  Effect.gen(function* () {
+    const database = yield* Database
+
+    yield* database.use((db) =>
+      db
+        .update(payments)
+        .set({ createdAt: sql`now() - interval '31 minutes'`, expiresAt: sql`now() - interval '1 minute'` })
+        .where(eq(payments.id, id)),
     )
   })
 

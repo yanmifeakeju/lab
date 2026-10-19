@@ -1,0 +1,137 @@
+# The whole of pay-tty on one machine. Only the TUI's SSH port is published;
+# plane, the ledger and Postgres are reachable only on the internal network.
+#
+# Settings come from the environment or a .env file beside this one; see
+# deploy/.env.example. `docker compose up --build` migrates and seeds before
+# anything serves.
+
+name: pay-tty
+
+x-service: &service
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+x-job: &job
+  restart: "no"
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  postgres:
+    <<: *service
+    image: postgres:18
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      PLANE_DB_PASSWORD: ${PLANE_DB_PASSWORD:?set PLANE_DB_PASSWORD}
+      LEDGER_DB_PASSWORD: ${LEDGER_DB_PASSWORD:?set LEDGER_DB_PASSWORD}
+    volumes:
+      - postgres:/var/lib/postgresql
+      - ./deploy/postgres-init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "pg_isready", "--username", "postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  ledger-migrate:
+    <<: *job
+    image: pay-tty/ledger
+    build:
+      context: .
+      dockerfile: ledger/Dockerfile
+    entrypoint: ["/usr/local/bin/ledger-migrate", "up"]
+    environment:
+      DATABASE_URL: &ledger-database postgres://ledger:${LEDGER_DB_PASSWORD}@postgres:5432/ledger?sslmode=disable
+    networks: [internal]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  setup:
+    <<: *job
+    build:
+      context: .
+      target: setup
+    environment:
+      LEDGER_DATABASE_URL: *ledger-database
+      PLANE_DATABASE_URL: &plane-database postgres://plane:${PLANE_DB_PASSWORD}@postgres:5432/plane
+    networks: [internal]
+    depends_on:
+      ledger-migrate:
+        condition: service_completed_successfully
+
+  ledger:
+    <<: *service
+    image: pay-tty/ledger
+    environment:
+      DATABASE_URL: *ledger-database
+      SERVER_ADDRESS: :8080
+    networks: [internal]
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+
+  plane:
+    <<: *service
+    build:
+      context: .
+      target: plane
+    environment:
+      DATABASE_URL: *plane-database
+      PORT: "3000"
+      LEDGER_BASE_URL: http://ledger:8080
+      PLANE_TOKEN_KEYS: ${PLANE_TOKEN_KEYS:?set PLANE_TOKEN_KEYS}
+      PLANE_TOKEN_SIGNING_KEY_ID: ${PLANE_TOKEN_SIGNING_KEY_ID:?set PLANE_TOKEN_SIGNING_KEY_ID}
+    networks: [internal]
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+      ledger:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  tui:
+    <<: *service
+    build:
+      context: .
+      target: tui
+    environment:
+      PLANE_BASE_URL: http://plane:3000
+      TUI_HOST: 0.0.0.0
+      TUI_PORT: "2222"
+      TUI_HOST_KEY_PATH: /data/host_key
+      TUI_PUBLIC_HOST: ${TUI_PUBLIC_HOST:-localhost}
+      TUI_PUBLIC_PORT: ${TUI_PUBLIC_PORT:-2222}
+    volumes:
+      - tui-data:/data
+    ports:
+      # Loopback unless told otherwise; on the server this is just "22".
+      - ${TUI_PUBLISH:-127.0.0.1:2222}:2222
+    # internal reaches plane; edge carries the published port.
+    networks: [internal, edge]
+    depends_on:
+      plane:
+        condition: service_healthy
+
+volumes:
+  postgres:
+  # The SSH host key. Losing it shows every client a changed host key.
+  tui-data:
+
+networks:
+  # No route out of the machine.
+  internal:
+    internal: true
+  edge:

@@ -17,11 +17,11 @@ export interface Actions {
   readonly quit: () => void
 }
 
-const error = "#ff6b6b"
+export const error = "#ff6b6b"
 
-const muted = "#888888"
+export const muted = "#888888"
 
-const bright = "#ffffff"
+export const bright = "#ffffff"
 
 const countries = { NG: "Nigeria", US: "United States" } as const
 
@@ -98,7 +98,7 @@ const fieldId = (field: Field) => `link-field-${field}`
 
 // Text wraps to the full width before the scrollbar takes the last column, so
 // a one-column gutter keeps every character clear of it.
-const gutter = { paddingRight: 1 }
+export const gutter = { paddingRight: 1 }
 
 // A label over its input, kept whole so scrolling never splits them.
 const TextField = (props: {
@@ -230,7 +230,11 @@ const CreateLink = (props: {
 }
 
 // The merchant's text wraps inside the scrolled area; Back stays below it.
-const LinkCreated = (props: { readonly link: Link; readonly onScroll: (scroll: (by: number) => void) => void }) => {
+const LinkCreated = (props: {
+  readonly link: Link
+  readonly payCommand: string
+  readonly onScroll: (scroll: (by: number) => void) => void
+}) => {
   let details: ScrollBoxRenderable | undefined
 
   props.onScroll((by) => details?.scrollBy(by))
@@ -245,14 +249,15 @@ const LinkCreated = (props: { readonly link: Link; readonly onScroll: (scroll: (
         </Show>
         <For each={pricingLines(props.link)}>{(line) => <text flexShrink={0}>{line}</text>}</For>
         <text flexShrink={0} fg={muted}>Reference: {props.link.id}</text>
-        <text flexShrink={0}>{props.link.url}</text>
+        <text flexShrink={0} fg={muted}>Customers pay with:</text>
+        <text flexShrink={0}>{props.payCommand}</text>
       </scrollbox>
       <text flexShrink={0} fg={muted}>[Esc] Back · ↑/↓ scroll</text>
     </box>
   )
 }
 
-const ErrorPopup = (props: { readonly popup: Popup; readonly pending: boolean }) => {
+export const ErrorPopup = (props: { readonly popup: Popup<unknown>; readonly pending: boolean }) => {
   // On a short terminal the spacing goes, so the popup ends inside the screen.
   const terminal = useTerminalDimensions()
   const spacing = () => (terminal().height < 16 ? 0 : 1)
@@ -288,7 +293,12 @@ const ErrorPopup = (props: { readonly popup: Popup; readonly pending: boolean })
   )
 }
 
-export const App = (props: { readonly state: Accessor<State>; readonly actions: Actions }) => {
+export const App = (props: {
+  readonly state: Accessor<State>
+  readonly actions: Actions
+  /** The command a link's customers pay it with over SSH. */
+  readonly payCommand: (shareToken: string) => string
+}) => {
   // Kept here rather than in the form, which unmounts while /me reloads, so
   // what was typed survives a popup's refresh.
   const [draft, setDraft] = createSignal("")
@@ -460,7 +470,13 @@ export const App = (props: { readonly state: Accessor<State>; readonly actions: 
           )}
         </Match>
         <Match when={created()}>
-          {(link) => <LinkCreated link={link()} onScroll={(scroll) => (scrollResult = scroll)} />}
+          {(link) => (
+            <LinkCreated
+              link={link()}
+              payCommand={props.payCommand(link().share_token)}
+              onScroll={(scroll) => (scrollResult = scroll)}
+            />
+          )}
         </Match>
       </Switch>
       <text flexShrink={0} fg={muted}>Ctrl+C to quit</text>

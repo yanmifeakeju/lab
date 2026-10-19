@@ -330,6 +330,7 @@ void test("the database enforces the pricing settings, bounds, and uniqueness it
           ["long description", { description: "x".repeat(501) }, "payment_links_description_valid"],
           ["key with a space", { idempotencyKey: "a b" }, "payment_links_idempotency_key_valid"],
           ["short token", { shareToken: "abc" }, "payment_links_share_token_valid"],
+          ["token an SSH user name can't be", { shareToken: `-${"a".repeat(42)}` }, "payment_links_share_token_valid"],
           ["lowercase currency", { currencyCode: "ngn" }, "payment_links_currency_code_valid"],
           ["scale out of range", { scale: 5 }, "payment_links_scale_valid"],
           ["unknown business", { businessId: `biz_${ulid()}` }, "payment_links_business_id_businesses_id_fk"],

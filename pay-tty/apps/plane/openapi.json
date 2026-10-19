@@ -372,6 +372,226 @@
           "required": true
         }
       }
+    },
+    "/pay/payment_links/{share_token}": {
+      "get": {
+        "tags": [
+          "pay"
+        ],
+        "operationId": "pay.paymentLink",
+        "parameters": [
+          {
+            "name": "share_token",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "PayableLink",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PayableLinkEncoded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationErrorResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponseEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NotFoundResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundResponseEncoded"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pay/payment_links/{share_token}/payments": {
+      "post": {
+        "tags": [
+          "pay"
+        ],
+        "operationId": "pay.startPayment",
+        "parameters": [
+          {
+            "name": "share_token",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "pattern": "^[!-~]{1,255}$"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Payment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentEncoded"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "StartedPayment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartedPaymentEncoded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationErrorResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponseEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NotFoundResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundResponseEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictResponseEncoded"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartPaymentRequestEncoded"
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/pay/payment_links/{share_token}/payments/{payment_id}/simulate": {
+      "post": {
+        "tags": [
+          "pay"
+        ],
+        "operationId": "pay.simulatePayment",
+        "parameters": [
+          {
+            "name": "share_token",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "name": "payment_id",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Payment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentEncoded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationErrorResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponseEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NotFoundResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundResponseEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictResponseEncoded"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SimulatePaymentRequestEncoded"
+              }
+            }
+          },
+          "required": true
+        }
+      }
     }
   },
   "components": {
@@ -733,7 +953,10 @@
                 "enum": [
                   "conflict",
                   "ledger_rejected",
-                  "business_required"
+                  "business_required",
+                  "link_inactive",
+                  "payment_expired",
+                  "not_pending"
                 ]
               }
             },
@@ -1031,7 +1254,7 @@
               }
             ]
           },
-          "url": {
+          "share_token": {
             "type": "string"
           },
           "created_at": {
@@ -1046,7 +1269,7 @@
           "currency_code",
           "scale",
           "pricing",
-          "url",
+          "share_token",
           "created_at"
         ],
         "additionalProperties": false
@@ -1089,7 +1312,7 @@
               }
             ]
           },
-          "url": {
+          "share_token": {
             "type": "string"
           },
           "created_at": {
@@ -1104,8 +1327,230 @@
           "currency_code",
           "scale",
           "pricing",
-          "url",
+          "share_token",
           "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "PayableLinkEncoded": {
+        "type": "object",
+        "properties": {
+          "business_name": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currency_code": {
+            "type": "string"
+          },
+          "scale": {
+            "type": "integer"
+          },
+          "pricing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FixedPricingEncoded"
+              },
+              {
+                "$ref": "#/components/schemas/CustomerChoosesPricingEncoded"
+              }
+            ]
+          },
+          "active": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "business_name",
+          "title",
+          "description",
+          "currency_code",
+          "scale",
+          "pricing",
+          "active"
+        ],
+        "additionalProperties": false
+      },
+      "NotFoundResponseEncoded": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "minLength": 1
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "not_found"
+                ]
+              }
+            },
+            "required": [
+              "code"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "message",
+          "error"
+        ],
+        "additionalProperties": false
+      },
+      "StartPaymentRequestEncoded": {
+        "type": "object",
+        "properties": {
+          "amount_minor": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "StartedPaymentEncoded": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "amount_minor": {
+            "type": "integer"
+          },
+          "currency_code": {
+            "type": "string"
+          },
+          "scale": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "expired"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "amount_minor",
+          "currency_code",
+          "scale",
+          "status",
+          "created_at",
+          "expires_at",
+          "completed_at"
+        ],
+        "additionalProperties": false
+      },
+      "PaymentEncoded": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "amount_minor": {
+            "type": "integer"
+          },
+          "currency_code": {
+            "type": "string"
+          },
+          "scale": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "expired"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "amount_minor",
+          "currency_code",
+          "scale",
+          "status",
+          "created_at",
+          "expires_at",
+          "completed_at"
+        ],
+        "additionalProperties": false
+      },
+      "SimulatePaymentRequestEncoded": {
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "succeeded",
+              "failed",
+              "cancelled"
+            ]
+          }
+        },
+        "required": [
+          "outcome"
         ],
         "additionalProperties": false
       }
@@ -1136,6 +1581,9 @@
     },
     {
       "name": "paymentLinks"
+    },
+    {
+      "name": "pay"
     }
   ]
 }

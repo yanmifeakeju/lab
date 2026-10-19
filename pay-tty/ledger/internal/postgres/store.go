@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"time"
 
-	"yanmifeakeju.com/ledger/internal/statement"
+	"paytty.akeju.me/ledger/internal/statement"
 )
 
 // DBTX is satisfied by *sql.DB and *sql.Tx.

@@ -34,6 +34,7 @@ const screen = Effect.fnUntraced(function* (plane: ReturnType<typeof fakePlane>,
       () => {
         ended += 1
       },
+      (shareToken) => `ssh ${shareToken}@tui.test`,
     ).pipe(Effect.provide(plane.layer)),
   )
 
@@ -363,7 +364,8 @@ void test(
       assert.match(result, /Consulting/)
       assert.match(result, /Amount: ₦2,500\.00 · NGN/)
       assert.match(result, /Reference: plink_01K33YV8M82N9MXP4E7J6B1QWK/)
-      assert.match(result, /https:\/\/pay\.test\/links\/tok/)
+      assert.match(result, /ssh tok@tui\.test/)
+      assert.doesNotMatch(result, /pay\.test/)
       assert.deepEqual(links(plane).map(({ body }) => body), [
         { title: "Consulting", description: null, pricing: { mode: "fixed", amount_minor: 250_000 } },
       ])
@@ -687,24 +689,40 @@ void test(
       yield* Effect.promise(() => tui.keys.typeText("2500"))
       tui.keys.pressEnter()
 
-      const result = yield* tui.showing("Payment link created")
-      const rows = result.split("\n").map((row) => row.replace(/^│ /, "").replace(/ *│$/, ""))
+      // Rows without the border, or the scrollbar now that the details overflow.
+      const cleaned = (frame: string) => frame.split("\n").map((row) => row.replace(/^│ /, "").replace(/ *█? *│$/, ""))
+
+      const rows = cleaned(yield* tui.showing("Payment link created"))
 
       // Each detail on a row of its own, with all of the description above them.
       assert.ok(rows.includes("Community fundraiser"))
       assert.ok(rows.includes("Amount: ₦2,500.00 · NGN"))
       assert.ok(rows.includes("Reference: plink_01K33YV8M82N9MXP4E7J6B1QWK"))
-      assert.ok(rows.includes("https://pay.test/links/tok"))
       assert.ok(rows.some((row) => row.startsWith("[Esc] Back")))
       assert.equal(
         rows.slice(rows.indexOf("Community fundraiser") + 1, rows.indexOf("Amount: ₦2,500.00 · NGN")).join(" "),
         description,
       )
 
+      // How customers pay it comes last, below the reference.
+      for (let step = 0; step < 5; step++) {
+        tui.keys.pressArrow("down")
+      }
+
+      const end = cleaned(yield* tui.showing("ssh tok@tui.test"))
+
+      // SSH is the only way to pay, so the link's URL isn't shown.
+      assert.ok(!end.some((row) => row.includes("pay.test")))
+      assert.ok(end.indexOf("ssh tok@tui.test") > end.indexOf("Reference: plink_01K33YV8M82N9MXP4E7J6B1QWK"))
+
+      for (let step = 0; step < 5; step++) {
+        tui.keys.pressArrow("up")
+      }
+
       // Too tall for 40×12: Back stays put while the details scroll.
       tui.setup.resize(small.width, small.height)
 
-      const top = yield* tui.matching((frame) => frame.includes("Community fundraiser") && !frame.includes("pay.test"))
+      const top = yield* tui.matching((frame) => frame.includes("Community fundraiser") && !frame.includes("ssh tok@"))
 
       assert.match(top, /\[Esc\] Back/)
 
@@ -712,7 +730,7 @@ void test(
         tui.keys.pressArrow("down")
       }
 
-      const bottom = yield* tui.showing("https://pay.test/links/tok")
+      const bottom = yield* tui.showing("ssh tok@tui.test")
 
       assert.match(bottom, /\[Esc\] Back/)
       assert.match(bottom, /plink_01K33YV8M82N9MXP4E7J6B1QWK/)
@@ -823,7 +841,7 @@ void test(
         tui.keys.pressArrow("down")
       }
 
-      const frame = yield* tui.showing("pay.test")
+      const frame = yield* tui.showing("tui.test")
 
       // The scrolled rows' text, without borders or the scrollbar, joined up.
       const text = frame
@@ -832,7 +850,7 @@ void test(
         .join("")
 
       assert.ok(text.includes("plink_01K33YV8M82N9MXP4E7J6B1QWK"), text)
-      assert.ok(text.includes("https://pay.test/links/tok"), text)
+      assert.ok(text.includes("ssh tok@tui.test"), text)
       assert.match(frame, /\[Esc\] Back/)
 
       tui.close()

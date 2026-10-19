@@ -14,8 +14,8 @@ import (
 	"github.com/pressly/goose/v3"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"yanmifeakeju.com/ledger/internal/database"
-	"yanmifeakeju.com/ledger/migrations"
+	"paytty.akeju.me/ledger/internal/database"
+	"paytty.akeju.me/ledger/migrations"
 )
 
 var testDB *sql.DB

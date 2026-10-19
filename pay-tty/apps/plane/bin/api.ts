@@ -9,7 +9,6 @@ import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 
 import { AuthenticationLive } from "../src/api/middleware/authentication.ts";
 import { Plane } from "../src/api/server.ts";
-import { PaymentLinkUrls } from "../src/payment_links/urls.ts";
 import { BusinessLedger } from "../src/ledger/business-ledger.ts";
 import { LedgerClient } from "../src/ledger/client.ts";
 import { Token } from "../src/token/token.ts";
@@ -24,7 +23,6 @@ const LedgerClientLive = LedgerClient.layer.pipe(Layer.provide(FetchHttpClient.l
 const RuntimeLive = Layer.mergeAll(
   AuthenticationLive,
   BusinessLedger.layer.pipe(Layer.provide(LedgerClientLive)),
-  PaymentLinkUrls.layer,
 ).pipe(
   Layer.provideMerge(Token.layer),
   Layer.provideMerge(DomainLive),

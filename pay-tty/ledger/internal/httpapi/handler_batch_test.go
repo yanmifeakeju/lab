@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"yanmifeakeju.com/ledger/internal/api"
-	"yanmifeakeju.com/ledger/internal/httpapi"
-	"yanmifeakeju.com/ledger/internal/journal"
+	"paytty.akeju.me/ledger/internal/api"
+	"paytty.akeju.me/ledger/internal/httpapi"
+	"paytty.akeju.me/ledger/internal/journal"
 )
 
 func TestPostJournalEntriesBatch_HappyPath(t *testing.T) {

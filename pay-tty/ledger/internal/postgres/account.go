@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/oklog/ulid/v2"
 
-	"yanmifeakeju.com/ledger/internal/account"
+	"paytty.akeju.me/ledger/internal/account"
 )
 
 // accountRow is an accounts row joined with its holder, whose columns are

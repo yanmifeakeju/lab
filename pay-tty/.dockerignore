@@ -1,0 +1,22 @@
+.git
+**/node_modules
+**/.turbo
+**/dist
+**/coverage
+**/*.log
+**/.env
+**/.env.*
+!**/.env.example
+**/.envrc
+
+# Local state and notes, never part of an image.
+apps/tui/.data
+issues
+tasks
+deploy_plan.md
+
+# The ledger builds its own binaries in its image.
+ledger/bin
+ledger/node
+ledger/.scratch
+ledger/coverage.out

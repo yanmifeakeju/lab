@@ -14,7 +14,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi3filter"
 	nethttpmiddleware "github.com/oapi-codegen/nethttp-middleware"
 
-	"yanmifeakeju.com/ledger/internal/api"
+	"paytty.akeju.me/ledger/internal/api"
 )
 
 type errorResponse struct {

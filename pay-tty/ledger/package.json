@@ -1,0 +1,9 @@
+{
+  "name": "@pay-tty/ledger",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Go ledger service, in the workspace so turbo can run it with the rest.",
+  "scripts": {
+    "dev": "go run ./cmd/api"
+  }
+}

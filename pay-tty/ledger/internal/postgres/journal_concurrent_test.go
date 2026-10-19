@@ -11,10 +11,10 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"yanmifeakeju.com/ledger/internal/account"
-	"yanmifeakeju.com/ledger/internal/journal"
-	"yanmifeakeju.com/ledger/internal/postgres"
-	"yanmifeakeju.com/ledger/internal/statement"
+	"paytty.akeju.me/ledger/internal/account"
+	"paytty.akeju.me/ledger/internal/journal"
+	"paytty.akeju.me/ledger/internal/postgres"
+	"paytty.akeju.me/ledger/internal/statement"
 )
 
 // TestStore_PostEntry_ConcurrentIdempotentRetry verifies the ON CONFLICT path

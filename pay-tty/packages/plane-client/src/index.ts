@@ -8,7 +8,10 @@ import {
   make,
   type OperationConfig,
   type PaymentLinksCreatePaymentLinkParams,
+  type PayStartPaymentParams,
   type SessionRequestEncoded,
+  type SimulatePaymentRequestEncoded,
+  type StartPaymentRequestEncoded,
 } from "./generated.ts"
 
 export * from "./generated.ts"
@@ -49,6 +52,47 @@ export const createClient = (httpClient: HttpClient.HttpClient, options: ClientO
           SessionCreateSession403: ({ cause }) => Effect.fail(cause),
         }),
       ),
+    /**
+     * A customer paying a link: no access token, and the link's share token
+     * is the only credential.
+     */
+    pay: {
+      paymentLink: <Config extends OperationConfig>(shareToken: string, request?: { readonly config?: Config }) =>
+        open.payPaymentLink(shareToken, request).pipe(
+          Effect.catchTags({
+            PayPaymentLink400: ({ cause }) => Effect.fail(cause),
+            PayPaymentLink404: ({ cause }) => Effect.fail(cause),
+          }),
+        ),
+      /** A new payment answers 201 and a repeat of its key 200, with the same body. */
+      startPayment: <Config extends OperationConfig>(
+        shareToken: string,
+        request: {
+          readonly params: PayStartPaymentParams
+          readonly payload: StartPaymentRequestEncoded
+          readonly config?: Config
+        },
+      ) =>
+        open.payStartPayment(shareToken, request).pipe(
+          Effect.catchTags({
+            PayStartPayment400: ({ cause }) => Effect.fail(cause),
+            PayStartPayment404: ({ cause }) => Effect.fail(cause),
+            PayStartPayment409: ({ cause }) => Effect.fail(cause),
+          }),
+        ),
+      simulatePayment: <Config extends OperationConfig>(
+        shareToken: string,
+        paymentId: string,
+        request: { readonly payload: SimulatePaymentRequestEncoded; readonly config?: Config },
+      ) =>
+        open.paySimulatePayment(shareToken, paymentId, request).pipe(
+          Effect.catchTags({
+            PaySimulatePayment400: ({ cause }) => Effect.fail(cause),
+            PaySimulatePayment404: ({ cause }) => Effect.fail(cause),
+            PaySimulatePayment409: ({ cause }) => Effect.fail(cause),
+          }),
+        ),
+    },
     /**
      * The routes that take the access token `createSession` issued. Those
      * acting on a business act on the token's.

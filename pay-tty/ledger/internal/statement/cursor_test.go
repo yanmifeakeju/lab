@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"yanmifeakeju.com/ledger/internal/statement"
+	"paytty.akeju.me/ledger/internal/statement"
 )
 
 func TestCursor_RoundTrip(t *testing.T) {

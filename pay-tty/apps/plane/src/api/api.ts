@@ -6,6 +6,7 @@ import { business } from "./business/routes.ts"
 import { health } from "./health/routes.ts"
 import { me } from "./me/routes.ts"
 import { SchemaErrorMiddleware } from "./middleware/schema-error.ts"
+import { pay } from "./pay/routes.ts"
 import { paymentLinks } from "./payment_links/routes.ts"
 import { session } from "./session/routes.ts"
 
@@ -16,6 +17,7 @@ export const api = HttpApi.make("plane")
   .add(business)
   .add(account)
   .add(paymentLinks)
+  .add(pay)
   .middleware(SchemaErrorMiddleware)
   .annotate(OpenApi.Title, "Plane")
   // Report every failing field rather than the first, like the ledger API.

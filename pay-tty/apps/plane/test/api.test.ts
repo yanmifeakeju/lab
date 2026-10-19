@@ -10,7 +10,7 @@ import { Ledger } from "@pay-tty/core/ledger"
 import { Payments } from "@pay-tty/core/payments"
 import { Principal } from "@pay-tty/core/principal"
 import { Testing } from "@pay-tty/core/testing"
-import { Cause, Clock, Effect, Encoding, Exit, Layer, Schema, type Scope } from "effect"
+import { Clock, Effect, Encoding, Layer, Schema, type Scope } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import { decodeJwt, type JWTHeaderParameters, type JWTPayload, SignJWT } from "jose"
 import { ulid } from "ulid"
@@ -18,16 +18,15 @@ import { ulid } from "ulid"
 import { BusinessInfo, BusinessLedger } from "../src/api/business/routes.ts"
 import { MeResponse } from "../src/api/me/routes.ts"
 import { CustomerChoosesPricing, FixedPricing, PaymentLink } from "../src/api/payment_links/routes.ts"
+import { PayableLink, Payment as PayPayment } from "../src/api/pay/routes.ts"
 import { SessionResponse } from "../src/api/session/routes.ts"
 import { ApiLive } from "../src/api/server.ts"
 import { AuthenticationLive } from "../src/api/middleware/authentication.ts"
 import { UnknownErrorResponse } from "../src/api/middleware/defect.ts"
 import { BusinessLedger as BusinessLedgerService } from "../src/ledger/business-ledger.ts"
-import { PaymentLinkUrls } from "../src/payment_links/urls.ts"
 import { Token } from "../src/token/token.ts"
 import { created as accountCreated, current, failing, fakeLedger, invalid, keys, previous, secret, type FakeLedger, type Payload, type Reply } from "./support.ts"
 
-const linkBaseUrl = "https://pay.test/links"
 
 // The core services over the test database, for preparing businesses and
 // reading back what plane stored.
@@ -42,7 +41,6 @@ interface ServerOptions {
   readonly businesses?: Business.Interface
   // A stand-in catalog for creating businesses.
   readonly catalog?: Catalog.Interface
-  readonly linkBaseUrl?: string
 }
 
 // The server as bin/api.ts composes it, with the ledger faked. Requests run
@@ -65,7 +63,7 @@ const server = (options: ServerOptions = {}) =>
         app: HttpRouter.toWebHandler(
           Layer.mergeAll(ApiLive, UnknownErrorResponse).pipe(
             Layer.provideMerge(
-              Layer.mergeAll(AuthenticationLive, ledgerEndpoint, Layer.orDie(PaymentLinkUrls.layerFrom(options.linkBaseUrl ?? linkBaseUrl))),
+              Layer.mergeAll(AuthenticationLive, ledgerEndpoint),
             ),
             Layer.provideMerge(Token.layerFrom(keys)),
             Layer.provideMerge(Layer.mergeAll(Principal.layer, Business.layer, Payments.layer)),
@@ -243,7 +241,7 @@ void test("serves health without a token", () =>
     }),
   ))
 
-void test("publishes exactly /health, /session, /me, /business, /account, and /payment_links", () =>
+void test("publishes exactly /health, /session, /me, /business, /account, /payment_links, and the /pay routes", () =>
   run(
     Effect.gen(function* () {
       const plane = yield* server()
@@ -280,6 +278,9 @@ void test("publishes exactly /health, /session, /me, /business, /account, and /p
         "/business",
         "/health",
         "/me",
+        "/pay/payment_links/{share_token}",
+        "/pay/payment_links/{share_token}/payments",
+        "/pay/payment_links/{share_token}/payments/{payment_id}/simulate",
         "/payment_links",
         "/session",
       ])
@@ -341,6 +342,18 @@ void test("publishes exactly /health, /session, /me, /business, /account, and /p
 
       for (const code of ["400", "401", "409"]) {
         assert.ok(code in (links?.responses ?? {}), code)
+      }
+
+      // A customer holds no token: the share token is the credential.
+      const customer = [
+        paths["/pay/payment_links/{share_token}"]?.["get"],
+        paths["/pay/payment_links/{share_token}/payments"]?.["post"],
+        paths["/pay/payment_links/{share_token}/payments/{payment_id}/simulate"]?.["post"],
+      ]
+
+      for (const operation of customer) {
+        assert.deepEqual(operation?.security, [])
+        assert.ok("404" in (operation?.responses ?? {}))
       }
     }),
   ))
@@ -1095,7 +1108,8 @@ const withActiveBusiness = Effect.fnUntraced(function* (server: Server) {
   return caller
 })
 
-const tokenUrl = new RegExp(`^${linkBaseUrl}/[A-Za-z0-9_-]{43}$`)
+// Never led by a dash, which OpenSSH refuses in a user name.
+const shareToken = /^[A-Za-z0-9_][A-Za-z0-9_-]{42}$/
 
 const validation = ({ status, json }: Effect.Success<ReturnType<typeof send>>) =>
   Effect.map(
@@ -1127,8 +1141,8 @@ void test("POST /business/:id/payment_links creates a fixed link in the business
 
       assert.equal(status, 201)
       assert.match(body.id, /^plink_[0-9A-HJKMNP-TV-Z]{26}$/)
-      assert.match(body.url, tokenUrl)
-      assert.ok(!body.url.includes(body.id.slice(6)))
+      assert.match(body.share_token, shareToken)
+      assert.ok(!body.share_token.includes(body.id.slice(6)))
       assert.deepEqual(json, {
         id: body.id,
         business_id: id,
@@ -1137,7 +1151,7 @@ void test("POST /business/:id/payment_links creates a fixed link in the business
         currency_code: "NGN",
         scale: 2,
         pricing: { mode: "fixed", amount_minor: 250_000 },
-        url: body.url,
+        share_token: body.share_token,
         created_at: body.created_at,
       })
       assert.ok(!Number.isNaN(Date.parse(body.created_at)))
@@ -1253,41 +1267,6 @@ void test("a retry after a lost response returns the original link; other conten
     }),
   ))
 
-void test("a link's URL is its share token under the current base, so moving the base moves every link", () =>
-  run(
-    Effect.gen(function* () {
-      const plane = yield* server()
-      const { authorization } = yield* withActiveBusiness(plane)
-      const key = ulid()
-
-      const first = yield* createdLink(plane, authorization, fixedLink, key)
-      const token = first.body.url.slice(`${linkBaseUrl}/`.length)
-
-      const moved = yield* server({ linkBaseUrl: "https://elsewhere.test/pay" })
-      const repeat = yield* createdLink(moved, authorization, fixedLink, key)
-
-      assert.equal(repeat.status, 200)
-      assert.equal(repeat.body.id, first.body.id)
-      assert.equal(repeat.body.url, `https://elsewhere.test/pay/${token}`)
-    }),
-  ))
-
-void test("the link base must be an absolute http(s) URL without credentials, query, or fragment", () =>
-  Effect.runPromise(
-    Effect.gen(function* () {
-      assert.equal(yield* PaymentLinkUrls.base("https://pay.example/links"), "https://pay.example/links/")
-      assert.equal(yield* PaymentLinkUrls.base("http://localhost:3000/l/"), "http://localhost:3000/l/")
-
-      for (const raw of ["", "/links", "pay.example/links", "ftp://pay.example", "https://u:p@pay.example", "https://pay.example/?a=1", "https://pay.example/?", "https://pay.example/#x"]) {
-        assert.ok(Exit.isFailure(yield* Effect.exit(PaymentLinkUrls.base(raw))), raw)
-      }
-
-      const unbuilt = yield* Effect.exit(Layer.build(PaymentLinkUrls.layerFrom("pay.example")).pipe(Effect.scoped))
-
-      assert.ok(Exit.isFailure(unbuilt) && !Cause.hasDies(unbuilt.cause))
-    }),
-  ))
-
 void test("concurrent identical creations settle on one link", () =>
   run(
     Effect.gen(function* () {
@@ -1354,7 +1333,7 @@ void test("a link takes its currency and scale from the business, whatever the r
       assert.equal(body.business_id, id)
       assert.equal(body.currency_code, "NGN")
       assert.equal(body.scale, 2)
-      assert.match(body.url, tokenUrl)
+      assert.match(body.share_token, shareToken)
       assert.deepEqual(body.pricing, new FixedPricing({ mode: "fixed", amount_minor: 100 }))
     }),
   ))
@@ -1511,5 +1490,250 @@ void test("accepts only tokens plane would have issued", () =>
 
       // None of the rejected creates went through for the real principal.
       assert.equal((yield* me(plane, authorization)).body.business, null)
+    }),
+  ))
+
+// A merchant's new link, and the token its customers pay it by.
+const linkToPay = Effect.fnUntraced(function* (server: Server, body: { readonly [key: string]: Body } = fixedLink) {
+  const { authorization } = yield* withActiveBusiness(server)
+  const { body: link } = yield* createdLink(server, authorization, body, ulid())
+
+  return { authorization, link, token: link.share_token }
+})
+
+const payable = (server: Server, token: string) => send(server, { method: "GET", path: `/pay/payment_links/${token}` })
+
+// A null key sends no idempotency-key header.
+const startPayment = (server: Server, token: string, body: { readonly [key: string]: Body }, idempotencyKey: string | null = ulid()) =>
+  send(server, {
+    method: "POST",
+    path: `/pay/payment_links/${token}/payments`,
+    body,
+    headers: idempotencyKey === null ? {} : { "idempotency-key": idempotencyKey },
+  })
+
+// A payment start that succeeded, decoded strictly.
+const started = Effect.fnUntraced(function* (
+  server: Server,
+  token: string,
+  body: { readonly [key: string]: Body } = {},
+  idempotencyKey: string = ulid(),
+) {
+  const { status, json } = yield* startPayment(server, token, body, idempotencyKey)
+
+  return { status, json, body: yield* Schema.decodeUnknownEffect(PayPayment)(json, strict) }
+})
+
+const simulatePayment = (server: Server, token: string, id: string, outcome: string) =>
+  send(server, { method: "POST", path: `/pay/payment_links/${token}/payments/${id}/simulate`, body: { outcome } })
+
+const errorCode = ({ status, json }: Effect.Success<ReturnType<typeof send>>) =>
+  Effect.map(Schema.decodeUnknownEffect(ErrorBody)(json), (body) => `${status} ${body.error.code}`)
+
+void test("a customer reads a link by its share token alone, without the merchant's details", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { token } = yield* linkToPay(plane, { ...fixedLink, description: "Two concepts and one revision." })
+
+      const { status, json } = yield* payable(plane, token)
+
+      assert.equal(status, 200)
+      assert.deepEqual(yield* Schema.decodeUnknownEffect(PayableLink)(json, strict), new PayableLink({
+        business_name: "Acme Ltd",
+        title: "Consulting",
+        description: "Two concepts and one revision.",
+        currency_code: "NGN",
+        scale: 2,
+        pricing: new FixedPricing({ mode: "fixed", amount_minor: 250_000 }),
+        active: true,
+      }))
+
+      assert.deepEqual(yield* errorCode(yield* payable(plane, "x".repeat(43))), "404 not_found")
+    }),
+  ))
+
+void test("a customer starts a pending payment of a fixed link's amount; a repeat returns it", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { token } = yield* linkToPay(plane)
+      const key = ulid()
+
+      const first = yield* started(plane, token, {}, key)
+
+      assert.equal(first.status, 201)
+      assert.match(first.body.id, /^pay_[0-9A-HJKMNP-TV-Z]{26}$/)
+      assert.deepEqual(first.json, {
+        id: first.body.id,
+        amount_minor: 250_000,
+        currency_code: "NGN",
+        scale: 2,
+        status: "pending",
+        created_at: first.body.created_at,
+        expires_at: first.body.expires_at,
+        completed_at: null,
+      })
+      assert.equal(
+        Date.parse(first.body.expires_at) - Date.parse(first.body.created_at),
+        Payments.paymentWindowMinutes * 60_000,
+      )
+
+      const repeat = yield* started(plane, token, {}, key)
+
+      assert.equal(repeat.status, 200)
+      assert.deepEqual(repeat.json, first.json)
+
+      // Another key is another payment of the same link.
+      assert.equal((yield* started(plane, token)).status, 201)
+    }),
+  ))
+
+void test("the amount must fit the link's pricing, and is checked as a field of the request", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const fixed = yield* linkToPay(plane)
+
+      const bounded = yield* linkToPay(plane, {
+        title: "Tip jar",
+        pricing: { mode: "customer_chooses", minimum_amount_minor: 1_000, maximum_amount_minor: 5_000 },
+      })
+
+      const details = (token: string, body: { readonly [key: string]: Body }) =>
+        Effect.flatMap(startPayment(plane, token, body), (response) =>
+          Effect.map(
+            Schema.decodeUnknownEffect(
+              Schema.Struct({
+                error: Schema.Struct({ details: Schema.Array(Schema.Struct({ field: Schema.String, code: Schema.String })) }),
+              }),
+            )(response.json),
+            (body) => {
+              assert.equal(response.status, 400)
+
+              return body.error.details.map(({ field, code }) => `${field}:${code}`)
+            },
+          ),
+        )
+
+      assert.deepEqual(yield* details(fixed.token, { amount_minor: 250_000 }), ["amount_minor:unknown_field"])
+      assert.deepEqual(yield* details(bounded.token, {}), ["amount_minor:required"])
+      assert.deepEqual(yield* details(bounded.token, { amount_minor: null }), ["amount_minor:required"])
+      assert.deepEqual(yield* details(bounded.token, { amount_minor: 999 }), ["amount_minor:invalid_value"])
+      assert.deepEqual(yield* details(bounded.token, { amount_minor: 5_001 }), ["amount_minor:invalid_value"])
+
+      // Malformed requests fail before any link is read.
+      for (const [reason, body] of [
+        ["zero amount", { amount_minor: 0 }],
+        ["fractional amount", { amount_minor: 1.5 }],
+        ["amount as a string", { amount_minor: "2500" }],
+      ] as const) {
+        assert.equal((yield* startPayment(plane, bounded.token, body)).status, 400, reason)
+      }
+
+      assert.deepEqual(yield* validation(yield* startPayment(plane, bounded.token, {}, null)), [
+        "header:idempotency-key",
+      ])
+
+      const chosen = yield* started(plane, bounded.token, { amount_minor: 2_500 })
+
+      assert.equal(chosen.body.amount_minor, 2_500)
+    }),
+  ))
+
+void test("a simulated outcome ends the payment once; later ones conflict", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { token } = yield* linkToPay(plane)
+
+      for (const outcome of ["succeeded", "failed", "cancelled"] as const) {
+        const { body: payment } = yield* started(plane, token)
+
+        const { status, json } = yield* simulatePayment(plane, token, payment.id, outcome)
+        const ended = yield* Schema.decodeUnknownEffect(PayPayment)(json, strict)
+
+        assert.equal(status, 200)
+        assert.equal(ended.status, outcome)
+        assert.ok(ended.completed_at !== null)
+
+        assert.deepEqual(yield* errorCode(yield* simulatePayment(plane, token, payment.id, "succeeded")), "409 not_pending")
+      }
+
+      const { body: payment } = yield* started(plane, token)
+
+      assert.equal((yield* simulatePayment(plane, token, payment.id, "refunded")).status, 400)
+    }),
+  ))
+
+void test("a payment is reached only through its own link's token", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { token } = yield* linkToPay(plane)
+      const other = yield* linkToPay(plane)
+
+      const { body: payment } = yield* started(plane, token)
+
+      assert.deepEqual(yield* errorCode(yield* simulatePayment(plane, other.token, payment.id, "succeeded")), "404 not_found")
+      assert.deepEqual(yield* errorCode(yield* simulatePayment(plane, token, `pay_${ulid()}`, "succeeded")), "404 not_found")
+      assert.deepEqual(yield* errorCode(yield* simulatePayment(plane, "x".repeat(43), payment.id, "succeeded")), "404 not_found")
+      assert.deepEqual(yield* errorCode(yield* startPayment(plane, "x".repeat(43), {})), "404 not_found")
+
+      // Still pending, so its own link can end it.
+      assert.equal((yield* simulatePayment(plane, token, payment.id, "succeeded")).status, 200)
+    }),
+  ))
+
+void test("a deactivated link shows as inactive and starts no payment; one under way still completes", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { link, token } = yield* linkToPay(plane)
+
+      const { body: payment } = yield* started(plane, token)
+
+      yield* Testing.deactivateLink(link.id)
+
+      const shown = yield* Schema.decodeUnknownEffect(PayableLink)((yield* payable(plane, token)).json, strict)
+
+      assert.equal(shown.active, false)
+      assert.deepEqual(yield* errorCode(yield* startPayment(plane, token, {})), "409 link_inactive")
+      assert.equal((yield* simulatePayment(plane, token, payment.id, "succeeded")).status, 200)
+    }),
+  ))
+
+void test("a payment past its window is refused as expired", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { token } = yield* linkToPay(plane)
+
+      const { body: payment } = yield* started(plane, token)
+
+      yield* Testing.lapsePayment(payment.id)
+
+      assert.deepEqual(yield* errorCode(yield* simulatePayment(plane, token, payment.id, "succeeded")), "409 payment_expired")
+      assert.deepEqual(yield* errorCode(yield* simulatePayment(plane, token, payment.id, "cancelled")), "409 payment_expired")
+    }),
+  ))
+
+void test("paying asks the ledger nothing and needs no merchant token", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { authorization, token } = yield* linkToPay(plane)
+      const before = plane.ledger.requests.length
+
+      const { body: payment } = yield* started(plane, token)
+
+      yield* simulatePayment(plane, token, payment.id, "succeeded")
+
+      assert.equal(plane.ledger.requests.length, before)
+
+      // A merchant's token changes nothing about it.
+      const withToken = yield* send(plane, { method: "GET", path: `/pay/payment_links/${token}`, authorization })
+
+      assert.deepEqual(withToken, yield* payable(plane, token))
     }),
   ))

@@ -11,10 +11,10 @@ import (
 	"syscall"
 	"time"
 
-	"yanmifeakeju.com/ledger/internal/config"
-	"yanmifeakeju.com/ledger/internal/database"
-	"yanmifeakeju.com/ledger/internal/httpapi"
-	"yanmifeakeju.com/ledger/internal/postgres"
+	"paytty.akeju.me/ledger/internal/config"
+	"paytty.akeju.me/ledger/internal/database"
+	"paytty.akeju.me/ledger/internal/httpapi"
+	"paytty.akeju.me/ledger/internal/postgres"
 )
 
 func main() {

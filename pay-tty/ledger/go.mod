@@ -1,4 +1,4 @@
-module yanmifeakeju.com/ledger
+module paytty.akeju.me/ledger
 
 go 1.26.5
 

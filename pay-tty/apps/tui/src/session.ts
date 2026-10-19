@@ -50,10 +50,10 @@ export type Operation = Data.TaggedEnum<{
 
 export const Operation = Data.taggedEnum<Operation>();
 
-export interface Popup {
+export interface Popup<Retry = Operation> {
   readonly message: string;
   /** Repeated by Retry; null when repeating it can't help. */
-  readonly retry: Operation | null;
+  readonly retry: Retry | null;
   /**
    * What Close does: "refresh" reloads /me and shows what it returns. Null on a
    * failed load, where Close would only load again, so Retry is the one action.

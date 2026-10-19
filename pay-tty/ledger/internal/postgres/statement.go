@@ -8,8 +8,8 @@ import (
 	"slices"
 	"time"
 
-	"yanmifeakeju.com/ledger/internal/account"
-	"yanmifeakeju.com/ledger/internal/statement"
+	"paytty.akeju.me/ledger/internal/account"
+	"paytty.akeju.me/ledger/internal/statement"
 )
 
 const statementAccountQuery = `

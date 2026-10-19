@@ -9,7 +9,7 @@ import { BusinessContext } from "../middleware/business.ts"
 
 // Minor units at the business's scale, as JSON numbers: every one is a safe
 // integer, so none loses precision on the way.
-const Amount = Schema.Int.check(
+export const Amount = Schema.Int.check(
   Schema.isGreaterThan(0).annotate({ expected: "a positive integer" }),
   Schema.isLessThanOrEqualTo(Number(Payments.maxAmount)).annotate({ expected: "a safe integer" }),
 )
@@ -100,7 +100,8 @@ const linkFields = {
   currency_code: Schema.String,
   scale: Schema.Int,
   pricing: Schema.Union([FixedPricing, CustomerChoosesPricing]),
-  url: Schema.String,
+  // What customers pay the link by: the user name in `ssh <token>@host`.
+  share_token: Schema.String,
   created_at: Schema.String,
 }
 
@@ -113,7 +114,17 @@ export class CreatedPaymentLink extends Schema.Class<CreatedPaymentLink>("Create
 
 const amount = (minor: bigint | null) => (minor === null ? null : Number(minor))
 
-export const paymentLink = (link: Payments.Link, url: string, created: boolean) => {
+export const pricing = (pricing: Payments.Pricing) =>
+  pricing.mode === "fixed"
+    ? new FixedPricing({ mode: "fixed", amount_minor: Number(pricing.amountMinor) })
+    : new CustomerChoosesPricing({
+        mode: "customer_chooses",
+        suggested_amount_minor: amount(pricing.suggestedAmountMinor),
+        minimum_amount_minor: amount(pricing.minimumAmountMinor),
+        maximum_amount_minor: amount(pricing.maximumAmountMinor),
+      })
+
+export const paymentLink = (link: Payments.Link, created: boolean) => {
   const fields = {
     id: link.id,
     business_id: link.businessId,
@@ -121,16 +132,8 @@ export const paymentLink = (link: Payments.Link, url: string, created: boolean) 
     description: link.description,
     currency_code: link.currencyCode,
     scale: link.scale,
-    pricing:
-      link.pricing.mode === "fixed"
-        ? new FixedPricing({ mode: "fixed", amount_minor: Number(link.pricing.amountMinor) })
-        : new CustomerChoosesPricing({
-            mode: "customer_chooses",
-            suggested_amount_minor: amount(link.pricing.suggestedAmountMinor),
-            minimum_amount_minor: amount(link.pricing.minimumAmountMinor),
-            maximum_amount_minor: amount(link.pricing.maximumAmountMinor),
-          }),
-    url,
+    pricing: pricing(link.pricing),
+    share_token: link.shareToken,
     created_at: link.createdAt.toISOString(),
   }
 

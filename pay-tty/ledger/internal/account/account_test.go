@@ -3,7 +3,7 @@ package account_test
 import (
 	"testing"
 
-	"yanmifeakeju.com/ledger/internal/account"
+	"paytty.akeju.me/ledger/internal/account"
 )
 
 func TestBalanceCounters_Available(t *testing.T) {

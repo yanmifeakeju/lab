@@ -2,7 +2,6 @@ import { Payments } from "@pay-tty/core/payments"
 import { Effect } from "effect"
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder"
 
-import { PaymentLinkUrls } from "../../payment_links/urls.ts"
 import { Conflict } from "../errors.ts"
 import { CurrentBusiness } from "../middleware/business.ts"
 import { api } from "../api.ts"
@@ -13,7 +12,6 @@ export const PaymentLinksLive = HttpApiBuilder.group(api, "paymentLinks", (handl
     Effect.gen(function* () {
       const business = yield* CurrentBusiness
       const payments = yield* Payments.Service
-      const urls = yield* PaymentLinkUrls.Service
 
       const { pricing } = payload
 
@@ -39,8 +37,7 @@ export const PaymentLinksLive = HttpApiBuilder.group(api, "paymentLinks", (handl
         }),
       )
 
-      // Built from the current base, so moving it moves every link.
-      return paymentLink(link, urls.urlFor(link.shareToken), created)
+      return paymentLink(link, created)
     }),
   ),
 )

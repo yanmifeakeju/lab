@@ -15,8 +15,8 @@ import (
 
 	"github.com/pressly/goose/v3"
 
-	"yanmifeakeju.com/ledger/internal/database"
-	"yanmifeakeju.com/ledger/migrations"
+	"paytty.akeju.me/ledger/internal/database"
+	"paytty.akeju.me/ledger/migrations"
 )
 
 func main() {
