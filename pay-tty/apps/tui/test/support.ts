@@ -5,6 +5,9 @@ import {
   type PayableLinkEncoded,
   type PaymentEncoded,
   type PaymentLinkEncoded,
+  type PaymentLinkListEncoded,
+  type PaymentLinkSummaryEncoded,
+  type PaymentStatsEncoded,
   SimulatePaymentRequestEncoded,
   StartPaymentRequestEncoded,
 } from "@pay-tty/plane-client"
@@ -33,6 +36,8 @@ export interface Routes {
   readonly createBusiness?: (call: Call) => Reply
   readonly openAccount?: (call: Call) => Reply
   readonly createPaymentLink?: (call: Call) => Reply
+  /** An empty list unless given. */
+  readonly listPaymentLinks?: (call: Call) => Reply
   readonly payableLink?: (call: Call) => Reply
   readonly startPayment?: (call: Call) => Reply
   readonly simulatePayment?: (call: Call) => Reply
@@ -100,7 +105,8 @@ export const fakePlane = (routes: Routes) => {
         Match.when("/session", () => session),
         Match.when("/me", () => routes.me),
         Match.when("/business", () => routes.createBusiness),
-        Match.when("/payment_links", () => routes.createPaymentLink),
+        Match.when("/payment_links", () =>
+          call.method === "GET" ? (routes.listPaymentLinks ?? (() => ({ status: 200, body: overview() }))) : routes.createPaymentLink),
         Match.when((path) => path.endsWith("/simulate"), () => routes.simulatePayment),
         Match.when((path) => path.endsWith("/payments"), () => routes.startPayment),
         Match.when((path) => path.startsWith("/pay/"), () => routes.payableLink),
@@ -247,3 +253,68 @@ export const simulated = (call: Call): Reply =>
         body: paymentOf({ status: call.body.outcome, completed_at: DateTime.formatIso(DateTime.nowUnsafe()) }),
       }
     : failure(400, "validation_error")
+
+export const noStats: PaymentStatsEncoded = {
+  succeeded: 0,
+  failed: 0,
+  cancelled: 0,
+  expired: 0,
+  pending: 0,
+  collected_minor: "0",
+  last_paid_at: null,
+}
+
+// A listed link: a fixed one with no payments unless told otherwise.
+export const summary = (fields: Partial<PaymentLinkSummaryEncoded> = {}): PaymentLinkSummaryEncoded => ({
+  ...linkFor({ title: "Logo design", description: null, pricing: { mode: "fixed", amount_minor: 2_500_000 } }),
+  active: true,
+  stats: noStats,
+  ...fields,
+})
+
+// What GET /payment_links returns for these links, totalled.
+export const overview = (
+  links: ReadonlyArray<PaymentLinkSummaryEncoded> = [],
+  fields: Partial<PaymentLinkListEncoded> = {},
+): PaymentLinkListEncoded => ({
+  links,
+  link_count: links.length,
+  active_link_count: links.filter((link) => link.active).length,
+  totals: {
+    succeeded: links.reduce((sum, link) => sum + link.stats.succeeded, 0),
+    failed: links.reduce((sum, link) => sum + link.stats.failed, 0),
+    cancelled: links.reduce((sum, link) => sum + link.stats.cancelled, 0),
+    expired: links.reduce((sum, link) => sum + link.stats.expired, 0),
+    pending: links.reduce((sum, link) => sum + link.stats.pending, 0),
+    collected_minor: links.reduce((sum, link) => sum + BigInt(link.stats.collected_minor), 0n).toString(),
+    last_paid_at: null,
+  },
+  ...fields,
+})
+
+export const listed = (...links: ReadonlyArray<PaymentLinkSummaryEncoded>) => (): Reply => ({
+  status: 200,
+  body: overview(links),
+})
+
+// Two listed links: one paid into, and an inactive one nobody has paid.
+export const paid = summary({
+  id: "plink_paid",
+  title: "Logo design",
+  stats: {
+    succeeded: 2,
+    failed: 1,
+    cancelled: 0,
+    expired: 3,
+    pending: 1,
+    collected_minor: "5000000",
+    last_paid_at: "2026-10-19T14:02:31.000Z",
+  },
+})
+
+export const tips = summary({
+  id: "plink_tips",
+  title: "Tips",
+  pricing: { mode: "customer_chooses", suggested_amount_minor: null, minimum_amount_minor: null, maximum_amount_minor: null },
+  active: false,
+})

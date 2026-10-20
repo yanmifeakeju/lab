@@ -17,7 +17,7 @@ import { ulid } from "ulid"
 
 import { BusinessInfo, BusinessLedger } from "../src/api/business/routes.ts"
 import { MeResponse } from "../src/api/me/routes.ts"
-import { CustomerChoosesPricing, FixedPricing, PaymentLink } from "../src/api/payment_links/routes.ts"
+import { CustomerChoosesPricing, FixedPricing, PaymentLink, PaymentLinkList, PaymentStats } from "../src/api/payment_links/routes.ts"
 import { PayableLink, Payment as PayPayment } from "../src/api/pay/routes.ts"
 import { SessionResponse } from "../src/api/session/routes.ts"
 import { ApiLive } from "../src/api/server.ts"
@@ -323,11 +323,12 @@ void test("publishes exactly /health, /session, /me, /business, /account, /payme
         assert.ok(code in (ledger?.responses ?? {}), code)
       }
 
-      assert.deepEqual(Object.keys(paths["/payment_links"] ?? {}), ["post"])
+      assert.deepEqual(Object.keys(paths["/payment_links"] ?? {}).sort(), ["get", "post"])
 
       const links = paths["/payment_links"]?.["post"]
 
       assert.deepEqual(links?.security, paths["/me"]?.["get"]?.security)
+      assert.deepEqual(paths["/payment_links"]?.["get"]?.security, paths["/me"]?.["get"]?.security)
       assert.equal(links?.requestBody?.content["application/json"].schema.$ref, "#/components/schemas/CreatePaymentLinkRequestEncoded")
 
       // A new link is a 201 and a repeat a 200, with the same body.
@@ -1735,5 +1736,87 @@ void test("paying asks the ledger nothing and needs no merchant token", () =>
       const withToken = yield* send(plane, { method: "GET", path: `/pay/payment_links/${token}`, authorization })
 
       assert.deepEqual(withToken, yield* payable(plane, token))
+    }),
+  ))
+
+const listLinks = (server: Server, authorization: string | undefined) =>
+  send(server, { method: "GET", path: "/payment_links", authorization })
+
+// A listing that succeeded, decoded strictly.
+const listed = Effect.fnUntraced(function* (server: Server, authorization: string) {
+  const { status, json } = yield* listLinks(server, authorization)
+
+  assert.equal(status, 200)
+
+  return yield* Schema.decodeUnknownEffect(PaymentLinkList)(json, strict)
+})
+
+void test("GET /payment_links lists the caller's links newest first, with each one's payments and the totals", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { authorization, link: logo, token } = yield* linkToPay(plane)
+
+      const tips = yield* createdLink(plane, authorization, { title: "Tip jar", pricing: { mode: "customer_chooses" } }, ulid())
+
+      const paid = yield* started(plane, token)
+
+      yield* simulatePayment(plane, token, paid.body.id, "succeeded")
+      yield* started(plane, token)
+      yield* started(plane, tips.body.share_token, { amount_minor: 1_000 })
+
+      const list = yield* listed(plane, authorization)
+
+      assert.deepEqual(list.links.map((link) => link.id), [tips.body.id, logo.id])
+
+      const [tipsSummary, logoSummary] = list.links
+
+      assert.deepEqual(tipsSummary?.pricing, tips.body.pricing)
+      assert.equal(tipsSummary?.active, true)
+      assert.equal(tipsSummary?.share_token, tips.body.share_token)
+      assert.ok(logoSummary !== undefined && logoSummary.stats.last_paid_at !== null)
+      assert.deepEqual(
+        logoSummary.stats,
+        new PaymentStats({
+          succeeded: 1,
+          failed: 0,
+          cancelled: 0,
+          expired: 0,
+          pending: 1,
+          collected_minor: "250000",
+          last_paid_at: logoSummary.stats.last_paid_at,
+        }),
+      )
+      assert.equal(tipsSummary?.stats.pending, 1)
+      assert.equal(tipsSummary?.stats.collected_minor, "0")
+
+      assert.equal(list.link_count, 2)
+      assert.equal(list.active_link_count, 2)
+      assert.equal(list.totals.succeeded, 1)
+      assert.equal(list.totals.pending, 2)
+      assert.equal(list.totals.collected_minor, "250000")
+    }),
+  ))
+
+void test("GET /payment_links shows only the caller's business, needs one, and needs a token", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const ours = yield* withActiveBusiness(plane)
+      const theirs = yield* linkToPay(plane)
+      const stranger = yield* exchange(plane, fingerprint())
+
+      const empty = yield* listed(plane, ours.authorization)
+
+      assert.deepEqual(empty.links, [])
+      assert.equal(empty.link_count, 0)
+      assert.equal(empty.totals.collected_minor, "0")
+      assert.deepEqual((yield* listed(plane, theirs.authorization)).links.map((link) => link.id), [theirs.link.id])
+
+      assert.deepEqual(yield* listLinks(plane, stranger.authorization), {
+        status: 409,
+        json: { message: "Create a business first.", error: { code: "business_required" } },
+      })
+      assert.deepEqual(yield* listLinks(plane, undefined), { status: 401, json: unauthorized })
     }),
   ))

@@ -7,9 +7,26 @@ import { test } from "node:test"
 
 import { createTestRenderer } from "@opentui/core/testing"
 import { Effect, Fiber } from "effect"
+import stringWidth from "string-width"
 
 import { connect } from "../src/connection.tsx"
-import { active, business, createdLink, failure, fakePlane, first, inTurn, me, type Reply, scenario } from "./support.ts"
+import {
+  active,
+  business,
+  createdLink,
+  failure,
+  fakePlane,
+  first,
+  inTurn,
+  listed,
+  me,
+  overview,
+  paid,
+  type Reply,
+  scenario,
+  summary,
+  tips,
+} from "./support.ts"
 
 const opened = business({
   status: "active",
@@ -335,17 +352,28 @@ void test(
   ),
 )
 
-const links = (plane: ReturnType<typeof fakePlane>) => plane.calls.filter(({ path }) => path.endsWith("/payment_links"))
+const links = (plane: ReturnType<typeof fakePlane>) =>
+  plane.calls.filter(({ method, path }) => method === "POST" && path === "/payment_links")
+
+const listings = (plane: ReturnType<typeof fakePlane>) =>
+  plane.calls.filter(({ method, path }) => method === "GET" && path === "/payment_links")
+
+// From the business, through its links, to the link form.
+const openForm = Effect.fnUntraced(function* (tui: Effect.Success<ReturnType<typeof screen>>) {
+  yield* tui.showing("press p to")
+  tui.keys.pressKey("p")
+  yield* tui.showing("Payment links ·")
+  tui.keys.pressKey("n")
+})
 
 void test(
-  "p opens the link form; a fixed link is created from the keyboard and shown, and Esc goes back",
+  "n on the links opens the form; a fixed link is created from the keyboard and shown, and Esc goes back",
   scenario(
     Effect.gen(function* () {
       const plane = fakePlane({ me: me(active), createPaymentLink: createdLink() })
       const tui = yield* screen(plane)
 
-      yield* tui.showing("press p to create a payment link")
-      tui.keys.pressKey("p")
+      yield* openForm(tui)
 
       const form = yield* tui.showing("Create payment link")
 
@@ -371,7 +399,7 @@ void test(
       ])
 
       tui.keys.pressEscape()
-      yield* tui.showing("press p to create a payment link")
+      yield* tui.showing("No payment links yet.")
 
       tui.close()
       yield* Fiber.join(tui.fiber)
@@ -386,8 +414,7 @@ void test(
       const plane = fakePlane({ me: me(active), createPaymentLink: createdLink() })
       const tui = yield* screen(plane)
 
-      yield* tui.showing("press p to create a payment link")
-      tui.keys.pressKey("p")
+      yield* openForm(tui)
       yield* tui.showing("Create payment link")
       yield* Effect.promise(() => tui.keys.typeText("Community fundraiser"))
       tui.keys.pressTab()
@@ -444,12 +471,11 @@ void test(
       const plane = fakePlane({ me: me(active), createPaymentLink: createdLink() })
       const tui = yield* screen(plane)
 
-      yield* tui.showing("press p to create a payment link")
-      tui.keys.pressKey("p")
+      yield* openForm(tui)
       yield* tui.showing("Create payment link")
       yield* Effect.promise(() => tui.keys.typeText("Consulting"))
       tui.keys.pressEscape()
-      yield* tui.showing("press p to create a payment link")
+      yield* tui.showing("No payment links yet.")
 
       assert.equal(links(plane).length, 0)
 
@@ -477,8 +503,7 @@ void test(
       const plane = fakePlane({ me: me(active), createPaymentLink: first("unreachable", "unreachable")(createdLink()) })
       const tui = yield* screen(plane)
 
-      yield* tui.showing("press p to create a payment link")
-      tui.keys.pressKey("p")
+      yield* openForm(tui)
       yield* tui.showing("Create payment link")
       yield* Effect.promise(() => tui.keys.typeText("Consulting"))
       tui.keys.pressTab()
@@ -526,8 +551,7 @@ void test(
       const plane = fakePlane({ me: me(active), createPaymentLink: createdLink() })
       const tui = yield* screen(plane)
 
-      yield* tui.showing("press p to create a payment link")
-      tui.keys.pressKey("p")
+      yield* openForm(tui)
       yield* tui.showing("Create payment link")
       yield* Effect.promise(() => tui.keys.typeText("Consulting"))
       tui.keys.pressEnter()
@@ -554,8 +578,7 @@ void test(
       const plane = fakePlane({ me: me(active), createPaymentLink: () => "hang" })
       const tui = yield* screen(plane)
 
-      yield* tui.showing("press p to create a payment link")
-      tui.keys.pressKey("p")
+      yield* openForm(tui)
       yield* tui.showing("Create payment link")
 
       tui.setup.resize(60, 30)
@@ -614,8 +637,7 @@ for (const size of [{ width: 32, height: 10 }, { width: 40, height: 10 }, small]
         const plane = fakePlane({ me: me(active), createPaymentLink: createdLink() })
         const tui = yield* screen(plane, size)
 
-        yield* tui.showing("press p to")
-        tui.keys.pressKey("p")
+        yield* openForm(tui)
         yield* tui.showing("Create payment link")
         yield* Effect.promise(() => tui.keys.typeText("Fundraiser"))
         yield* tui.matching((frame) => showsField(frame, "Title", "Fundraiser"))
@@ -678,8 +700,7 @@ void test(
       const plane = fakePlane({ me: me(active), createPaymentLink: createdLink() })
       const tui = yield* screen(plane)
 
-      yield* tui.showing("press p to")
-      tui.keys.pressKey("p")
+      yield* openForm(tui)
       yield* tui.showing("Create payment link")
       yield* Effect.promise(() => tui.keys.typeText("Community fundraiser"))
       tui.keys.pressTab()
@@ -748,8 +769,7 @@ void test(
       const plane = fakePlane({ me: me(active), createPaymentLink: first("hang")(createdLink()) })
       const tui = yield* screen(plane, small)
 
-      yield* tui.showing("press p to")
-      tui.keys.pressKey("p")
+      yield* openForm(tui)
       yield* tui.showing("Create payment link")
       yield* Effect.promise(() => tui.keys.typeText("Consulting"))
       tui.keys.pressTab()
@@ -796,8 +816,7 @@ void test(
       const plane = fakePlane({ me: me(active), createPaymentLink: createdLink() })
       const tui = yield* screen(plane, small)
 
-      yield* tui.showing("press p to")
-      tui.keys.pressKey("p")
+      yield* openForm(tui)
       yield* tui.showing("Create payment link")
       tui.keys.pressEnter()
 
@@ -826,8 +845,7 @@ void test(
       const plane = fakePlane({ me: me(active), createPaymentLink: createdLink() })
       const tui = yield* screen(plane, { width: 32, height: 10 })
 
-      yield* tui.showing("press p to")
-      tui.keys.pressKey("p")
+      yield* openForm(tui)
       yield* tui.showing("Create payment link")
       yield* Effect.promise(() => tui.keys.typeText("Consulting"))
       tui.keys.pressTab()
@@ -852,6 +870,209 @@ void test(
       assert.ok(text.includes("plink_01K33YV8M82N9MXP4E7J6B1QWK"), text)
       assert.ok(text.includes("ssh tok@tui.test"), text)
       assert.match(frame, /\[Esc\] Back/)
+
+      tui.close()
+      yield* Fiber.join(tui.fiber)
+    }),
+  ),
+)
+
+// The row's text without the border or the scrollbar's column.
+const rowsOf = (frame: string) => frame.split("\n").map((row) => row.replace(/^│ /, "").replace(/ *[▀▄█]? *│$/, ""))
+
+void test(
+  "p shows the links with their totals; Enter opens one with its payments, and Esc steps back a screen at a time",
+  scenario(
+    Effect.gen(function* () {
+      const plane = fakePlane({ me: me(active), listPaymentLinks: listed(paid, tips) })
+      const tui = yield* screen(plane)
+
+      yield* tui.showing("Payment links: press p to manage.")
+      tui.keys.pressKey("p")
+
+      const list = rowsOf(yield* tui.showing("Payment links · 2 links · 1 active"))
+
+      assert.ok(list.includes("Collected ₦50,000.00 · 2 paid · 1 pending"))
+      assert.ok(list.some((row) => /^› Logo design +₦25,000\.00 +2 paid +₦50,000\.00$/.test(row)), list.join("\n"))
+      assert.ok(list.some((row) => /^ {2}Tips \(inactive\) +Customer chooses +0 paid +₦0\.00$/.test(row)))
+      assert.ok(list.some((row) => row.startsWith("↑/↓ select · Enter open · n new")))
+
+      tui.keys.pressEnter()
+
+      const shown = rowsOf(yield* tui.showing("Collected: ₦50,000.00"))
+
+      assert.ok(shown.includes("Payment link"))
+      assert.ok(shown.includes("Logo design"))
+      assert.ok(shown.includes("2 paid · 1 failed · 0 cancelled · 3 expired · 1 pending"))
+      assert.ok(shown.includes("Last paid: 2026-10-19 14:02 UTC"))
+      assert.ok(shown.includes("ssh tok@tui.test"))
+
+      tui.keys.pressEscape()
+      yield* tui.showing("› Logo design")
+      tui.keys.pressArrow("down")
+      yield* tui.showing("› Tips")
+      tui.keys.pressEnter()
+      yield* tui.showing("Inactive: it takes no new payments.")
+
+      // Back to the list, still on the same link.
+      tui.keys.pressEscape()
+      yield* tui.showing("› Tips")
+      tui.keys.pressEscape()
+      yield* tui.showing("Payment links: press p to manage.")
+
+      // Opening the list asks plane once; stepping around it asks again only on p.
+      assert.equal(listings(plane).length, 1)
+
+      tui.keys.pressKey("p")
+      yield* tui.showing("› Logo design")
+
+      assert.equal(listings(plane).length, 2)
+
+      tui.close()
+      yield* Fiber.join(tui.fiber)
+    }),
+  ),
+)
+
+void test(
+  "a link created from the list joins it once Esc reloads it",
+  scenario(
+    Effect.gen(function* () {
+      const created = summary({ title: "Consulting", pricing: { mode: "fixed", amount_minor: 250_000 } })
+
+      const plane = fakePlane({
+        me: me(active),
+        createPaymentLink: createdLink(),
+        listPaymentLinks: inTurn({ status: 200, body: overview() }, { status: 200, body: overview([created]) }),
+      })
+
+      const tui = yield* screen(plane)
+
+      yield* openForm(tui)
+      yield* tui.showing("Create payment link")
+      yield* Effect.promise(() => tui.keys.typeText("Consulting"))
+      tui.keys.pressTab()
+      tui.keys.pressTab()
+      tui.keys.pressTab()
+      yield* Effect.promise(() => tui.keys.typeText("2500"))
+      tui.keys.pressEnter()
+      yield* tui.showing("Payment link created")
+      tui.keys.pressEscape()
+
+      const list = yield* tui.showing("› Consulting")
+
+      assert.match(list, /Payment links · 1 link/)
+      assert.equal(listings(plane).length, 2)
+
+      tui.close()
+      yield* Fiber.join(tui.fiber)
+    }),
+  ),
+)
+
+void test(
+  "r refreshes the list; a failed load keeps it behind a popup that offers Retry",
+  scenario(
+    Effect.gen(function* () {
+      const plane = fakePlane({
+        me: me(active),
+        listPaymentLinks: inTurn(
+          { status: 200, body: overview([tips]) },
+          "unreachable",
+          { status: 200, body: overview([paid, tips]) },
+        ),
+      })
+
+      const tui = yield* screen(plane)
+
+      yield* tui.showing("press p to manage")
+      tui.keys.pressKey("p")
+      yield* tui.showing("› Tips")
+      tui.keys.pressKey("r")
+
+      const popup = yield* tui.showing("Couldn't load your payment links.")
+
+      assert.match(popup, /\[Enter\] Retry/)
+      assert.match(popup, /Tips/)
+
+      tui.keys.pressEnter()
+
+      const list = yield* tui.matching((frame) => !frame.includes("Error") && frame.includes("2 links"))
+
+      assert.match(list, /› Logo design/)
+      assert.equal(listings(plane).length, 3)
+
+      tui.close()
+      yield* Fiber.join(tui.fiber)
+    }),
+  ),
+)
+
+void test(
+  "at 32×10 a row keeps the title and what it collected, and the selection scrolls into view",
+  scenario(
+    Effect.gen(function* () {
+      const many = Array.from({ length: 8 }, (_, at) =>
+        summary({ id: `plink_${at}`, title: `Link ${at}`, stats: { ...paid.stats, collected_minor: String((at + 1) * 100) } }))
+
+      const plane = fakePlane({ me: me(active), listPaymentLinks: listed(...many) })
+      const tui = yield* screen(plane, { width: 32, height: 10 })
+
+      yield* tui.showing("press p to")
+      tui.keys.pressKey("p")
+
+      const top = rowsOf(yield* tui.showing("› Link 0"))
+
+      assert.ok(top.includes("Collected ₦36.00 · 16 paid"), top.join("\n"))
+      assert.ok(top.some((row) => /^› Link 0 +₦1\.00$/.test(row)), top.join("\n"))
+      assert.ok(top.some((row) => /^ {2}Link 2 +₦3\.00$/.test(row)), top.join("\n"))
+      assert.ok(top.includes("↑/↓ · Enter · n · r · Esc"))
+
+      for (let step = 0; step < 7; step++) {
+        tui.keys.pressArrow("down")
+      }
+
+      const bottom = yield* tui.showing("› Link 7")
+
+      assert.doesNotMatch(bottom, /Link 0/)
+
+      tui.close()
+      yield* Fiber.join(tui.fiber)
+    }),
+  ),
+)
+
+void test(
+  "wide, emoji, and multi-line titles each draw on one row, with the amounts in the same columns as the rest",
+  scenario(
+    Effect.gen(function* () {
+      const titled = (id: string, title: string) => summary({ ...paid, id, title })
+
+      const plane = fakePlane({
+        me: me(active),
+        listPaymentLinks: listed(
+          titled("plink_a", "Logo design"),
+          titled("plink_b", "社区图书馆筹款活动：为孩子们购买新书和学习用品"),
+          titled("plink_c", "Café 👩🏽‍💻 rentals 🇳🇬 weekly"),
+          titled("plink_d", "Two\nlines"),
+        ),
+      })
+
+      const tui = yield* screen(plane)
+
+      yield* tui.showing("press p to")
+      tui.keys.pressKey("p")
+
+      const frame = yield* tui.showing("Two lines")
+      const rows = frame.split("\n").filter((row) => row.includes("₦50,000.00") && !row.includes("Collected"))
+
+      assert.equal(rows.length, 4, frame)
+
+      // Every row ends its amounts at the same column, inside the border.
+      const ends = rows.map((row) => stringWidth(row.slice(0, row.lastIndexOf("₦50,000.00") + "₦50,000.00".length)))
+
+      assert.equal(new Set(ends).size, 1, frame)
+      assert.ok(rows.every((row) => stringWidth(row) === 70), frame)
 
       tui.close()
       yield* Fiber.join(tui.fiber)

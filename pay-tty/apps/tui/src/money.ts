@@ -52,7 +52,7 @@ export const parseAmount = (text: string, scale: number): Parsed => {
 }
 
 /** Minor units as grouped decimal text, e.g. 250000 at scale 2 is `2,500.00`. */
-export const formatDecimal = (minor: number, scale: number) => {
+export const formatDecimal = (minor: number | bigint, scale: number) => {
   const digits = BigInt(minor).toString().padStart(scale + 1, "0")
   const whole = digits.slice(0, digits.length - scale).replace(/\B(?=(\d{3})+$)/g, ",")
 
@@ -60,7 +60,7 @@ export const formatDecimal = (minor: number, scale: number) => {
 }
 
 /** With the currency's symbol, or its code where it has none here. */
-export const formatMoney = (minor: number, scale: number, currency: string) => {
+export const formatMoney = (minor: number | bigint, scale: number, currency: string) => {
   const symbol = symbols.get(currency)
 
   return symbol === undefined ? `${currency} ${formatDecimal(minor, scale)}` : `${symbol}${formatDecimal(minor, scale)}`

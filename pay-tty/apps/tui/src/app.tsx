@@ -1,14 +1,33 @@
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { type Accessor, createEffect, createSignal, For, Match, on, onCleanup, Show, Switch } from "solid-js"
+import { type Accessor, createEffect, createSignal, For, type JSX, Match, on, onCleanup, Show, Switch } from "solid-js"
 
-import { emptyForm, type Form, type Link, type Mode, pricingLines, withMode } from "./payment-link.ts"
+import {
+  collected,
+  emptyForm,
+  type Form,
+  formatTime,
+  type Link,
+  listHeading,
+  listRow,
+  type Mode,
+  narrowRow,
+  type Overview,
+  pricingLines,
+  statusLine,
+  type Summary,
+  totalsLine,
+  withMode,
+} from "./payment-link.ts"
 import { type Business, type Popup, type State, View } from "./session.ts"
 
 /** What the screens can ask of the connection; each returns at once. */
 export interface Actions {
   readonly createBusiness: (name: string) => void
   readonly openAccount: () => void
+  readonly manageLinks: () => void
+  readonly refreshLinks: () => void
+  readonly openLink: (id: string) => void
   readonly startPaymentLink: () => void
   readonly createPaymentLink: (form: Form) => void
   readonly back: () => void
@@ -70,13 +89,13 @@ const ShowBusiness = (props: { readonly business: Business; readonly pending: bo
     </box>
     <Switch>
       <Match when={props.pending}>
-        <text>Opening your account…</text>
+        <text>{props.business.status === "created" ? "Opening your account…" : "Loading your payment links…"}</text>
       </Match>
       <Match when={props.business.status === "created"}>
         <text fg={muted}>Press o to open your account. Payment links need it.</text>
       </Match>
       <Match when={props.business.ledger !== null}>
-        <text fg={muted}>Collect payment: press p to create a payment link.</text>
+        <text fg={muted}>Payment links: press p to manage.</text>
       </Match>
     </Switch>
   </box>
@@ -99,6 +118,36 @@ const fieldId = (field: Field) => `link-field-${field}`
 // Text wraps to the full width before the scrollbar takes the last column, so
 // a one-column gutter keeps every character clear of it.
 export const gutter = { paddingRight: 1 }
+
+// Keeps the scrollbox's child with this ID in view whenever a trigger changes.
+// Positions are only known once a frame is laid out, so the scroll happens
+// after one, then redraws.
+const useReveal = (
+  box: () => ScrollBoxRenderable | undefined,
+  id: () => string,
+  triggers: ReadonlyArray<() => string | number | undefined>,
+) => {
+  const renderer = useRenderer()
+  let revealing = true
+
+  const reveal = () => {
+    const shown = box()
+
+    if (revealing && shown !== undefined) {
+      revealing = false
+      shown.scrollChildIntoView(id())
+      renderer.requestRender()
+    }
+  }
+
+  renderer.addPostProcessFn(reveal)
+  onCleanup(() => renderer.removePostProcessFn(reveal))
+
+  createEffect(on([...triggers], () => {
+    revealing = true
+    renderer.requestRender()
+  }))
+}
 
 // A label over its input, kept whole so scrolling never splits them.
 const TextField = (props: {
@@ -152,26 +201,13 @@ const CreateLink = (props: {
     />
   )
 
-  // Keeps the focused field and its label in view. Positions are only known
-  // once a frame is laid out, so the scroll happens after one, then redraws.
-  const renderer = useRenderer()
-  let revealing = true
-
-  const reveal = () => {
-    if (revealing && fields !== undefined) {
-      revealing = false
-      fields.scrollChildIntoView(fieldId(props.focus))
-      renderer.requestRender()
-    }
-  }
-
-  renderer.addPostProcessFn(reveal)
-  onCleanup(() => renderer.removePostProcessFn(reveal))
-
-  createEffect(on([() => props.focus, () => props.form.mode, () => terminal().width, () => terminal().height], () => {
-    revealing = true
-    renderer.requestRender()
-  }))
+  // Keeps the focused field and its label in view.
+  useReveal(() => fields, () => fieldId(props.focus), [
+    () => props.focus,
+    () => props.form.mode,
+    () => terminal().width,
+    () => terminal().height,
+  ])
 
   return (
     <box flexDirection="column" flexGrow={1} flexShrink={1}>
@@ -229,11 +265,27 @@ const CreateLink = (props: {
   )
 }
 
+// A link's title, pricing, and how customers pay it, with anything else the
+// screen adds in between.
+const LinkDetails = (props: { readonly link: Link; readonly payCommand: string; readonly children?: JSX.Element }) => (
+  <>
+    <text flexShrink={0}>{props.link.title}</text>
+    <Show when={props.link.description}>
+      {(description) => <text flexShrink={0} fg={muted}>{description()}</text>}
+    </Show>
+    <For each={pricingLines(props.link)}>{(line) => <text flexShrink={0}>{line}</text>}</For>
+    {props.children}
+    <text flexShrink={0} fg={muted}>Reference: {props.link.id}</text>
+    <text flexShrink={0} fg={muted}>Customers pay with:</text>
+    <text flexShrink={0}>{props.payCommand}</text>
+  </>
+)
+
 // The merchant's text wraps inside the scrolled area; Back stays below it.
-const LinkCreated = (props: {
-  readonly link: Link
-  readonly payCommand: string
+const LinkScreen = (props: {
+  readonly heading: string
   readonly onScroll: (scroll: (by: number) => void) => void
+  readonly children: JSX.Element
 }) => {
   let details: ScrollBoxRenderable | undefined
 
@@ -241,21 +293,95 @@ const LinkCreated = (props: {
 
   return (
     <box flexDirection="column" flexGrow={1} flexShrink={1}>
-      <text flexShrink={0}>Payment link created</text>
+      <text flexShrink={0}>{props.heading}</text>
       <scrollbox ref={(box) => (details = box)} flexGrow={1} flexShrink={1} scrollY contentOptions={gutter}>
-        <text flexShrink={0}>{props.link.title}</text>
-        <Show when={props.link.description}>
-          {(description) => <text flexShrink={0} fg={muted}>{description()}</text>}
-        </Show>
-        <For each={pricingLines(props.link)}>{(line) => <text flexShrink={0}>{line}</text>}</For>
-        <text flexShrink={0} fg={muted}>Reference: {props.link.id}</text>
-        <text flexShrink={0} fg={muted}>Customers pay with:</text>
-        <text flexShrink={0}>{props.payCommand}</text>
+        {props.children}
       </scrollbox>
       <text flexShrink={0} fg={muted}>[Esc] Back · ↑/↓ scroll</text>
     </box>
   )
 }
+
+const rowId = (link: Summary) => `link-row-${link.id}`
+
+// The border, its padding, the scrollbar and its gutter, and the selection
+// marker. A row any wider wraps once the list overflows.
+const rowChrome = 2 + 2 + 1 + gutter.paddingRight + 2
+
+const LinkList = (props: {
+  readonly business: Business
+  readonly overview: Overview
+  readonly selected: number
+  readonly pending: boolean
+}) => {
+  let rows: ScrollBoxRenderable | undefined
+
+  const terminal = useTerminalDimensions()
+  const scale = () => props.business.ledger?.scale ?? 0
+  const selectedId = () => props.overview.links[props.selected]?.id
+  const narrow = () => terminal().width - rowChrome < narrowRow
+
+  useReveal(() => rows, () => `link-row-${selectedId() ?? ""}`, [
+    selectedId,
+    () => terminal().width,
+    () => terminal().height,
+  ])
+
+  return (
+    <box flexDirection="column" flexGrow={1} flexShrink={1}>
+      <text flexShrink={0}>{listHeading(props.overview)}</text>
+      <text flexShrink={0} fg={muted}>
+        {totalsLine(props.overview, scale(), props.business.currency_code, narrow())}
+      </text>
+      <Show
+        when={props.overview.links.length > 0}
+        fallback={<text flexShrink={0} fg={muted}>No payment links yet. Press n to create one.</text>}
+      >
+        <scrollbox ref={(box) => (rows = box)} flexGrow={1} flexShrink={1} scrollY contentOptions={gutter}>
+          <For each={props.overview.links}>
+            {(link, index) => (
+              <text id={rowId(link)} flexShrink={0} fg={index() === props.selected ? bright : muted}>
+                {index() === props.selected ? "› " : "  "}
+                {listRow(link, terminal().width - rowChrome)}
+              </text>
+            )}
+          </For>
+        </scrollbox>
+      </Show>
+      <Show when={props.overview.link_count > props.overview.links.length}>
+        <text flexShrink={0} fg={muted}>
+          Showing the newest {props.overview.links.length} of {props.overview.link_count}.
+        </text>
+      </Show>
+      <Show
+        when={props.pending}
+        fallback={
+          <text flexShrink={0} fg={muted}>
+            {terminal().width < 64 ? "↑/↓ · Enter · n · r · Esc" : "↑/↓ select · Enter open · n new · r refresh · Esc back"}
+          </text>
+        }
+      >
+        <text flexShrink={0}>Refreshing…</text>
+      </Show>
+    </box>
+  )
+}
+
+// What a link's payments came to, between its pricing and how to pay it.
+const LinkStats = (props: { readonly link: Summary }) => (
+  <>
+    <text flexShrink={0}>
+      Collected: {collected(props.link.stats, props.link.scale, props.link.currency_code)}
+    </text>
+    <text flexShrink={0} fg={muted}>{statusLine(props.link.stats)}</text>
+    <Show when={props.link.stats.last_paid_at}>
+      {(at) => <text flexShrink={0} fg={muted}>Last paid: {formatTime(at())}</text>}
+    </Show>
+    <Show when={!props.link.active}>
+      <text flexShrink={0} fg={error}>Inactive: it takes no new payments.</text>
+    </Show>
+  </>
+)
 
 export const ErrorPopup = (props: { readonly popup: Popup<unknown>; readonly pending: boolean }) => {
   // On a short terminal the spacing goes, so the popup ends inside the screen.
@@ -327,6 +453,30 @@ export const App = (props: {
     return View.$is("LinkCreated")(current) ? current.link : undefined
   }
 
+  const listing = () => {
+    const current = view()
+
+    return View.$is("Links")(current) ? current : undefined
+  }
+
+  const detail = () => {
+    const current = view()
+
+    return View.$is("LinkDetail")(current) ? current.link : undefined
+  }
+
+  const linkScreen = () =>
+    creating() !== undefined || created() !== undefined || listing() !== undefined || detail() !== undefined
+
+  // The list's selection, kept while a link is open and reset when the list opens.
+  const [selected, setSelected] = createSignal(0)
+
+  const shownSelection = () => {
+    const count = listing()?.overview.links.length ?? 0
+
+    return Math.max(Math.min(selected(), count - 1), 0)
+  }
+
   const submitLink = () => props.actions.createPaymentLink(form())
 
   const terminal = useTerminalDimensions()
@@ -337,7 +487,7 @@ export const App = (props: {
   const roomy = () =>
     terminal().width >= linkScreenMinimum.width && terminal().height >= linkScreenMinimum.height
 
-  let scrollResult = (_by: number) => {}
+  let scrollDetails = (_by: number) => {}
 
   // Moves focus through the fields the chosen mode shows, wrapping around.
   const step = (by: number) => {
@@ -400,13 +550,48 @@ export const App = (props: {
       return
     }
 
-    if (created() !== undefined) {
+    if (created() !== undefined || detail() !== undefined) {
       if (key.name === "escape" || key.name === "return" || key.name === "enter" || key.name === "b") {
         props.actions.back()
       }
 
       if (key.name === "up" || key.name === "down") {
-        scrollResult(key.name === "up" ? -1 : 1)
+        scrollDetails(key.name === "up" ? -1 : 1)
+      }
+
+      return
+    }
+
+    const list = listing()
+
+    if (list !== undefined) {
+      const links = list.overview.links
+
+      if (key.name === "escape" || key.name === "b") {
+        props.actions.back()
+      }
+
+      if (key.name === "up" || key.name === "down") {
+        setSelected(Math.max(Math.min(shownSelection() + (key.name === "up" ? -1 : 1), links.length - 1), 0))
+      }
+
+      if (key.name === "return" || key.name === "enter") {
+        const link = links[shownSelection()]
+
+        if (link !== undefined) {
+          props.actions.openLink(link.id)
+        }
+      }
+
+      if (key.name === "r") {
+        props.actions.refreshLinks()
+      }
+
+      if (key.name === "n") {
+        key.preventDefault()
+        setForm(emptyForm)
+        setFocus("title")
+        props.actions.startPaymentLink()
       }
 
       return
@@ -417,10 +602,8 @@ export const App = (props: {
     }
 
     if (key.name === "p" && business()?.ledger != null) {
-      key.preventDefault()
-      setForm(emptyForm)
-      setFocus("title")
-      props.actions.startPaymentLink()
+      setSelected(0)
+      props.actions.manageLinks()
     }
   })
 
@@ -451,7 +634,7 @@ export const App = (props: {
         <Match when={business()}>
           {(shown) => <ShowBusiness business={shown()} pending={props.state().pending} />}
         </Match>
-        <Match when={(creating() !== undefined || created() !== undefined) && !roomy()}>
+        <Match when={linkScreen() && !roomy()}>
           <text fg={muted}>
             Enlarge the terminal to {linkScreenMinimum.width}×{linkScreenMinimum.height}.
           </text>
@@ -469,13 +652,30 @@ export const App = (props: {
             />
           )}
         </Match>
+        <Match when={listing()}>
+          {(shown) => (
+            <LinkList
+              business={shown().business}
+              overview={shown().overview}
+              selected={shownSelection()}
+              pending={props.state().pending}
+            />
+          )}
+        </Match>
         <Match when={created()}>
           {(link) => (
-            <LinkCreated
-              link={link()}
-              payCommand={props.payCommand(link().share_token)}
-              onScroll={(scroll) => (scrollResult = scroll)}
-            />
+            <LinkScreen heading="Payment link created" onScroll={(scroll) => (scrollDetails = scroll)}>
+              <LinkDetails link={link()} payCommand={props.payCommand(link().share_token)} />
+            </LinkScreen>
+          )}
+        </Match>
+        <Match when={detail()}>
+          {(link) => (
+            <LinkScreen heading="Payment link" onScroll={(scroll) => (scrollDetails = scroll)}>
+              <LinkDetails link={link()} payCommand={props.payCommand(link().share_token)}>
+                <LinkStats link={link()} />
+              </LinkDetails>
+            </LinkScreen>
           )}
         </Match>
       </Switch>

@@ -1,4 +1,4 @@
-import { and, eq, gt, lte, sql } from "drizzle-orm"
+import { and, desc, eq, gt, lte, type SQL, sql } from "drizzle-orm"
 import { Context, Effect, Encoding, Layer, Result, Schema } from "effect"
 
 import { Business } from "../business/business.ts"
@@ -13,6 +13,9 @@ export { maxAmount } from "./sql.ts"
 
 /** How long a payment stays pending before it expires. */
 export const paymentWindowMinutes = 30
+
+/** How many of a business's links a listing returns, newest first. */
+export const linkListLimit = 100
 
 export const ID = Schema.String.pipe(
   Schema.check(Schema.isStartsWith("plink_")),
@@ -150,6 +153,36 @@ export class Payment extends Schema.Class<Payment>("Payments.Payment")({
   completedAt: Schema.NullOr(Schema.Date),
 }) {}
 
+/**
+ * What a link's payments, or a business's, came to. A pending payment past its
+ * window counts as expired, whether or not anything has marked it yet.
+ */
+export class Stats extends Schema.Class<Stats>("Payments.Stats")({
+  succeeded: Schema.Int,
+  failed: Schema.Int,
+  cancelled: Schema.Int,
+  expired: Schema.Int,
+  pending: Schema.Int,
+  /** The sum of succeeded payments, in minor units at the link's scale. */
+  collectedMinor: Schema.BigInt,
+  /** When the latest succeeded payment completed. */
+  lastPaidAt: Schema.NullOr(Schema.Date),
+}) {}
+
+export class Summary extends Schema.Class<Summary>("Payments.Summary")({
+  link: Link,
+  stats: Stats,
+}) {}
+
+export class Overview extends Schema.Class<Overview>("Payments.Overview")({
+  /** The newest `linkListLimit` links. */
+  links: Schema.Array(Summary),
+  /** Counts and totals over every link, listed or not. */
+  linkCount: Schema.Int,
+  activeLinkCount: Schema.Int,
+  totals: Stats,
+}) {}
+
 export interface Started {
   readonly payment: Payment
   /** False when the key had already started this payment. */
@@ -237,6 +270,8 @@ export interface Interface {
     paymentId: string,
     outcome: Outcome,
   ) => Effect.Effect<Payment, LinkNotFoundError | PaymentNotFoundError | PaymentClosedError>
+  /** The business's links with what each collected, and its totals. */
+  readonly listLinks: (businessId: Business.ID) => Effect.Effect<Overview>
 }
 
 export class Service extends Context.Service<Service, Interface>()("Payments") {}
@@ -288,6 +323,30 @@ const paymentOf = (row: PaymentRow) =>
     expiresAt: row.expiresAt,
     completedAt: row.completedAt,
   })
+
+const counted = (condition: SQL) => sql`count(*) filter (where ${condition})`.mapWith(Number)
+
+const isStatus = (status: Status) => sql`${payments.status} = ${status}`
+
+const due = sql`${payments.expiresAt} <= now()`
+
+// Over the payments joined to the links selected; a link without any has none.
+const statsColumns = {
+  succeeded: counted(isStatus("succeeded")),
+  failed: counted(isStatus("failed")),
+  cancelled: counted(isStatus("cancelled")),
+  expired: counted(sql`${isStatus("expired")} or (${isStatus("pending")} and ${due})`),
+  pending: counted(sql`${isStatus("pending")} and not ${due}`),
+  // As text: a sum can pass what a JavaScript number holds exactly.
+  collectedMinor: sql<string>`coalesce(sum(${payments.amountMinor}) filter (where ${isStatus("succeeded")}), 0)::text`,
+  lastPaidAt: sql`max(${payments.completedAt}) filter (where ${isStatus("succeeded")})`.mapWith(payments.completedAt),
+}
+
+type StatsRow = {
+  readonly [K in keyof typeof statsColumns]: (typeof statsColumns)[K]["_"]["type"]
+}
+
+const statsOf = (row: StatsRow) => new Stats({ ...row, collectedMinor: BigInt(row.collectedMinor) })
 
 /** The amount a payment of this pricing charges, or why the request can't have it. */
 export const amountFor = (pricing: Pricing, requested: bigint | null): Result.Result<bigint, AmountError> => {
@@ -576,7 +635,48 @@ const make = Effect.gen(function* () {
     return yield* new PaymentClosedError({ payment: paymentOf(expired[0] ?? row) })
   })
 
-  return Service.of({ createLink, findLink, startPayment, simulate })
+  const listLinks = Effect.fn("Payments.listLinks")(function* (businessId: Business.ID) {
+    const listed = yield* database.use((db) =>
+      db
+        .select({ link: paymentLinks, ...statsColumns })
+        .from(paymentLinks)
+        .leftJoin(payments, eq(payments.linkId, paymentLinks.id))
+        .where(eq(paymentLinks.businessId, businessId))
+        .groupBy(paymentLinks.id)
+        .orderBy(desc(paymentLinks.createdAt), desc(paymentLinks.id))
+        .limit(linkListLimit),
+    )
+
+    const totals = yield* database.use((db) =>
+      db
+        .select({
+          linkCount: sql`count(distinct ${paymentLinks.id})`.mapWith(Number),
+          activeLinkCount: sql`count(distinct ${paymentLinks.id}) filter (where ${paymentLinks.deactivatedAt} is null)`.mapWith(Number),
+          ...statsColumns,
+        })
+        .from(paymentLinks)
+        .leftJoin(payments, eq(payments.linkId, paymentLinks.id))
+        .where(eq(paymentLinks.businessId, businessId)),
+    )
+
+    const row = totals[0]
+
+    // An aggregate without group by always returns its one row.
+    if (row === undefined) {
+      return yield* Effect.die(new Error(`no link totals for ${businessId}`))
+    }
+
+    const { linkCount, activeLinkCount, ...total } = row
+
+    return new Overview({
+      links: listed.map(({ link, ...stats }) => new Summary({ link: fromRow(link), stats: statsOf(stats) })),
+      linkCount,
+      activeLinkCount,
+      totals: statsOf(total),
+    })
+  })
+
+  return Service.of({ createLink, findLink, startPayment, simulate, listLinks })
 })
 
 export const layer = Layer.effect(Service)(make)

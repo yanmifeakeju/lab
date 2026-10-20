@@ -16,7 +16,7 @@ import {
 } from "effect";
 import * as HttpClientError from "effect/unstable/http/HttpClientError";
 
-import { type Form, type Link, type Request, toRequest } from "./payment-link.ts";
+import { type Form, type Link, type Overview, type Request, type Summary, toRequest } from "./payment-link.ts";
 import { Plane } from "./plane.ts";
 
 export type Business = BusinessInfoEncoded;
@@ -27,9 +27,21 @@ export type View = Data.TaggedEnum<{
   Unknown: {};
   NoBusiness: {};
   HasBusiness: { readonly business: Business };
-  /** The payment-link form, for a business whose account is open. */
-  CreatingLink: { readonly business: Business };
-  LinkCreated: { readonly business: Business; readonly link: Link };
+  /** The business's payment links, for one whose account is open. */
+  Links: { readonly business: Business; readonly overview: Overview };
+  /** One link of the list, as the list loaded it. */
+  LinkDetail: {
+    readonly business: Business;
+    readonly overview: Overview;
+    readonly link: Summary;
+  };
+  // The list stays with the form and its result, to show until it reloads.
+  CreatingLink: { readonly business: Business; readonly overview: Overview };
+  LinkCreated: {
+    readonly business: Business;
+    readonly overview: Overview;
+    readonly link: Link;
+  };
 }>;
 
 export const View = Data.taggedEnum<View>();
@@ -40,9 +52,11 @@ export type Operation = Data.TaggedEnum<{
   Load: {};
   CreateBusiness: { readonly name: string };
   OpenAccount: {};
+  ListLinks: { readonly business: Business };
   // The key goes with the request, so Retry can't create a second link.
   CreatePaymentLink: {
     readonly business: Business;
+    readonly overview: Overview;
     readonly request: Request;
     readonly key: string;
   };
@@ -95,11 +109,20 @@ export interface Interface {
   readonly createBusiness: (name: string) => Effect.Effect<void>;
   /** Ignored unless a created business is showing and idle. */
   readonly openAccount: Effect.Effect<void>;
-  /** Shows the link form; ignored unless an active business is showing and idle. */
+  /** Loads the links; ignored unless an active business is showing and idle. */
+  readonly manageLinks: Effect.Effect<void>;
+  /** Loads the links again; ignored unless they are showing and idle. */
+  readonly refreshLinks: Effect.Effect<void>;
+  /** Shows one listed link; ignored unless the list is showing and idle. */
+  readonly openLink: (id: string) => Effect.Effect<void>;
+  /** Shows the link form; ignored unless the links are showing and idle. */
   readonly startPaymentLink: Effect.Effect<void>;
   /** Ignored unless the form is showing and idle. */
   readonly createPaymentLink: (form: Form) => Effect.Effect<void>;
-  /** Back to the business from the form or a created link, when idle. */
+  /**
+   * One screen back, when idle: from a link to the list, from the list to the
+   * business, and from the form or a created link to the list, reloaded.
+   */
   readonly back: Effect.Effect<void>;
   /** Repeats the failed operation; ignored unless the popup offers it. */
   readonly retry: Effect.Effect<void>;
@@ -161,6 +184,19 @@ const popupFor = (operation: Operation, failure: Failure): Popup => {
           message: "Couldn't open the account.",
           retry: operation,
           close: "refresh" as const,
+        })),
+      ),
+    ListLinks: () =>
+      Match.value(code).pipe(
+        Match.when("business_required", () => ({
+          message: "Create a business first.",
+          retry: null,
+          close: "refresh" as const,
+        })),
+        Match.orElse(() => ({
+          message: "Couldn't load your payment links.",
+          retry: operation,
+          close: "dismiss" as const,
         })),
       ),
     // Close keeps the form as typed. Submitting it unchanged reuses the key,
@@ -312,7 +348,12 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
               ),
               (opened) => View.HasBusiness({ business: opened }),
             ),
-          CreatePaymentLink: ({ business, request, key }) =>
+          ListLinks: ({ business }) =>
+            Effect.map(
+              authorized((client) => client.listPaymentLinks(undefined)),
+              (overview) => View.Links({ business, overview }),
+            ),
+          CreatePaymentLink: ({ business, overview, request, key }) =>
             Effect.map(
               authorized((client) =>
                 client.createPaymentLink({
@@ -320,7 +361,7 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
                   payload: request,
                 })
               ),
-              (link) => View.LinkCreated({ business, link }),
+              (link) => View.LinkCreated({ business, overview, link }),
             ),
         }),
       );
@@ -398,15 +439,68 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
     }
   });
 
-  const startPaymentLink = Effect.asVoid(
-    begin(
+  const manageLinks = Effect.gen(function* () {
+    const business = yield* SubscriptionRef.modify(
+      state,
       (current) =>
         View.$is("HasBusiness")(current.view) &&
         current.view.business.ledger !== null &&
+        current.popup === null &&
+        !current.pending
+          ? ([current.view.business, { ...current, pending: true }] as const)
+          : ([undefined, current] as const),
+    );
+
+    if (business !== undefined) {
+      yield* perform(Operation.ListLinks({ business }));
+    }
+  });
+
+  const refreshLinks = Effect.gen(function* () {
+    const business = yield* SubscriptionRef.modify(
+      state,
+      (current) =>
+        View.$is("Links")(current.view) && current.popup === null && !current.pending
+          ? ([current.view.business, { ...current, pending: true }] as const)
+          : ([undefined, current] as const),
+    );
+
+    if (business !== undefined) {
+      yield* perform(Operation.ListLinks({ business }));
+    }
+  });
+
+  const openLink = (id: string) =>
+    Effect.asVoid(
+      begin(
+        (current) =>
+          View.$is("Links")(current.view) &&
+          current.view.overview.links.some((link) => link.id === id) &&
+          current.popup === null,
+        (current) => {
+          if (!View.$is("Links")(current.view)) {
+            return current;
+          }
+
+          const { business, overview } = current.view;
+          const link = overview.links.find((listed) => listed.id === id);
+
+          return link === undefined
+            ? current
+            : { ...current, view: View.LinkDetail({ business, overview, link }) };
+        },
+      ),
+    );
+
+  const startPaymentLink = Effect.asVoid(
+    begin(
+      (current) =>
+        View.$is("Links")(current.view) &&
+        current.view.business.ledger !== null &&
         current.popup === null,
       (current) =>
-        View.$is("HasBusiness")(current.view)
-          ? { ...current, view: View.CreatingLink({ business: current.view.business }) }
+        View.$is("Links")(current.view)
+          ? { ...current, view: View.CreatingLink(current.view) }
           : current,
     ),
   );
@@ -415,17 +509,21 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
     const showing = (current: State) =>
       View.$is("CreatingLink")(current.view) && current.popup === null;
 
-    const business = yield* SubscriptionRef.get(state).pipe(
+    const shown = yield* SubscriptionRef.get(state).pipe(
       Effect.map((current) =>
-        View.$is("CreatingLink")(current.view) ? current.view.business : undefined
+        View.$is("CreatingLink")(current.view) ? current.view : undefined
       ),
     );
 
-    if (business?.ledger == null) {
+    const ledger = shown?.business.ledger;
+
+    if (shown === undefined || ledger == null) {
       return;
     }
 
-    const request = toRequest(form, business.ledger.scale);
+    const { business, overview } = shown;
+
+    const request = toRequest(form, ledger.scale);
 
     if (Result.isFailure(request)) {
       return yield* begin(showing, (current) => ({
@@ -445,20 +543,38 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
         ? ([held.key, held] as const)
         : ([fresh, { businessId: business.id, request: request.success, key: fresh }] as const));
 
-    yield* perform(Operation.CreatePaymentLink({ business, request: request.success, key }));
+    yield* perform(Operation.CreatePaymentLink({ business, overview, request: request.success, key }));
   });
 
-  const back = Effect.asVoid(
-    begin(
-      (current) =>
-        (View.$is("CreatingLink")(current.view) || View.$is("LinkCreated")(current.view)) &&
-        current.popup === null,
-      (current) =>
-        View.$is("CreatingLink")(current.view) || View.$is("LinkCreated")(current.view)
-          ? { ...current, view: View.HasBusiness({ business: current.view.business }) }
-          : current,
-    ),
-  );
+  // Leaving the form or a created link shows the list as it was while it
+  // reloads, so a new link joins it.
+  const back = Effect.gen(function* () {
+    const reload = yield* SubscriptionRef.modify(state, (current): readonly [Business | undefined, State] => {
+      if (current.popup !== null || current.pending) {
+        return [undefined, current];
+      }
+
+      const stay = [undefined, current] as const;
+
+      const reloading = ({ business, overview }: { readonly business: Business; readonly overview: Overview }) =>
+        [business, { ...current, view: View.Links({ business, overview }), pending: true }] as const;
+
+      return View.$match(current.view, {
+        Unknown: () => stay,
+        NoBusiness: () => stay,
+        HasBusiness: () => stay,
+        Links: ({ business }) => [undefined, { ...current, view: View.HasBusiness({ business }) }] as const,
+        LinkDetail: ({ business, overview }) =>
+          [undefined, { ...current, view: View.Links({ business, overview }) }] as const,
+        CreatingLink: reloading,
+        LinkCreated: reloading,
+      });
+    });
+
+    if (reload !== undefined) {
+      yield* perform(Operation.ListLinks({ business: reload }));
+    }
+  });
 
   // The popup stays up while the retry runs; its answer replaces or clears it.
   const retry = Effect.gen(function* () {
@@ -498,6 +614,9 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
     load,
     createBusiness,
     openAccount,
+    manageLinks,
+    refreshLinks,
+    openLink,
     startPaymentLink,
     createPaymentLink,
     back,

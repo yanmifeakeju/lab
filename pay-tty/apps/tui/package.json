@@ -16,6 +16,7 @@
     "@opentui/ssh": "0.5.14",
     "@pay-tty/plane-client": "workspace:*",
     "effect": "4.0.0-rc.117",
-    "solid-js": "1.9.12"
+    "solid-js": "1.9.12",
+    "string-width": "^7.2.0"
   }
 }

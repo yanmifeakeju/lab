@@ -404,3 +404,146 @@ void test("the database keeps a payment in its link's business, currency, and sc
       }),
     ),
   ))
+
+const linkOf = (businessId: Business.ID, details: Payments.Details = fixed) =>
+  Effect.gen(function* () {
+    const service = yield* Payments.Service
+
+    return (yield* service.createLink(businessId, key(), details)).link
+  })
+
+const listLinks = (businessId: Business.ID) =>
+  Effect.gen(function* () {
+    const service = yield* Payments.Service
+
+    return yield* service.listLinks(businessId)
+  })
+
+const noStats = new Payments.Stats({
+  succeeded: 0,
+  failed: 0,
+  cancelled: 0,
+  expired: 0,
+  pending: 0,
+  collectedMinor: 0n,
+  lastPaidAt: null,
+})
+
+void test("a listing counts each link's payments by status and sums only what succeeded", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const business = yield* createBusiness()
+        const tips = yield* linkOf(business.id, chooses())
+        const logo = yield* linkOf(business.id)
+        const idle = yield* linkOf(business.id)
+
+        const paid = (shareToken: string, amount: bigint | null, outcome: Payments.Outcome) =>
+          Effect.flatMap(start(shareToken, key(), amount), ({ payment }) => simulate(shareToken, payment.id, outcome))
+
+        yield* paid(tips.shareToken, 1_000n, "succeeded")
+        const latest = yield* paid(tips.shareToken, 4_000n, "succeeded")
+        yield* paid(tips.shareToken, 9_000n, "failed")
+        yield* paid(tips.shareToken, 9_000n, "cancelled")
+        yield* start(tips.shareToken, key(), 9_000n)
+
+        yield* paid(logo.shareToken, null, "succeeded")
+        const lapsed = yield* start(logo.shareToken, key())
+
+        // Due to expire but not yet marked: it counts as expired, untouched.
+        yield* Testing.lapsePayment(lapsed.payment.id)
+
+        const overview = yield* listLinks(business.id)
+
+        assert.deepEqual(
+          overview.links.map(({ link }) => link.id),
+          [idle.id, logo.id, tips.id],
+          "newest first",
+        )
+
+        const [idleStats, logoStats, tipsStats] = overview.links.map(({ stats }) => stats)
+
+        assert.deepEqual(idleStats, noStats)
+        assert.deepEqual(
+          tipsStats,
+          new Payments.Stats({
+            succeeded: 2,
+            failed: 1,
+            cancelled: 1,
+            expired: 0,
+            pending: 1,
+            collectedMinor: 5_000n,
+            lastPaidAt: latest.completedAt,
+          }),
+        )
+        assert.deepEqual(
+          [logoStats?.succeeded, logoStats?.expired, logoStats?.pending, logoStats?.collectedMinor],
+          [1, 1, 0, 2_500_000n],
+        )
+        assert.equal((yield* stored(logo.id)).find((row) => row.id === lapsed.payment.id)?.status, "pending")
+
+        assert.equal(overview.linkCount, 3)
+        assert.equal(overview.activeLinkCount, 3)
+        assert.deepEqual(
+          overview.totals,
+          new Payments.Stats({
+            succeeded: 3,
+            failed: 1,
+            cancelled: 1,
+            expired: 1,
+            pending: 1,
+            collectedMinor: 2_505_000n,
+            lastPaidAt: overview.totals.lastPaidAt,
+          }),
+        )
+        assert.ok(overview.totals.lastPaidAt !== null)
+      }),
+    ),
+  ))
+
+void test("a listing shows only the business's own links, and a business without any has empty totals", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const business = yield* createBusiness()
+        const other = yield* createBusiness("Other Ltd")
+        const theirs = yield* linkOf(other.id)
+
+        yield* Effect.flatMap(start(theirs.shareToken, key()), ({ payment }) =>
+          simulate(theirs.shareToken, payment.id, "succeeded"))
+
+        assert.deepEqual(
+          yield* listLinks(business.id),
+          new Payments.Overview({ links: [], linkCount: 0, activeLinkCount: 0, totals: noStats }),
+        )
+        assert.deepEqual((yield* listLinks(other.id)).links.map(({ link }) => link.id), [theirs.id])
+      }),
+    ),
+  ))
+
+void test("a listing returns the newest links up to its limit, with counts and totals over all of them", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const business = yield* createBusiness()
+        const oldest = yield* linkOf(business.id)
+
+        yield* Effect.flatMap(start(oldest.shareToken, key()), ({ payment }) =>
+          simulate(oldest.shareToken, payment.id, "succeeded"))
+        yield* Testing.deactivateLink(oldest.id)
+
+        for (let made = 1; made < Payments.linkListLimit + 1; made++) {
+          yield* linkOf(business.id)
+        }
+
+        const overview = yield* listLinks(business.id)
+
+        assert.equal(overview.links.length, Payments.linkListLimit)
+        assert.ok(!overview.links.some(({ link }) => link.id === oldest.id))
+        assert.equal(overview.linkCount, Payments.linkListLimit + 1)
+        assert.equal(overview.activeLinkCount, Payments.linkListLimit)
+        assert.equal(overview.totals.succeeded, 1)
+        assert.equal(overview.totals.collectedMinor, 2_500_000n)
+      }),
+    ),
+  ))

@@ -124,21 +124,75 @@ export const pricing = (pricing: Payments.Pricing) =>
         maximum_amount_minor: amount(pricing.maximumAmountMinor),
       })
 
-export const paymentLink = (link: Payments.Link, created: boolean) => {
-  const fields = {
-    id: link.id,
-    business_id: link.businessId,
-    title: link.title,
-    description: link.description,
-    currency_code: link.currencyCode,
-    scale: link.scale,
-    pricing: pricing(link.pricing),
-    share_token: link.shareToken,
-    created_at: link.createdAt.toISOString(),
-  }
+const fieldsOf = (link: Payments.Link) => ({
+  id: link.id,
+  business_id: link.businessId,
+  title: link.title,
+  description: link.description,
+  currency_code: link.currencyCode,
+  scale: link.scale,
+  pricing: pricing(link.pricing),
+  share_token: link.shareToken,
+  created_at: link.createdAt.toISOString(),
+})
 
-  return created ? new CreatedPaymentLink(fields) : new PaymentLink(fields)
-}
+export const paymentLink = (link: Payments.Link, created: boolean) =>
+  created ? new CreatedPaymentLink(fieldsOf(link)) : new PaymentLink(fieldsOf(link))
+
+export class PaymentStats extends Schema.Class<PaymentStats>("PaymentStats")({
+  succeeded: Schema.Int,
+  failed: Schema.Int,
+  cancelled: Schema.Int,
+  // Includes pending payments past their window, marked or not.
+  expired: Schema.Int,
+  pending: Schema.Int,
+  // Minor units as a decimal string: a sum can pass the safe integers.
+  collected_minor: Schema.String.check(Schema.isPattern(/^\d+$/).annotate({ expected: "a non-negative integer" })),
+  // When the latest succeeded payment completed.
+  last_paid_at: Schema.NullOr(Schema.String),
+}) {}
+
+export class PaymentLinkSummary extends Schema.Class<PaymentLinkSummary>("PaymentLinkSummary")({
+  ...linkFields,
+  // False once deactivated: it starts no new payments.
+  active: Schema.Boolean,
+  stats: PaymentStats,
+}) {}
+
+export class PaymentLinkList extends Schema.Class<PaymentLinkList>("PaymentLinkList")({
+  // The newest links, at most Payments.linkListLimit of them.
+  links: Schema.Array(PaymentLinkSummary),
+  // Counts and totals over every link, listed or not.
+  link_count: Schema.Int,
+  active_link_count: Schema.Int,
+  totals: PaymentStats,
+}) {}
+
+const stats = (stats: Payments.Stats) =>
+  new PaymentStats({
+    succeeded: stats.succeeded,
+    failed: stats.failed,
+    cancelled: stats.cancelled,
+    expired: stats.expired,
+    pending: stats.pending,
+    collected_minor: stats.collectedMinor.toString(),
+    last_paid_at: stats.lastPaidAt?.toISOString() ?? null,
+  })
+
+export const paymentLinkList = (overview: Payments.Overview) =>
+  new PaymentLinkList({
+    links: overview.links.map(
+      (summary) =>
+        new PaymentLinkSummary({
+          ...fieldsOf(summary.link),
+          active: summary.link.deactivatedAt === null,
+          stats: stats(summary.stats),
+        }),
+    ),
+    link_count: overview.linkCount,
+    active_link_count: overview.activeLinkCount,
+    totals: stats(overview.totals),
+  })
 
 export const paymentLinks = HttpApiGroup.make("paymentLinks")
   .add(
@@ -149,6 +203,12 @@ export const paymentLinks = HttpApiGroup.make("paymentLinks")
       payload: CreatePaymentLinkRequest,
       success: [CreatedPaymentLink, PaymentLink],
       error: Conflict,
+    }),
+  )
+  .add(
+    // The caller's business's links, newest first, with what each collected.
+    HttpApiEndpoint.get("listPaymentLinks", "/payment_links", {
+      success: PaymentLinkList,
     }),
   )
   .middleware(BusinessContext)

@@ -1,11 +1,24 @@
-import type { CreatePaymentLinkRequestEncoded, PaymentLinkEncoded } from "@pay-tty/plane-client"
+import type {
+  CreatePaymentLinkRequestEncoded,
+  PaymentLinkEncoded,
+  PaymentLinkListEncoded,
+  PaymentLinkSummaryEncoded,
+  PaymentStatsEncoded,
+} from "@pay-tty/plane-client"
 import { Result } from "effect"
+import stringWidth from "string-width"
 
 import { formatMoney, Parsed, parseAmount } from "./money.ts"
 
 export type Link = PaymentLinkEncoded
 
 export type Request = CreatePaymentLinkRequestEncoded
+
+export type Overview = PaymentLinkListEncoded
+
+export type Summary = PaymentLinkSummaryEncoded
+
+export type Stats = PaymentStatsEncoded
 
 export type Mode = "fixed" | "customer_chooses"
 
@@ -119,4 +132,109 @@ export const pricingLines = (link: Link): ReadonlyArray<string> => {
     `Amount: Customer chooses · ${link.currency_code}`,
     ...settings.flatMap(([label, minor]) => (minor === null ? [] : [`${label}: ${money(minor)}`])),
   ]
+}
+
+/** What succeeded payments came to, at the scale and in the currency given. */
+export const collected = (stats: Stats, scale: number, currency: string) =>
+  formatMoney(BigInt(stats.collected_minor), scale, currency)
+
+const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`
+
+/** The overview's heading, e.g. `Payment links · 3 links · 2 active`. */
+export const listHeading = (overview: Overview) => {
+  const heading = `Payment links · ${plural(overview.link_count, "link")}`
+
+  return overview.active_link_count === overview.link_count ? heading : `${heading} · ${overview.active_link_count} active`
+}
+
+/**
+ * The totals over every link, e.g. `Collected ₦75,000.00 · 3 paid · 1 pending`.
+ * Narrow, the pending count goes, so the line still fits on one row.
+ */
+export const totalsLine = (overview: Overview, scale: number, currency: string, narrow = false) => {
+  const line = `Collected ${collected(overview.totals, scale, currency)} · ${overview.totals.succeeded} paid`
+
+  return narrow ? line : `${line} · ${overview.totals.pending} pending`
+}
+
+/** Every status a link's payments ended in, paid first. */
+export const statusLine = (stats: Stats) =>
+  [
+    `${stats.succeeded} paid`,
+    `${stats.failed} failed`,
+    `${stats.cancelled} cancelled`,
+    `${stats.expired} expired`,
+    `${stats.pending} pending`,
+  ].join(" · ")
+
+/** An ISO time as `2026-10-19 14:02 UTC`. */
+export const formatTime = (iso: string) => `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`
+
+const price = (link: Link) =>
+  link.pricing.mode === "fixed"
+    ? formatMoney(link.pricing.amount_minor, link.scale, link.currency_code)
+    : "Customer chooses"
+
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+
+// A line break or control character in a title would split its row.
+const oneLine = (text: string) => text.replace(/[\s\p{Cc}]+/gu, " ").trim()
+
+// Fits the text to the width in terminal columns, where a CJK character or an
+// emoji takes two, cutting it short with an ellipsis between graphemes. Any
+// columns the cut frees, such as half of a wide character, become padding.
+// Amounts align right, so their digits line up.
+const cell = (text: string, width: number, align: "start" | "end" = "start") => {
+  if (width <= 0) {
+    return ""
+  }
+
+  const shown = stringWidth(text)
+
+  if (shown > width) {
+    let kept = ""
+    let used = 0
+
+    for (const { segment } of graphemes.segment(text)) {
+      const next = stringWidth(segment)
+
+      if (used + next > width - 1) {
+        break
+      }
+
+      kept += segment
+      used += next
+    }
+
+    const cut = kept.trimEnd()
+
+    return `${cut}…${" ".repeat(width - 1 - stringWidth(cut))}`
+  }
+
+  const padding = " ".repeat(width - shown)
+
+  return align === "start" ? text + padding : padding + text
+}
+
+// Below this many columns a row keeps only the title and what was collected.
+export const narrowRow = 46
+
+/** A link as one row of the list, exactly `width` terminal columns wide. */
+export const listRow = (summary: Summary, width: number) => {
+  const title = summary.active ? oneLine(summary.title) : `${oneLine(summary.title)} (inactive)`
+  const total = collected(summary.stats, summary.scale, summary.currency_code)
+
+  if (width < narrowRow) {
+    const totalWidth = Math.min(stringWidth(total), Math.max(width - 6, 0))
+
+    return `${cell(title, width - totalWidth - 1)} ${cell(total, totalWidth, "end")}`
+  }
+
+  const columns = [
+    cell(price(summary), 16, "end"),
+    cell(`${summary.stats.succeeded} paid`, 8, "end"),
+    cell(total, 16, "end"),
+  ]
+
+  return [cell(title, width - 16 - 8 - 16 - 3), ...columns].join(" ")
 }

@@ -371,6 +371,60 @@
           },
           "required": true
         }
+      },
+      "get": {
+        "tags": [
+          "paymentLinks"
+        ],
+        "operationId": "paymentLinks.listPaymentLinks",
+        "parameters": [],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "PaymentLinkList",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentLinkListEncoded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationErrorResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponseEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedResponseEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictResponseEncoded"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/pay/payment_links/{share_token}": {
@@ -1329,6 +1383,143 @@
           "pricing",
           "share_token",
           "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "PaymentStatsEncoded": {
+        "type": "object",
+        "properties": {
+          "succeeded": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          },
+          "cancelled": {
+            "type": "integer"
+          },
+          "expired": {
+            "type": "integer"
+          },
+          "pending": {
+            "type": "integer"
+          },
+          "collected_minor": {
+            "type": "string",
+            "pattern": "^\\d+$"
+          },
+          "last_paid_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "succeeded",
+          "failed",
+          "cancelled",
+          "expired",
+          "pending",
+          "collected_minor",
+          "last_paid_at"
+        ],
+        "additionalProperties": false
+      },
+      "PaymentLinkSummaryEncoded": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "business_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currency_code": {
+            "type": "string"
+          },
+          "scale": {
+            "type": "integer"
+          },
+          "pricing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FixedPricingEncoded"
+              },
+              {
+                "$ref": "#/components/schemas/CustomerChoosesPricingEncoded"
+              }
+            ]
+          },
+          "share_token": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/PaymentStatsEncoded"
+          }
+        },
+        "required": [
+          "id",
+          "business_id",
+          "title",
+          "description",
+          "currency_code",
+          "scale",
+          "pricing",
+          "share_token",
+          "created_at",
+          "active",
+          "stats"
+        ],
+        "additionalProperties": false
+      },
+      "PaymentLinkListEncoded": {
+        "type": "object",
+        "properties": {
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PaymentLinkSummaryEncoded"
+            }
+          },
+          "link_count": {
+            "type": "integer"
+          },
+          "active_link_count": {
+            "type": "integer"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/PaymentStatsEncoded"
+          }
+        },
+        "required": [
+          "links",
+          "link_count",
+          "active_link_count",
+          "totals"
         ],
         "additionalProperties": false
       },
