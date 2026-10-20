@@ -839,6 +839,51 @@ void test(
 )
 
 void test(
+  "c on a link sends its pay command to the terminal's clipboard above the keys, and says when the terminal can't take it",
+  scenario(
+    Effect.gen(function* () {
+      const plane = fakePlane({ me: me(active), createPaymentLink: createdLink() })
+      const tui = yield* screen(plane)
+      const sent: Array<string> = []
+      let supported = true
+
+      tui.setup.renderer.copyToClipboardOSC52 = (text) => {
+        sent.push(text)
+
+        return supported
+      }
+
+      yield* openForm(tui)
+      yield* tui.showing("Create payment link")
+      yield* Effect.promise(() => tui.keys.typeText("Consulting"))
+      tui.keys.pressTab()
+      tui.keys.pressTab()
+      tui.keys.pressTab()
+      yield* Effect.promise(() => tui.keys.typeText("2500"))
+      tui.keys.pressEnter()
+      yield* tui.showing("c copy command")
+
+      tui.keys.pressKey("c")
+
+      const notice = yield* tui.showing("Copied. If it doesn't paste, select the command and copy it.")
+
+      assert.match(notice, /c copy command/)
+      assert.deepEqual(sent, ["ssh tok@tui.test"])
+
+      tui.keys.pressArrow("down")
+      yield* tui.matching((frame) => !frame.includes("Copied."))
+
+      supported = false
+      tui.keys.pressKey("c")
+      yield* tui.showing("This terminal can't copy; select the command")
+
+      tui.close()
+      yield* Fiber.join(tui.fiber)
+    }),
+  ),
+)
+
+void test(
   "at 32×10 the result shows the whole reference and URL, clear of the scrollbar",
   scenario(
     Effect.gen(function* () {

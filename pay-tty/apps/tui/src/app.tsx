@@ -281,13 +281,33 @@ const LinkDetails = (props: { readonly link: Link; readonly payCommand: string; 
   </>
 )
 
+// What became of the last c on a link screen: the terminal was sent the
+// command, or it can't take one.
+type Copied = "sent" | "unsupported"
+
+// OSC 52 is fire and forget: a terminal that ignores it says nothing, so
+// "sent" says what to do if nothing pastes. It names no key: the copy key
+// differs by platform, and Ctrl+C here quits.
+const copiedLine = (copied: Copied, width: number) =>
+  copied === "sent"
+    ? width < 65
+      ? "Copied; else select and copy"
+      : "Copied. If it doesn't paste, select the command and copy it."
+    : width < 56
+      ? "Can't copy; select it"
+      : "This terminal can't copy; select the command"
+
 // The merchant's text wraps inside the scrolled area; Back stays below it.
 const LinkScreen = (props: {
   readonly heading: string
+  readonly copied: Copied | null
   readonly onScroll: (scroll: (by: number) => void) => void
   readonly children: JSX.Element
 }) => {
   let details: ScrollBoxRenderable | undefined
+
+  const terminal = useTerminalDimensions()
+  const narrow = () => terminal().width < 56
 
   props.onScroll((by) => details?.scrollBy(by))
 
@@ -297,7 +317,12 @@ const LinkScreen = (props: {
       <scrollbox ref={(box) => (details = box)} flexGrow={1} flexShrink={1} scrollY contentOptions={gutter}>
         {props.children}
       </scrollbox>
-      <text flexShrink={0} fg={muted}>[Esc] Back · ↑/↓ scroll</text>
+      <Show when={props.copied}>
+        {(copied) => <text flexShrink={0}>{copiedLine(copied(), terminal().width)}</text>}
+      </Show>
+      <text flexShrink={0} fg={muted}>
+        {narrow() ? "[Esc] Back · ↑/↓ · c copy" : "[Esc] Back · ↑/↓ scroll · c copy command"}
+      </text>
     </box>
   )
 }
@@ -470,6 +495,22 @@ export const App = (props: {
 
   // The list's selection, kept while a link is open and reset when the list opens.
   const [selected, setSelected] = createSignal(0)
+  // Shown for a few seconds, or until the next key or screen.
+  const [copied, setCopied] = createSignal<Copied | null>(null)
+  let copiedTimer: ReturnType<typeof setTimeout> | undefined
+
+  const showCopied = (next: Copied) => {
+    clearTimeout(copiedTimer)
+    setCopied(next)
+    // A view timer, owned by this component and cleared with it; no fiber to run it in.
+    // oxlint-disable-next-line effecttsgo/global-timers
+    copiedTimer = setTimeout(() => setCopied(null), 4000)
+  }
+
+  createEffect(on(view, () => setCopied(null)))
+  onCleanup(() => clearTimeout(copiedTimer))
+
+  const renderer = useRenderer()
 
   const shownSelection = () => {
     const count = listing()?.overview.links.length ?? 0
@@ -550,7 +591,15 @@ export const App = (props: {
       return
     }
 
-    if (created() !== undefined || detail() !== undefined) {
+    const shown = created() ?? detail()
+
+    if (shown !== undefined) {
+      setCopied(null)
+
+      if (key.name === "c") {
+        return showCopied(renderer.copyToClipboardOSC52(props.payCommand(shown.share_token)) ? "sent" : "unsupported")
+      }
+
       if (key.name === "escape" || key.name === "return" || key.name === "enter" || key.name === "b") {
         props.actions.back()
       }
@@ -664,14 +713,14 @@ export const App = (props: {
         </Match>
         <Match when={created()}>
           {(link) => (
-            <LinkScreen heading="Payment link created" onScroll={(scroll) => (scrollDetails = scroll)}>
+            <LinkScreen heading="Payment link created" copied={copied()} onScroll={(scroll) => (scrollDetails = scroll)}>
               <LinkDetails link={link()} payCommand={props.payCommand(link().share_token)} />
             </LinkScreen>
           )}
         </Match>
         <Match when={detail()}>
           {(link) => (
-            <LinkScreen heading="Payment link" onScroll={(scroll) => (scrollDetails = scroll)}>
+            <LinkScreen heading="Payment link" copied={copied()} onScroll={(scroll) => (scrollDetails = scroll)}>
               <LinkDetails link={link()} payCommand={props.payCommand(link().share_token)}>
                 <LinkStats link={link()} />
               </LinkDetails>

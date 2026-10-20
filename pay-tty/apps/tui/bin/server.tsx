@@ -27,6 +27,10 @@ const shareToken = /^[A-Za-z0-9_][A-Za-z0-9_-]{42}$/
 // Any key is accepted. A merchant's key is their identity, and plane makes a
 // principal for one it hasn't seen; a customer's key is never looked at.
 const server = createServer({ hostKey: { path: config.hostKey }, auth: { publicKey: "any" } }).serve((connection) => {
+  // With the mouse reported to us, a drag selects nothing in the client's
+  // terminal, so Cmd+C has nothing to copy and Ctrl+Shift+C arrives as Ctrl+C.
+  connection.renderer.useMouse = false
+
   const onClose = (callback: () => void) => connection.onClose(callback)
   const end = () => connection.end()
 
