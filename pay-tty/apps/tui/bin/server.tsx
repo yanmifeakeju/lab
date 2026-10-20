@@ -40,3 +40,27 @@ const server = createServer({ hostKey: { path: config.hostKey }, auth: { publicK
 const { host, port, fingerprints } = await server.listen(config.port, config.host)
 
 await runtime.runPromise(Effect.logInfo("listening", { host, port, fingerprints }))
+
+// Closing the server destroys each renderer first, which turns the client
+// terminal's mouse reporting and alternate screen back off. A process that
+// just exits leaves them on, and the client's shell echoes every mouse move.
+// A second signal stops at once.
+let stopping = false
+
+const stop = (signal: NodeJS.Signals) => {
+  if (stopping) {
+    process.exit(1)
+  }
+
+  stopping = true
+
+  void runtime
+    .runPromise(Effect.logInfo("stopping", { signal }))
+    .then(() => server.close())
+    .then(() => runtime.dispose())
+    .finally(() => process.exit(0))
+}
+
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, stop)
+}
