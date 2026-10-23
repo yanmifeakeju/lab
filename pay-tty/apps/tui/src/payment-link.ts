@@ -151,10 +151,10 @@ export const listHeading = (overview: Overview) => {
  * The totals over every link, e.g. `Collected ₦75,000.00 · 3 paid · 1 pending`.
  * Narrow, the pending count goes, so the line still fits on one row.
  */
-export const totalsLine = (overview: Overview, scale: number, currency: string, narrow = false) => {
-  const line = `Collected ${collected(overview.totals, scale, currency)} · ${overview.totals.succeeded} paid`
+export const totalsLine = (stats: Stats, scale: number, currency: string, narrow = false) => {
+  const line = `Collected ${collected(stats, scale, currency)} · ${stats.succeeded} paid`
 
-  return narrow ? line : `${line} · ${overview.totals.pending} pending`
+  return narrow ? line : `${line} · ${stats.pending} pending`
 }
 
 /** Every status a link's payments ended in, paid first. */
@@ -178,13 +178,13 @@ const price = (link: Link) =>
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
 
 // A line break or control character in a title would split its row.
-const oneLine = (text: string) => text.replace(/[\s\p{Cc}]+/gu, " ").trim()
+export const oneLine = (text: string) => text.replace(/[\s\p{Cc}]+/gu, " ").trim()
 
 // Fits the text to the width in terminal columns, where a CJK character or an
 // emoji takes two, cutting it short with an ellipsis between graphemes. Any
 // columns the cut frees, such as half of a wide character, become padding.
 // Amounts align right, so their digits line up.
-const cell = (text: string, width: number, align: "start" | "end" = "start") => {
+export const cell = (text: string, width: number, align: "start" | "end" = "start") => {
   if (width <= 0) {
     return ""
   }

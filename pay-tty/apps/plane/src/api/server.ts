@@ -17,6 +17,7 @@ import { BusinessContextLive } from "./middleware/business.ts"
 import { UnknownErrorResponse } from "./middleware/defect.ts"
 import { SchemaErrorLive } from "./middleware/schema-error.ts"
 import { PayLive } from "./pay/handlers.ts"
+import { PaymentsLive } from "./payments/handlers.ts"
 import { PaymentLinksLive } from "./payment_links/handlers.ts"
 import { SessionLive } from "./session/handlers.ts"
 
@@ -24,7 +25,7 @@ export const ApiLive = Layer.mergeAll(
   HttpApiBuilder.layer(api, { openapiPath: "/openapi.json" }),
   HttpApiScalar.layer(api),
 ).pipe(
-  Layer.provide(Layer.mergeAll(HealthLive, SessionLive, MeLive, BusinessLive, AccountLive, PaymentLinksLive, PayLive)),
+  Layer.provide(Layer.mergeAll(HealthLive, SessionLive, MeLive, BusinessLive, AccountLive, PaymentLinksLive, PaymentsLive, PayLive)),
   Layer.provide(Layer.mergeAll(SchemaErrorLive, BusinessContextLive)),
 )
 

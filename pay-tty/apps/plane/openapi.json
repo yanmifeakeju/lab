@@ -427,6 +427,104 @@
         }
       }
     },
+    "/payments": {
+      "get": {
+        "tags": [
+          "payments"
+        ],
+        "operationId": "payments.listPayments",
+        "parameters": [
+          {
+            "name": "link_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "succeeded",
+                "failed",
+                "cancelled",
+                "expired"
+              ]
+            },
+            "required": false
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "PaymentPage",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentPageEncoded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationErrorResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponseEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedResponseEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NotFoundResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundResponseEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictResponseEncoded"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/pay/payment_links/{share_token}": {
       "get": {
         "tags": [
@@ -1523,6 +1621,155 @@
         ],
         "additionalProperties": false
       },
+      "PaymentSummaryEncoded": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "link_id": {
+            "type": "string"
+          },
+          "business_id": {
+            "type": "string"
+          },
+          "amount_minor": {
+            "type": "string"
+          },
+          "currency_code": {
+            "type": "string"
+          },
+          "scale": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "expired"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "link"
+                    ]
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "id",
+                  "title"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "link_id",
+          "business_id",
+          "amount_minor",
+          "currency_code",
+          "scale",
+          "status",
+          "created_at",
+          "expires_at",
+          "completed_at",
+          "source"
+        ],
+        "additionalProperties": false
+      },
+      "PaymentPageEncoded": {
+        "type": "object",
+        "properties": {
+          "payments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PaymentSummaryEncoded"
+            }
+          },
+          "stats": {
+            "$ref": "#/components/schemas/PaymentStatsEncoded"
+          },
+          "next": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "payments",
+          "stats",
+          "next"
+        ],
+        "additionalProperties": false
+      },
+      "NotFoundResponseEncoded": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "minLength": 1
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "not_found"
+                ]
+              }
+            },
+            "required": [
+              "code"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "message",
+          "error"
+        ],
+        "additionalProperties": false
+      },
       "PayableLinkEncoded": {
         "type": "object",
         "properties": {
@@ -1570,35 +1817,6 @@
           "scale",
           "pricing",
           "active"
-        ],
-        "additionalProperties": false
-      },
-      "NotFoundResponseEncoded": {
-        "type": "object",
-        "properties": {
-          "message": {
-            "type": "string",
-            "minLength": 1
-          },
-          "error": {
-            "type": "object",
-            "properties": {
-              "code": {
-                "type": "string",
-                "enum": [
-                  "not_found"
-                ]
-              }
-            },
-            "required": [
-              "code"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "message",
-          "error"
         ],
         "additionalProperties": false
       },
@@ -1772,6 +1990,9 @@
     },
     {
       "name": "paymentLinks"
+    },
+    {
+      "name": "payments"
     },
     {
       "name": "pay"

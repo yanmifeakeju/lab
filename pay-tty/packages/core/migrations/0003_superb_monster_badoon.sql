@@ -1,0 +1,1 @@
+CREATE INDEX "payments_business_id_created_at_id_idx" ON "payments" USING btree ("business_id","created_at" DESC NULLS FIRST,"id" DESC NULLS FIRST);

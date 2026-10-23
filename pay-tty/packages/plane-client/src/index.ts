@@ -8,6 +8,7 @@ import {
   make,
   type OperationConfig,
   type PaymentLinksCreatePaymentLinkParams,
+  type PaymentsListPaymentsParams,
   type PayStartPaymentParams,
   type SessionRequestEncoded,
   type SimulatePaymentRequestEncoded,
@@ -143,6 +144,18 @@ export const createClient = (httpClient: HttpClient.HttpClient, options: ClientO
               PaymentLinksCreatePaymentLink400: ({ cause }) => Effect.fail(cause),
               PaymentLinksCreatePaymentLink401: ({ cause }) => Effect.fail(cause),
               PaymentLinksCreatePaymentLink409: ({ cause }) => Effect.fail(cause),
+            }),
+          ),
+        listPayments: <Config extends OperationConfig>(request: {
+          readonly params?: PaymentsListPaymentsParams
+          readonly config?: Config
+        } | undefined) =>
+          client.paymentsListPayments(request).pipe(
+            Effect.catchTags({
+              PaymentsListPayments400: ({ cause }) => Effect.fail(cause),
+              PaymentsListPayments401: ({ cause }) => Effect.fail(cause),
+              PaymentsListPayments404: ({ cause }) => Effect.fail(cause),
+              PaymentsListPayments409: ({ cause }) => Effect.fail(cause),
             }),
           ),
         listPaymentLinks: <Config extends OperationConfig>(request: { readonly config?: Config } | undefined) =>

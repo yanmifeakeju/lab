@@ -6,6 +6,7 @@ import { App } from "./app.tsx"
 import { PayApp } from "./pay-app.tsx"
 import { PaySession, type State as PayState } from "./pay-session.ts"
 import type { Form } from "./payment-link.ts"
+import type { Status } from "./payments.ts"
 import { Session, type State } from "./session.ts"
 
 /**
@@ -34,6 +35,12 @@ export const connect = (
       const actions = {
         createBusiness: (name: string) => void run(session.createBusiness(name)),
         openAccount: () => void run(session.openAccount),
+        managePayments: () => void run(session.managePayments),
+        linkPayments: (id: string) => void run(session.linkPayments(id)),
+        refreshPayments: () => void run(session.refreshPayments),
+        filterPayments: (status: Status | null) => void run(session.filterPayments(status)),
+        morePayments: () => void run(session.morePayments),
+        openPayment: (id: string) => void run(session.openPayment(id)),
         manageLinks: () => void run(session.manageLinks),
         refreshLinks: () => void run(session.refreshLinks),
         openLink: (id: string) => void run(session.openLink(id)),

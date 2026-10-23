@@ -17,7 +17,9 @@ import { ulid } from "ulid"
 
 import { BusinessInfo, BusinessLedger } from "../src/api/business/routes.ts"
 import { MeResponse } from "../src/api/me/routes.ts"
-import { CustomerChoosesPricing, FixedPricing, PaymentLink, PaymentLinkList, PaymentStats } from "../src/api/payment_links/routes.ts"
+import { CustomerChoosesPricing, FixedPricing, PaymentLink, PaymentLinkList } from "../src/api/payment_links/routes.ts"
+import { PaymentPage } from "../src/api/payments/routes.ts"
+import { PaymentStats } from "../src/api/payment-stats.ts"
 import { PayableLink, Payment as PayPayment } from "../src/api/pay/routes.ts"
 import { SessionResponse } from "../src/api/session/routes.ts"
 import { ApiLive } from "../src/api/server.ts"
@@ -241,7 +243,7 @@ void test("serves health without a token", () =>
     }),
   ))
 
-void test("publishes exactly /health, /session, /me, /business, /account, /payment_links, and the /pay routes", () =>
+void test("publishes exactly /health, /session, /me, /business, /account, /payment_links, /payments, and the /pay routes", () =>
   run(
     Effect.gen(function* () {
       const plane = yield* server()
@@ -282,6 +284,7 @@ void test("publishes exactly /health, /session, /me, /business, /account, /payme
         "/pay/payment_links/{share_token}/payments",
         "/pay/payment_links/{share_token}/payments/{payment_id}/simulate",
         "/payment_links",
+        "/payments",
         "/session",
       ])
       assert.deepEqual(Object.keys(paths["/me"] ?? {}), ["get"])
@@ -1818,5 +1821,97 @@ void test("GET /payment_links shows only the caller's business, needs one, and n
         json: { message: "Create a business first.", error: { code: "business_required" } },
       })
       assert.deepEqual(yield* listLinks(plane, undefined), { status: 401, json: unauthorized })
+    }),
+  ))
+
+void test("GET /payments requires auth, pages and filters within the caller's business, and rejects foreign links and cursors", () =>
+  run(Effect.gen(function* () {
+    const plane = yield* server()
+    const ours = yield* linkToPay(plane)
+    const other = yield* linkToPay(plane)
+    const second = (yield* createdLink(plane, ours.authorization, fixedLink, ulid())).body
+
+    yield* started(plane, other.token)
+    yield* started(plane, second.share_token)
+
+    const ids: Array<string> = []
+
+    for (let index = 0; index < 53; index++) {
+      const payment = yield* started(plane, ours.token)
+
+      ids.push(payment.body.id)
+
+      if (index === 0) {
+        yield* simulatePayment(plane, ours.token, payment.body.id, "succeeded")
+      }
+    }
+
+    const get = (query: string) => send(plane, {
+      method: "GET", path: "/payments" + query, authorization: ours.authorization,
+    })
+
+    const first = yield* get("?link_id=" + ours.link.id)
+    const page = yield* Schema.decodeUnknownEffect(PaymentPage)(first.json, strict)
+
+    assert.equal(page.payments.length, 50)
+    assert.equal(page.stats.pending, 52)
+    assert.equal(page.stats.succeeded, 1)
+    assert.ok(page.next !== null)
+    assert.ok(page.payments.every((payment) => payment.source.id === ours.link.id))
+    assert.ok(page.payments.every((payment) => payment.amount_minor === "250000"))
+
+    const last = yield* Schema.decodeUnknownEffect(PaymentPage)((yield* get(
+      "?link_id=" + ours.link.id + "&before=" + encodeURIComponent(page.next),
+    )).json, strict)
+
+    assert.equal(last.payments.length, 3)
+    assert.equal(last.next, null)
+    assert.deepEqual(new Set([...page.payments, ...last.payments].map((payment) => payment.id)), new Set(ids))
+
+    const paid = yield* Schema.decodeUnknownEffect(PaymentPage)((yield* get("?status=succeeded")).json, strict)
+
+    assert.equal(paid.payments.length, 1)
+    assert.equal(paid.stats.succeeded, 1)
+    assert.equal(paid.stats.pending, 0)
+
+    assert.equal((yield* send(plane, { method: "GET", path: "/payments" })).status, 401)
+    assert.equal(yield* errorCode(yield* get("?link_id=" + other.link.id)), "404 not_found")
+    assert.equal(yield* errorCode(yield* get("?link_id=unknown")), "404 not_found")
+    assert.equal((yield* get("?status=refunded")).status, 400)
+    assert.equal((yield* get("?before=bad-cursor")).status, 400)
+  })))
+
+
+void test("GET /payments expired filters exclude overdue payments from other businesses and links", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const ours = yield* linkToPay(plane)
+      const foreign = yield* linkToPay(plane)
+      const sibling = (yield* createdLink(plane, ours.authorization, fixedLink, ulid())).body
+      const ownPayment = (yield* started(plane, ours.token)).body
+      const siblingPayment = (yield* started(plane, sibling.share_token)).body
+      const foreignPayment = (yield* started(plane, foreign.token)).body
+
+      yield* Testing.lapsePayment(ownPayment.id)
+      yield* Testing.lapsePayment(siblingPayment.id)
+      yield* Testing.lapsePayment(foreignPayment.id)
+
+      for (const linkId of [null, ours.link.id]) {
+        const response = yield* send(plane, {
+          method: "GET",
+          path: "/payments?status=expired" + (linkId === null ? "" : "&link_id=" + linkId),
+          authorization: ours.authorization,
+        })
+
+        const page = yield* Schema.decodeUnknownEffect(PaymentPage)(response.json, strict)
+        const expected = linkId === null ? [ownPayment.id, siblingPayment.id] : [ownPayment.id]
+
+        assert.equal(response.status, 200)
+        assert.deepEqual(new Set(page.payments.map((payment) => payment.id)), new Set(expected))
+        assert.equal(page.stats.expired, expected.length)
+        assert.equal(page.stats.pending, 0)
+        assert.ok(page.payments.every((payment) => payment.status === "expired"))
+      }
     }),
   ))

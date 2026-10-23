@@ -1,6 +1,6 @@
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { type Accessor, createEffect, createSignal, For, type JSX, Match, on, onCleanup, Show, Switch } from "solid-js"
+import { type Accessor, createEffect, createMemo, createSignal, For, type JSX, Match, on, onCleanup, Show, Switch } from "solid-js"
 
 import {
   collected,
@@ -19,12 +19,20 @@ import {
   totalsLine,
   withMode,
 } from "./payment-link.ts"
+import { filterLabel, filters, type Page, paymentRows, paymentTiming, type Status } from "./payments.ts"
+import { formatMoney } from "./money.ts"
 import { type Business, type Popup, type State, View } from "./session.ts"
 
 /** What the screens can ask of the connection; each returns at once. */
 export interface Actions {
   readonly createBusiness: (name: string) => void
   readonly openAccount: () => void
+  readonly managePayments: () => void
+  readonly linkPayments: (id: string) => void
+  readonly refreshPayments: () => void
+  readonly filterPayments: (status: Status | null) => void
+  readonly morePayments: () => void
+  readonly openPayment: (id: string) => void
   readonly manageLinks: () => void
   readonly refreshLinks: () => void
   readonly openLink: (id: string) => void
@@ -72,8 +80,8 @@ const CreateBusiness = (props: {
   </box>
 )
 
-const ShowBusiness = (props: { readonly business: Business; readonly pending: boolean }) => (
-  <box flexDirection="column" gap={1}>
+const ShowBusiness = (props: { readonly business: Business; readonly pending: boolean; readonly selected: number; readonly short: boolean }) => (
+  <box flexDirection="column" gap={props.short ? 0 : 1}>
     <text>{props.business.name}</text>
     <box flexDirection="column">
       <text fg={muted}>
@@ -89,13 +97,16 @@ const ShowBusiness = (props: { readonly business: Business; readonly pending: bo
     </box>
     <Switch>
       <Match when={props.pending}>
-        <text>{props.business.status === "created" ? "Opening your account…" : "Loading your payment links…"}</text>
+        <text>{props.business.status === "created" ? "Opening your account…" : "Loading…"}</text>
       </Match>
       <Match when={props.business.status === "created"}>
         <text fg={muted}>Press o to open your account. Payment links need it.</text>
       </Match>
       <Match when={props.business.ledger !== null}>
-        <text fg={muted}>Payment links: press p to manage.</text>
+        <box flexDirection="column">
+          <text fg={props.selected === 0 ? bright : muted}>{props.selected === 0 ? "› " : "  "}{"Payments        p"}</text>
+          <text fg={props.selected === 1 ? bright : muted}>{props.selected === 1 ? "› " : "  "}{"Payment links   l"}</text>
+        </box>
       </Match>
     </Switch>
   </box>
@@ -300,6 +311,7 @@ const copiedLine = (copied: Copied, width: number) =>
 // The merchant's text wraps inside the scrolled area; Back stays below it.
 const LinkScreen = (props: {
   readonly heading: string
+  readonly hint?: string
   readonly copied: Copied | null
   readonly onScroll: (scroll: (by: number) => void) => void
   readonly children: JSX.Element
@@ -321,7 +333,7 @@ const LinkScreen = (props: {
         {(copied) => <text flexShrink={0}>{copiedLine(copied(), terminal().width)}</text>}
       </Show>
       <text flexShrink={0} fg={muted}>
-        {narrow() ? "[Esc] Back · ↑/↓ · c copy" : "[Esc] Back · ↑/↓ scroll · c copy command"}
+        {props.hint ?? (narrow() ? "[Esc] Back · ↑/↓ · c copy" : "[Esc] Back · ↑/↓ scroll · c copy command")}
       </text>
     </box>
   )
@@ -356,7 +368,7 @@ const LinkList = (props: {
     <box flexDirection="column" flexGrow={1} flexShrink={1}>
       <text flexShrink={0}>{listHeading(props.overview)}</text>
       <text flexShrink={0} fg={muted}>
-        {totalsLine(props.overview, scale(), props.business.currency_code, narrow())}
+        {totalsLine(props.overview.totals, scale(), props.business.currency_code, narrow())}
       </text>
       <Show
         when={props.overview.links.length > 0}
@@ -388,6 +400,61 @@ const LinkList = (props: {
       >
         <text flexShrink={0}>Refreshing…</text>
       </Show>
+    </box>
+  )
+}
+
+const PaymentList = (props: {
+  readonly business: Business
+  readonly page: Page
+  readonly status: Status | null
+  readonly title: string | undefined
+  readonly selected: number
+  readonly pending: boolean
+}) => {
+  let rows: ScrollBoxRenderable | undefined
+  const terminal = useTerminalDimensions()
+  const rowWidth = () => terminal().width - rowChrome
+  const formattedRows = createMemo(() => paymentRows(props.page.payments, rowWidth(), props.title !== undefined))
+
+  const selectedId = () => props.page.payments[props.selected]?.id ?? "more"
+
+  useReveal(() => rows, () => "payment-row-" + selectedId(), [
+    selectedId, () => terminal().width, () => terminal().height,
+  ])
+
+  return (
+    <box flexDirection="column" flexGrow={1} flexShrink={1}>
+      <text flexShrink={0}>{props.title === undefined ? "Payments" : "Payments · " + props.title}</text>
+      <text flexShrink={0} fg={muted}>
+        {totalsLine(props.page.stats, props.business.ledger?.scale ?? 0, props.business.currency_code, rowWidth() < narrowRow)}
+      </text>
+      <text flexShrink={0} fg={muted}>
+        {rowWidth() < narrowRow ? "← " + filterLabel(props.status) + " →"
+          : "← " + filters.map((status) => status === props.status ? "[" + filterLabel(status) + "]" : filterLabel(status)).join(" · ") + " →"}
+      </text>
+      <Show when={props.page.payments.length > 0} fallback={
+        <text flexShrink={0} fg={muted}>
+          {props.status === null ? "No payments yet." : "No " + props.status + " payments."}
+        </text>
+      }>
+        <scrollbox ref={(box) => (rows = box)} flexGrow={1} flexShrink={1} scrollY contentOptions={gutter}>
+          <For each={props.page.payments}>{(payment, index) => (
+            <text id={"payment-row-" + payment.id} flexShrink={0} fg={index() === props.selected ? bright : muted}>
+              {index() === props.selected ? "› " : "  "}
+              {formattedRows()[index()]}
+            </text>
+          )}</For>
+          <Show when={props.page.next !== null}>
+            <text id="payment-row-more" flexShrink={0} fg={props.selected === props.page.payments.length ? bright : muted}>
+              {props.selected === props.page.payments.length ? "› " : "  "}Load more
+            </text>
+          </Show>
+        </scrollbox>
+      </Show>
+      <text flexShrink={0} fg={muted}>
+        {props.pending ? "Loading…" : terminal().width < 64 ? "↑/↓ · Enter · r · Esc" : "↑/↓ select · Enter open · r refresh · Esc back"}
+      </text>
     </box>
   )
 }
@@ -490,13 +557,45 @@ export const App = (props: {
     return View.$is("LinkDetail")(current) ? current.link : undefined
   }
 
+  const payments = () => {
+    const current = view()
+
+    return View.$is("Payments")(current) ? current : undefined
+  }
+
+  const paymentDetail = () => {
+    const current = view()
+
+    return View.$is("PaymentDetail")(current) ? current : undefined
+  }
+
+  const paymentTitle = () => {
+    const origin = payments()?.origin
+
+    return origin?._tag === "LinkDetail" ? origin.link.title : undefined
+  }
+
+  const paymentLinkAvailable = () => {
+    const shown = paymentDetail()
+
+    return shown?.list.origin._tag === "LinkDetail" &&
+      shown.list.origin.overview.links.some((link) => link.id === shown.payment.source.id)
+  }
+
+  const [section, setSection] = createSignal(0)
+  const [paymentSelected, setPaymentSelected] = createSignal(0)
+
+  const paymentSelection = () => Math.max(0, Math.min(paymentSelected(),
+    (payments()?.page.payments.length ?? 0) - (payments()?.page.next === null ? 1 : 0)))
+
   const linkScreen = () =>
-    creating() !== undefined || created() !== undefined || listing() !== undefined || detail() !== undefined
+    creating() !== undefined || created() !== undefined || listing() !== undefined || detail() !== undefined || payments() !== undefined || paymentDetail() !== undefined
 
   // The list's selection, kept while a link is open and reset when the list opens.
   const [selected, setSelected] = createSignal(0)
   // Shown for a few seconds, or until the next key or screen.
   const [copied, setCopied] = createSignal<Copied | null>(null)
+
   let copiedTimer: ReturnType<typeof setTimeout> | undefined
 
   const showCopied = (next: Copied) => {
@@ -564,6 +663,64 @@ export const App = (props: {
       return
     }
 
+    if (props.state().pending) {
+      return
+    }
+
+    const payment = paymentDetail()
+
+    if (payment !== undefined) {
+      if (key.name === "escape" || key.name === "return" || key.name === "enter") {
+        props.actions.back()
+      }
+
+      if (key.name === "up" || key.name === "down") {
+        scrollDetails(key.name === "up" ? -1 : 1)
+      }
+
+      if (key.name === "l" && paymentLinkAvailable()) {
+        props.actions.openLink(payment.payment.source.id)
+      }
+
+      return
+    }
+
+    const paymentList = payments()
+
+    if (paymentList !== undefined) {
+      if (key.name === "escape") {
+        props.actions.back()
+      }
+
+      if (key.name === "up" || key.name === "down") {
+        const last = paymentList.page.payments.length - (paymentList.page.next === null ? 1 : 0)
+        setPaymentSelected(Math.max(0, Math.min(paymentSelection() + (key.name === "up" ? -1 : 1), last)))
+      }
+
+      if (key.name === "left" || key.name === "right") {
+        const index = filters.indexOf(paymentList.filter.status)
+        setPaymentSelected(0)
+        props.actions.filterPayments(filters[(index + (key.name === "left" ? -1 : 1) + filters.length) % filters.length] ?? null)
+      }
+
+      if (key.name === "r") {
+        setPaymentSelected(0)
+        props.actions.refreshPayments()
+      }
+
+      if (key.name === "return" || key.name === "enter") {
+        const payment = paymentList.page.payments[paymentSelection()]
+
+        if (payment === undefined) {
+          props.actions.morePayments()
+        } else {
+          props.actions.openPayment(payment.id)
+        }
+      }
+
+      return
+    }
+
     if (creating() !== undefined) {
       if (key.name === "escape") {
         key.preventDefault()
@@ -595,6 +752,12 @@ export const App = (props: {
 
     if (shown !== undefined) {
       setCopied(null)
+
+      if (key.name === "p" && detail() !== undefined) {
+        setPaymentSelected(0)
+
+        return props.actions.linkPayments(shown.id)
+      }
 
       if (key.name === "c") {
         return showCopied(renderer.copyToClipboardOSC52(props.payCommand(shown.share_token)) ? "sent" : "unsupported")
@@ -650,9 +813,20 @@ export const App = (props: {
       props.actions.openAccount()
     }
 
-    if (key.name === "p" && business()?.ledger != null) {
-      setSelected(0)
-      props.actions.manageLinks()
+    if (business()?.ledger != null) {
+      if (key.name === "up" || key.name === "down") {
+        setSection(key.name === "up" ? 0 : 1)
+      }
+
+      if (key.name === "p" || ((key.name === "return" || key.name === "enter") && section() === 0)) {
+        setPaymentSelected(0)
+        props.actions.managePayments()
+      }
+
+      if (key.name === "l" || ((key.name === "return" || key.name === "enter") && section() === 1)) {
+        setSelected(0)
+        props.actions.manageLinks()
+      }
     }
   })
 
@@ -681,7 +855,7 @@ export const App = (props: {
           />
         </Match>
         <Match when={business()}>
-          {(shown) => <ShowBusiness business={shown()} pending={props.state().pending} />}
+          {(shown) => <ShowBusiness business={shown()} pending={props.state().pending} selected={section()} short={short()} />}
         </Match>
         <Match when={linkScreen() && !roomy()}>
           <text fg={muted}>
@@ -711,6 +885,30 @@ export const App = (props: {
             />
           )}
         </Match>
+        <Match when={payments()}>
+          {(shown) => <PaymentList
+            business={shown().business}
+            page={shown().page}
+            status={shown().filter.status}
+            title={paymentTitle()}
+            selected={paymentSelection()}
+            pending={props.state().pending}
+          />}
+        </Match>
+        <Match when={paymentDetail()}>
+          {(shown) => (
+            <LinkScreen heading="Payment" copied={null}
+              hint={paymentLinkAvailable() ? "[Esc] Back · ↑/↓ · l link" : "[Esc] Back · ↑/↓"}
+              onScroll={(scroll) => (scrollDetails = scroll)}>
+              <text flexShrink={0}>{formatMoney(BigInt(shown().payment.amount_minor), shown().payment.scale, shown().payment.currency_code)}</text>
+              <text flexShrink={0}>Status: {shown().payment.status}</text>
+              <text flexShrink={0}>Link: {shown().payment.source.title}</text>
+              <text flexShrink={0}>Created: {formatTime(shown().payment.created_at)}</text>
+              <text flexShrink={0}>{paymentTiming(shown().payment)}</text>
+              <text flexShrink={0} fg={muted}>Payment ID: {shown().payment.id}</text>
+            </LinkScreen>
+          )}
+        </Match>
         <Match when={created()}>
           {(link) => (
             <LinkScreen heading="Payment link created" copied={copied()} onScroll={(scroll) => (scrollDetails = scroll)}>
@@ -720,7 +918,7 @@ export const App = (props: {
         </Match>
         <Match when={detail()}>
           {(link) => (
-            <LinkScreen heading="Payment link" copied={copied()} onScroll={(scroll) => (scrollDetails = scroll)}>
+            <LinkScreen heading="Payment link" hint={terminal().width < 56 ? "Esc · c copy · p payments" : "[Esc] Back · ↑/↓ scroll · c copy · p payments"} copied={copied()} onScroll={(scroll) => (scrollDetails = scroll)}>
               <LinkDetails link={link()} payCommand={props.payCommand(link().share_token)}>
                 <LinkStats link={link()} />
               </LinkDetails>

@@ -1,5 +1,5 @@
 import { and, desc, eq, gt, lte, type SQL, sql } from "drizzle-orm"
-import { Context, Effect, Encoding, Layer, Result, Schema } from "effect"
+import { Context, DateTime, Effect, Encoding, Layer, Option, Result, Schema } from "effect"
 
 import { Business } from "../business/business.ts"
 import { businesses } from "../business/sql.ts"
@@ -16,6 +16,8 @@ export const paymentWindowMinutes = 30
 
 /** How many of a business's links a listing returns, newest first. */
 export const linkListLimit = 100
+
+export const paymentPageSize = 50
 
 export const ID = Schema.String.pipe(
   Schema.check(Schema.isStartsWith("plink_")),
@@ -153,6 +155,42 @@ export class Payment extends Schema.Class<Payment>("Payments.Payment")({
   completedAt: Schema.NullOr(Schema.Date),
 }) {}
 
+export const Cursor = Schema.String.pipe(Schema.brand("Payments.Cursor"))
+
+export type Cursor = typeof Cursor.Type
+
+export const Source = Schema.Union([
+  Schema.Struct({ kind: Schema.tag("link"), id: ID, title: Schema.String }),
+])
+
+export class PaymentSummary extends Schema.Class<PaymentSummary>("Payments.PaymentSummary")({
+  ...Payment.fields,
+  source: Source,
+}) {}
+
+export class CursorError extends Schema.TaggedError<CursorError>()("Payments.CursorError", {}) {}
+
+// Postgres emits the timestamp, including microseconds. Validate before using it
+// in a timestamp cast so malformed cursors are request errors, not SQL defects.
+const cursorValue = Schema.fromJsonString(Schema.Struct({
+  at: Schema.String.check(
+    Schema.isPattern(/^(?!0000)\d{4}-\d{2}-\d{2} (?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,6})?[+-](?:0\d|1[0-5])(?::[0-5]\d)?$/),
+    Schema.makeFilter((at) => {
+      const date = DateTime.make(at)
+      const day = DateTime.make(at.slice(0, 10) + "T00:00:00Z")
+
+      return Option.isSome(date) && Option.isSome(day) &&
+        DateTime.formatIsoDate(day.value) === at.slice(0, 10)
+    }),
+  ),
+  id: PaymentID,
+}))
+
+export interface Filter {
+  readonly linkId: ID | null
+  readonly status: Status | null
+}
+
 /**
  * What a link's payments, or a business's, came to. A pending payment past its
  * window counts as expired, whether or not anything has marked it yet.
@@ -167,6 +205,12 @@ export class Stats extends Schema.Class<Stats>("Payments.Stats")({
   collectedMinor: Schema.BigInt,
   /** When the latest succeeded payment completed. */
   lastPaidAt: Schema.NullOr(Schema.Date),
+}) {}
+
+export class PaymentPage extends Schema.Class<PaymentPage>("Payments.PaymentPage")({
+  payments: Schema.Array(PaymentSummary),
+  stats: Stats,
+  next: Schema.NullOr(Cursor),
 }) {}
 
 export class Summary extends Schema.Class<Summary>("Payments.Summary")({
@@ -272,6 +316,11 @@ export interface Interface {
   ) => Effect.Effect<Payment, LinkNotFoundError | PaymentNotFoundError | PaymentClosedError>
   /** The business's links with what each collected, and its totals. */
   readonly listLinks: (businessId: Business.ID) => Effect.Effect<Overview>
+  /** The business's payments, newest first, with effective statuses and filtered totals. */
+  readonly listPayments: (
+    businessId: Business.ID,
+    filter: Filter & { readonly before: Cursor | null },
+  ) => Effect.Effect<PaymentPage, LinkNotFoundError | CursorError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("Payments") {}
@@ -310,19 +359,20 @@ const fromRow = (row: Row) =>
 
 type PaymentRow = typeof payments.$inferSelect
 
-const paymentOf = (row: PaymentRow) =>
-  new Payment({
-    id: PaymentID.make(row.id),
-    linkId: ID.make(row.linkId),
-    businessId: Business.ID.make(row.businessId),
-    amountMinor: row.amountMinor,
-    currencyCode: Currency.Code.make(row.currencyCode),
-    scale: row.scale,
-    status: row.status,
-    createdAt: row.createdAt,
-    expiresAt: row.expiresAt,
-    completedAt: row.completedAt,
-  })
+const paymentFields = (row: PaymentRow) => ({
+  id: PaymentID.make(row.id),
+  linkId: ID.make(row.linkId),
+  businessId: Business.ID.make(row.businessId),
+  amountMinor: row.amountMinor,
+  currencyCode: Currency.Code.make(row.currencyCode),
+  scale: row.scale,
+  status: row.status,
+  createdAt: row.createdAt,
+  expiresAt: row.expiresAt,
+  completedAt: row.completedAt,
+})
+
+const paymentOf = (row: PaymentRow) => new Payment(paymentFields(row))
 
 const counted = (condition: SQL) => sql`count(*) filter (where ${condition})`.mapWith(Number)
 
@@ -330,13 +380,27 @@ const isStatus = (status: Status) => sql`${payments.status} = ${status}`
 
 const due = sql`${payments.expiresAt} <= now()`
 
+const statusCondition = (status: Status): SQL => {
+  if (status === "expired") {
+    return sql`(${isStatus("expired")} or (${isStatus("pending")} and ${due}))`
+  }
+
+  if (status === "pending") {
+    return sql`${isStatus("pending")} and not ${due}`
+  }
+
+  return isStatus(status)
+}
+
+const effectiveStatus = sql<Status>`case when ${isStatus("pending")} and ${due} then 'expired' else ${payments.status} end`
+
 // Over the payments joined to the links selected; a link without any has none.
 const statsColumns = {
   succeeded: counted(isStatus("succeeded")),
   failed: counted(isStatus("failed")),
   cancelled: counted(isStatus("cancelled")),
-  expired: counted(sql`${isStatus("expired")} or (${isStatus("pending")} and ${due})`),
-  pending: counted(sql`${isStatus("pending")} and not ${due}`),
+  expired: counted(statusCondition("expired")),
+  pending: counted(statusCondition("pending")),
   // As text: a sum can pass what a JavaScript number holds exactly.
   collectedMinor: sql<string>`coalesce(sum(${payments.amountMinor}) filter (where ${isStatus("succeeded")}), 0)::text`,
   lastPaidAt: sql`max(${payments.completedAt}) filter (where ${isStatus("succeeded")})`.mapWith(payments.completedAt),
@@ -676,7 +740,105 @@ const make = Effect.gen(function* () {
     })
   })
 
-  return Service.of({ createLink, findLink, startPayment, simulate, listLinks })
+  const listPayments = Effect.fn("Payments.listPayments")(function* (
+    businessId: Business.ID,
+    filter: Filter & { readonly before: Cursor | null },
+  ) {
+    const { linkId, before } = filter
+
+    if (linkId !== null) {
+      const links = yield* database.use((db) =>
+        db
+          .select({ id: paymentLinks.id })
+          .from(paymentLinks)
+          .where(and(eq(paymentLinks.id, linkId), eq(paymentLinks.businessId, businessId))),
+      )
+
+      if (links.length === 0) {
+        return yield* new LinkNotFoundError()
+      }
+    }
+
+    const cursor = before === null
+      ? null
+      : yield* Effect.gen(function* () {
+          const decoded = yield* Effect.fromResult(Encoding.decodeBase64UrlString(before))
+
+          return yield* Schema.decodeEffect(cursorValue)(decoded)
+        }).pipe(Effect.mapError(() => new CursorError()))
+
+    const where = and(
+      eq(payments.businessId, businessId),
+      linkId === null ? undefined : eq(payments.linkId, linkId),
+      filter.status === null ? undefined : statusCondition(filter.status),
+    )
+
+    // One transaction gives rows and totals the same clock for effective expiry.
+    return yield* database.transaction(
+      Effect.gen(function* () {
+        const listed = yield* database.use((db) =>
+          db
+            .select({
+              payment: payments,
+              status: effectiveStatus,
+              title: paymentLinks.title,
+              // Stable across DateStyle settings, with every microsecond retained.
+              at: sql<string>`to_char(${payments.createdAt} at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') || '+00'`,
+            })
+            .from(payments)
+            .innerJoin(paymentLinks, eq(paymentLinks.id, payments.linkId))
+            .where(
+              and(
+                where,
+                cursor === null
+                  ? undefined
+                  : sql`(${payments.createdAt}, ${payments.id}) < (${cursor.at}::timestamptz, ${cursor.id})`,
+              ),
+            )
+            .orderBy(desc(payments.createdAt), desc(payments.id))
+            .limit(paymentPageSize + 1),
+        )
+
+        const totals = yield* database.use((db) =>
+          db.select(statsColumns).from(payments).where(where),
+        )
+
+        const total = totals[0]
+
+        if (total === undefined) {
+          return yield* Effect.die(new Error("payment totals missing"))
+        }
+
+        const page = listed.slice(0, paymentPageSize)
+        const last = page.at(-1)
+        let next: Cursor | null = null
+
+        if (listed.length > paymentPageSize && last !== undefined) {
+          const encoded = yield* Schema.encodeEffect(cursorValue)({
+            at: last.at,
+            id: PaymentID.make(last.payment.id),
+          }).pipe(Effect.orDie)
+
+          next = Cursor.make(Encoding.encodeBase64Url(encoded))
+        }
+
+        return new PaymentPage({
+          payments: page.map(
+            ({ payment, status, title }) =>
+              new PaymentSummary({
+                ...paymentFields(payment),
+                status,
+                source: { kind: "link", id: ID.make(payment.linkId), title },
+              }),
+          ),
+          stats: statsOf(total),
+          next,
+        })
+      }),
+    )
+  })
+
+  return Service.of({ createLink, findLink, startPayment, simulate, listLinks, listPayments })
 })
 
 export const layer = Layer.effect(Service)(make)

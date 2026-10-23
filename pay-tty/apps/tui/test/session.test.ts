@@ -4,7 +4,7 @@ import { test } from "node:test"
 import { Effect, SubscriptionRef } from "effect"
 
 import { Operation, type Popup, Session, type State, View } from "../src/session.ts"
-import { active, business, failure, fakePlane, inTurn, me, type Reply, scenario, sessions, unauthorized } from "./support.ts"
+import { merchantPayment, paymentPage, paid, tips, listed, active, business, failure, fakePlane, inTurn, me, type Reply, scenario, sessions, unauthorized } from "./support.ts"
 
 // The session over the fake; its methods keep the client they were made
 // with, so they run without it.
@@ -474,3 +474,101 @@ void test(
     }),
   ),
 )
+
+
+void test("payments retain their origin; retry repeats the exact page, more appends, and filters and refresh reset paging", scenario(
+  Effect.gen(function* () {
+    const first = merchantPayment()
+    const second = merchantPayment({ id: "pay_two" })
+
+    const plane = fakePlane({
+      me: me(active),
+      listPaymentLinks: listed(paid, tips),
+      listPayments: inTurn(
+        { status: 200, body: paymentPage([first], "cursor_one") },
+        "unreachable",
+        { status: 200, body: paymentPage([second]) },
+        { status: 200, body: paymentPage([first]) },
+        { status: 200, body: paymentPage([]) },
+      ),
+    })
+
+    yield* run(plane, (session) => Effect.gen(function* () {
+      yield* session.load
+      yield* session.manageLinks
+      yield* session.openLink(paid.id)
+
+      const origin = (yield* current(session)).view
+
+      yield* session.linkPayments(paid.id)
+      yield* session.morePayments
+
+      const failed = yield* current(session)
+
+      assert.ok(failed.popup?.retry !== null)
+      assert.equal(failed.view._tag, "Payments")
+
+      yield* session.retry
+
+      const loaded = (yield* current(session)).view
+
+      assert.ok(View.$is("Payments")(loaded))
+      assert.deepEqual(loaded.page.payments.map((payment) => payment.id), [first.id, second.id])
+      assert.deepEqual(loaded.origin, origin)
+
+      yield* session.openPayment(second.id)
+
+      assert.equal((yield* current(session)).view._tag, "PaymentDetail")
+
+      yield* session.back
+
+      assert.deepEqual((yield* current(session)).view, loaded)
+
+      yield* session.filterPayments("succeeded")
+
+      const filtered = (yield* current(session)).view
+
+      assert.ok(View.$is("Payments")(filtered))
+      assert.equal(filtered.filter.status, "succeeded")
+      assert.equal(filtered.page.payments.length, 1)
+
+      yield* session.refreshPayments
+      yield* session.back
+
+      assert.deepEqual((yield* current(session)).view, origin)
+
+      const requests = plane.calls.filter((call) => call.path === "/payments")
+
+      assert.deepEqual(requests.map((call) => call.query.get("before")), [null, "cursor_one", "cursor_one", null, null])
+      assert.deepEqual(requests.map((call) => call.query.get("status")), [null, null, null, "succeeded", "succeeded"])
+      assert.ok(requests.every((call) => call.query.get("link_id") === paid.id))
+    }))
+  }),
+))
+
+void test("business payments return to the business; unavailable link filters close back without retry", scenario(
+  Effect.gen(function* () {
+    const plane = fakePlane({
+      me: me(active), listPaymentLinks: listed(paid),
+      listPayments: inTurn({ status: 200, body: paymentPage() }, failure(404, "not_found")),
+    })
+
+    yield* run(plane, (session) => Effect.gen(function* () {
+      yield* session.load
+      yield* session.managePayments
+      yield* session.back
+
+      assert.deepEqual((yield* current(session)).view, View.HasBusiness({ business: active }))
+
+      yield* session.manageLinks
+      yield* session.openLink(paid.id)
+      yield* session.linkPayments(paid.id)
+
+      assert.equal((yield* current(session)).popup?.retry, null)
+
+      yield* session.close
+
+      assert.equal((yield* current(session)).view._tag, "Links")
+    }))
+  }),
+))

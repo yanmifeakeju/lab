@@ -469,7 +469,7 @@ void test("the list's rows, heading, and totals read from plane's figures", () =
 
   assert.equal(listHeading(list), "Payment links · 2 links · 1 active")
   assert.equal(listHeading(overview([paid])), "Payment links · 1 link")
-  assert.equal(totalsLine(list, 2, "NGN"), "Collected ₦50,000.00 · 2 paid · 1 pending")
+  assert.equal(totalsLine(list.totals, 2, "NGN"), "Collected ₦50,000.00 · 2 paid · 1 pending")
   assert.equal(statusLine(paid.stats), "2 paid · 1 failed · 0 cancelled · 3 expired · 1 pending")
   assert.equal(formatTime("2026-10-19T14:02:31.000Z"), "2026-10-19 14:02 UTC")
 

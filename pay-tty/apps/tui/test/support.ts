@@ -4,6 +4,8 @@ import {
   CreatePaymentLinkRequestEncoded,
   type PayableLinkEncoded,
   type PaymentEncoded,
+  type PaymentPageEncoded,
+  type PaymentSummaryEncoded,
   type PaymentLinkEncoded,
   type PaymentLinkListEncoded,
   type PaymentLinkSummaryEncoded,
@@ -21,6 +23,7 @@ import { Plane } from "../src/plane.ts"
 
 export interface Call {
   readonly method: string
+  readonly query: URLSearchParams
   readonly path: string
   readonly authorization: string | null
   readonly idempotencyKey: string | null
@@ -38,6 +41,7 @@ export interface Routes {
   readonly createPaymentLink?: (call: Call) => Reply
   /** An empty list unless given. */
   readonly listPaymentLinks?: (call: Call) => Reply
+  readonly listPayments?: (call: Call) => Reply
   readonly payableLink?: (call: Call) => Reply
   readonly startPayment?: (call: Call) => Reply
   readonly simulatePayment?: (call: Call) => Reply
@@ -93,6 +97,7 @@ export const fakePlane = (routes: Routes) => {
 
       const call: Call = {
         method: web.method,
+        query: url.searchParams,
         path: url.pathname,
         authorization: web.headers.get("authorization"),
         idempotencyKey: web.headers.get("idempotency-key"),
@@ -102,6 +107,7 @@ export const fakePlane = (routes: Routes) => {
       calls.push(call)
 
       const route = Match.value(call.path).pipe(
+        Match.when("/payments", () => routes.listPayments ?? (() => ({ status: 200, body: paymentPage() }))),
         Match.when("/session", () => session),
         Match.when("/me", () => routes.me),
         Match.when("/business", () => routes.createBusiness),
@@ -318,3 +324,24 @@ export const tips = summary({
   pricing: { mode: "customer_chooses", suggested_amount_minor: null, minimum_amount_minor: null, maximum_amount_minor: null },
   active: false,
 })
+
+
+export const merchantPayment = (fields: Partial<PaymentSummaryEncoded> = {}): PaymentSummaryEncoded => ({
+  id: "pay_one",
+  link_id: paid.id,
+  business_id: active.id,
+  amount_minor: "2500000",
+  currency_code: "NGN",
+  scale: 2,
+  status: "succeeded",
+  created_at: "2026-10-22T14:02:00.000Z",
+  expires_at: "2026-10-22T14:32:00.000Z",
+  completed_at: "2026-10-22T14:03:00.000Z",
+  source: { kind: "link", id: paid.id, title: paid.title },
+  ...fields,
+})
+
+export const paymentPage = (
+  payments: ReadonlyArray<PaymentSummaryEncoded> = [],
+  next: string | null = null,
+): PaymentPageEncoded => ({ payments, next, stats: noStats })

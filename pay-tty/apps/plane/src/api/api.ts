@@ -8,6 +8,7 @@ import { me } from "./me/routes.ts"
 import { SchemaErrorMiddleware } from "./middleware/schema-error.ts"
 import { pay } from "./pay/routes.ts"
 import { paymentLinks } from "./payment_links/routes.ts"
+import { payments } from "./payments/routes.ts"
 import { session } from "./session/routes.ts"
 
 export const api = HttpApi.make("plane")
@@ -17,6 +18,7 @@ export const api = HttpApi.make("plane")
   .add(business)
   .add(account)
   .add(paymentLinks)
+  .add(payments)
   .add(pay)
   .middleware(SchemaErrorMiddleware)
   .annotate(OpenApi.Title, "Plane")

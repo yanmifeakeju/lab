@@ -2,6 +2,7 @@ import {
   type AuthorizedClient,
   type BusinessInfoEncoded,
   CreatePaymentLinkRequestEncoded,
+  type PaymentsListPaymentsParams,
 } from "@pay-tty/plane-client";
 import {
   Clock,
@@ -9,6 +10,7 @@ import {
   Effect,
   Encoding,
   Match,
+  Predicate,
   Ref,
   Result,
   Schema,
@@ -17,9 +19,21 @@ import {
 import * as HttpClientError from "effect/unstable/http/HttpClientError";
 
 import { type Form, type Link, type Overview, type Request, type Summary, toRequest } from "./payment-link.ts";
+import type { Filter, Page, Payment, Status } from "./payments.ts";
 import { Plane } from "./plane.ts";
 
 export type Business = BusinessInfoEncoded;
+
+export type PaymentOrigin =
+  | { readonly _tag: "HasBusiness"; readonly business: Business }
+  | { readonly _tag: "LinkDetail"; readonly business: Business; readonly overview: Overview; readonly link: Summary };
+
+export interface PaymentsView {
+  readonly business: Business;
+  readonly origin: PaymentOrigin;
+  readonly filter: Filter;
+  readonly page: Page;
+}
 
 // What the screen behind any popup shows. Unknown until /me answers: a failed
 // load is never taken to mean there is no business.
@@ -27,6 +41,10 @@ export type View = Data.TaggedEnum<{
   Unknown: {};
   NoBusiness: {};
   HasBusiness: { readonly business: Business };
+  /** The business's payments, optionally filtered to one link. */
+  Payments: PaymentsView;
+  /** A payment from the loaded list, retained for Back. */
+  PaymentDetail: { readonly list: PaymentsView; readonly payment: Payment };
   /** The business's payment links, for one whose account is open. */
   Links: { readonly business: Business; readonly overview: Overview };
   /** One link of the list, as the list loaded it. */
@@ -53,6 +71,13 @@ export type Operation = Data.TaggedEnum<{
   CreateBusiness: { readonly name: string };
   OpenAccount: {};
   ListLinks: { readonly business: Business };
+  ListPayments: {
+    readonly business: Business;
+    readonly origin: PaymentOrigin;
+    readonly filter: Filter;
+    readonly before: string | null;
+    readonly previous: Page | null;
+  };
   // The key goes with the request, so Retry can't create a second link.
   CreatePaymentLink: {
     readonly business: Business;
@@ -71,8 +96,9 @@ export interface Popup<Retry = Operation> {
   /**
    * What Close does: "refresh" reloads /me and shows what it returns. Null on a
    * failed load, where Close would only load again, so Retry is the one action.
+   * "back" leaves an unavailable link filter and returns to the link list.
    */
-  readonly close: "dismiss" | "refresh" | null;
+  readonly close: "dismiss" | "refresh" | "back" | null;
 }
 
 // What one SSH connection shows. Only one request is ever in flight, marked by
@@ -109,6 +135,18 @@ export interface Interface {
   readonly createBusiness: (name: string) => Effect.Effect<void>;
   /** Ignored unless a created business is showing and idle. */
   readonly openAccount: Effect.Effect<void>;
+  /** Loads payments; ignored unless an active business is showing and idle. */
+  readonly managePayments: Effect.Effect<void>;
+  /** Loads one link's payments; ignored unless that link is showing and idle. */
+  readonly linkPayments: (linkId: string) => Effect.Effect<void>;
+  /** Reloads the first page; ignored unless payments are showing and idle. */
+  readonly refreshPayments: Effect.Effect<void>;
+  /** Changes the status and resets paging; ignored unless payments are showing and idle. */
+  readonly filterPayments: (status: Status | null) => Effect.Effect<void>;
+  /** Appends the next page; ignored unless payments are showing, idle and have more. */
+  readonly morePayments: Effect.Effect<void>;
+  /** Opens a listed payment; ignored unless payments are showing and idle. */
+  readonly openPayment: (id: string) => Effect.Effect<void>;
   /** Loads the links; ignored unless an active business is showing and idle. */
   readonly manageLinks: Effect.Effect<void>;
   /** Loads the links again; ignored unless they are showing and idle. */
@@ -186,6 +224,17 @@ const popupFor = (operation: Operation, failure: Failure): Popup => {
           close: "refresh" as const,
         })),
       ),
+    ListPayments: (): Popup => Match.value(code).pipe(
+      Match.when("not_found", () => ({
+        message: "This payment link is no longer available.", retry: null, close: "back" as const,
+      })),
+      Match.when("business_required", () => ({
+        message: "Create a business first.", retry: null, close: "refresh" as const,
+      })),
+      Match.orElse(() => ({
+        message: "Couldn't load your payments.", retry: operation, close: "dismiss" as const,
+      })),
+    ),
     ListLinks: () =>
       Match.value(code).pipe(
         Match.when("business_required", () => ({
@@ -348,6 +397,27 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
               ),
               (opened) => View.HasBusiness({ business: opened }),
             ),
+          ListPayments: ({ business, origin, filter, before, previous }) =>
+            Effect.map(
+              authorized((client) => {
+                const params: PaymentsListPaymentsParams = {
+                  ...(filter.linkId === null ? undefined : { link_id: filter.linkId }),
+                  ...(filter.status === null ? undefined : { status: filter.status }),
+                  ...(before === null ? undefined : { before }),
+                };
+
+                return client.listPayments({ params });
+              }),
+              (page) =>
+                View.Payments({
+                  business,
+                  origin,
+                  filter,
+                  page: previous === null
+                    ? page
+                    : { ...page, payments: [...previous.payments, ...page.payments] },
+                }),
+            ),
           ListLinks: ({ business }) =>
             Effect.map(
               authorized((client) => client.listPaymentLinks(undefined)),
@@ -456,6 +526,88 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
     }
   });
 
+  const requestPayments = (
+    choose: (view: View) => Omit<Extract<Operation, { readonly _tag: "ListPayments" }>, "_tag"> | undefined,
+  ) =>
+    Effect.gen(function* () {
+      const operation = yield* SubscriptionRef.modify(state, (current) => {
+        const request = current.pending || current.popup !== null ? undefined : choose(current.view);
+
+        return request === undefined
+          ? ([undefined, current] as const)
+          : ([Operation.ListPayments(request), { ...current, pending: true }] as const);
+      });
+
+      if (operation !== undefined) {
+        yield* perform(operation);
+      }
+    });
+
+  const managePayments = requestPayments((view) =>
+    View.$is("HasBusiness")(view) && view.business.ledger !== null
+      ? {
+          business: view.business,
+          origin: view,
+          filter: { linkId: null, status: null },
+          before: null,
+          previous: null,
+        }
+      : undefined,
+  );
+
+  const linkPayments = (linkId: string) =>
+    requestPayments((view) =>
+      View.$is("LinkDetail")(view) && view.link.id === linkId
+        ? {
+            business: view.business,
+            origin: view,
+            filter: { linkId, status: null },
+            before: null,
+            previous: null,
+          }
+        : undefined,
+    );
+
+  const refreshPayments = requestPayments((view) =>
+    View.$is("Payments")(view)
+      ? { ...view, before: null, previous: null }
+      : undefined,
+  );
+
+  const filterPayments = (status: Status | null) =>
+    requestPayments((view) =>
+      View.$is("Payments")(view)
+        ? { ...view, filter: { ...view.filter, status }, before: null, previous: null }
+        : undefined,
+    );
+
+  const morePayments = requestPayments((view) =>
+    View.$is("Payments")(view) && view.page.next !== null
+      ? { ...view, before: view.page.next, previous: view.page }
+      : undefined,
+  );
+
+  const openPayment = (id: string) =>
+    Effect.asVoid(
+      begin(
+        (current) =>
+          View.$is("Payments")(current.view) &&
+          current.popup === null &&
+          current.view.page.payments.some((payment) => payment.id === id),
+        (current) => {
+          if (!View.$is("Payments")(current.view)) {
+            return current;
+          }
+
+          const payment = current.view.page.payments.find((payment) => payment.id === id);
+
+          return payment === undefined
+            ? current
+            : { ...current, view: View.PaymentDetail({ list: current.view, payment }) };
+        },
+      ),
+    );
+
   const refreshLinks = Effect.gen(function* () {
     const business = yield* SubscriptionRef.modify(
       state,
@@ -470,24 +622,31 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
     }
   });
 
+  const linkOverview = (view: View) => {
+    if (View.$is("Links")(view)) {
+      return view;
+    }
+
+    if (View.$is("PaymentDetail")(view) && Predicate.isTagged(view.list.origin, "LinkDetail")) {
+      return view.list.origin;
+    }
+
+    return undefined;
+  };
+
   const openLink = (id: string) =>
     Effect.asVoid(
       begin(
         (current) =>
-          View.$is("Links")(current.view) &&
-          current.view.overview.links.some((link) => link.id === id) &&
-          current.popup === null,
+          current.popup === null &&
+          linkOverview(current.view)?.overview.links.some((link) => link.id === id) === true,
         (current) => {
-          if (!View.$is("Links")(current.view)) {
-            return current;
-          }
+          const shown = linkOverview(current.view);
+          const link = shown?.overview.links.find((listed) => listed.id === id);
 
-          const { business, overview } = current.view;
-          const link = overview.links.find((listed) => listed.id === id);
-
-          return link === undefined
+          return shown === undefined || link === undefined
             ? current
-            : { ...current, view: View.LinkDetail({ business, overview, link }) };
+            : { ...current, view: View.LinkDetail({ business: shown.business, overview: shown.overview, link }) };
         },
       ),
     );
@@ -560,6 +719,8 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
         [business, { ...current, view: View.Links({ business, overview }), pending: true }] as const;
 
       return View.$match(current.view, {
+        Payments: ({ origin }) => [undefined, { ...current, view: origin }] as const,
+        PaymentDetail: ({ list }) => [undefined, { ...current, view: View.Payments(list) }] as const,
         Unknown: () => stay,
         NoBusiness: () => stay,
         HasBusiness: () => stay,
@@ -599,6 +760,15 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
         return [false, current] as const;
       }
 
+      if (current.popup.close === "back") {
+        const origin = View.$is("Payments")(current.view) ? current.view.origin : current.view;
+
+        const view = Predicate.isTagged(origin, "LinkDetail")
+          ? View.Links({ business: origin.business, overview: origin.overview }) : origin;
+
+        return [false, { ...current, view, popup: null }] as const;
+      }
+
       return current.popup.close === "refresh"
         ? ([true, reload] as const)
         : ([false, { ...current, popup: null }] as const);
@@ -614,6 +784,12 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
     load,
     createBusiness,
     openAccount,
+    managePayments,
+    linkPayments,
+    refreshPayments,
+    filterPayments,
+    morePayments,
+    openPayment,
     manageLinks,
     refreshLinks,
     openLink,

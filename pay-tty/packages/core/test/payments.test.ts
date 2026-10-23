@@ -1,14 +1,14 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { eq } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { Cause, Effect, Encoding, Exit, Predicate, Schema } from "effect"
 import { ulid } from "ulid"
 
 import { Business } from "../src/business/business.ts"
 import { Database } from "../src/database/client.ts"
 import { Payments } from "../src/payments/payments.ts"
-import { paymentLinks } from "../src/payments/sql.ts"
+import { paymentLinks, payments as paymentRows } from "../src/payments/sql.ts"
 import { Principal } from "../src/principal/principal.ts"
 import { Testing } from "../src/testing/testing.ts"
 import { runtime } from "./runtime.ts"
@@ -353,6 +353,158 @@ void test("the database enforces the pricing settings, bounds, and uniqueness it
 
         for (const [reason, row] of accepted) {
           assert.ok(Exit.isSuccess(yield* insert(row)), reason)
+        }
+      }),
+    ),
+  ))
+
+
+void test("payments page newest first without losing equal or microsecond timestamps, scoped to the business and link", () =>
+  runtime.runPromise(Testing.rolledBack(Effect.gen(function* () {
+    const service = yield* Payments.Service
+    const database = yield* Database
+    const business = yield* createBusiness
+    const other = yield* createBusiness
+    const { link } = yield* create(business.id, key(), fixed())
+    const second = (yield* create(business.id, key(), fixed(100n, "Other link"))).link
+    const foreign = (yield* create(other.id, key(), fixed())).link
+
+    const insert = (link: Payments.Link, count: number) => database.use((db) =>
+      db.insert(paymentRows).values(Array.from({ length: count }, (_, index) => ({
+        id: `pay_${ulid()}`,
+        businessId: link.businessId,
+        linkId: link.id,
+        idempotencyKey: key(),
+        amountMinor: 100n,
+        currencyCode: link.currencyCode,
+        scale: link.scale,
+        createdAt: index < 49 ? sql`now() - interval '1 second' + interval '0.123456 second'`
+          : sql`now() - interval '1 second' + interval '0.123455 second'`,
+        expiresAt: sql`now() + interval '30 minutes'`,
+      }))).returning())
+
+    const ours = yield* insert(link, 107)
+
+    yield* insert(second, 1)
+    yield* insert(foreign, 3)
+
+    const seen: Array<string> = []
+    let before: Payments.Cursor | null = null
+
+    do {
+      const page: Payments.PaymentPage = yield* service.listPayments(business.id, { linkId: link.id, status: null, before })
+
+      assert.equal(page.stats.pending, 107, "totals ignore the cursor")
+      assert.ok(page.payments.every((payment) => payment.source.title === link.title))
+      seen.push(...page.payments.map((payment) => payment.id))
+      before = page.next
+    } while (before !== null)
+
+    assert.equal(seen.length, 107)
+    assert.equal(new Set(seen).size, 107)
+
+    // The Date representation loses the microseconds, so check SQL order directly.
+    const ordered = yield* database.use((db) => db.select({ id: paymentRows.id }).from(paymentRows)
+      .where(eq(paymentRows.linkId, link.id)).orderBy(sql`${paymentRows.createdAt} desc, ${paymentRows.id} desc`))
+
+    assert.equal(ours.length, seen.length)
+    assert.deepEqual(seen, ordered.map((row) => row.id))
+
+    const all = yield* service.listPayments(business.id, { linkId: null, status: null, before: null })
+
+    assert.equal(all.stats.pending, 108)
+    assert.ok(all.payments.every((payment) => payment.businessId === business.id))
+    assert.ok(Predicate.isTagged(yield* Effect.flip(service.listPayments(business.id, {
+      linkId: foreign.id, status: null, before: null,
+    })), "Payments.LinkNotFoundError"))
+  }))))
+
+void test("effective expiry agrees across rows, filters and totals, and malformed cursors are refused", () =>
+  runtime.runPromise(Testing.rolledBack(Effect.gen(function* () {
+    const service = yield* Payments.Service
+    const database = yield* Database
+    const business = yield* createBusiness
+    const { link } = yield* create(business.id, key(), fixed())
+    const pending = (yield* service.startPayment(link.shareToken, key(), null)).payment
+    const expired = (yield* service.startPayment(link.shareToken, key(), null)).payment
+    const paid = (yield* service.startPayment(link.shareToken, key(), null)).payment
+
+    yield* service.simulate(link.shareToken, paid.id, "succeeded")
+    yield* database.use((db) => db.update(paymentRows).set({
+      createdAt: sql`now() - interval '1 hour'`,
+      expiresAt: sql`now() - interval '1 minute'`,
+    }).where(eq(paymentRows.id, expired.id)))
+
+    for (const status of [null, "pending", "expired", "succeeded", "failed", "cancelled"] as const) {
+      const page = yield* service.listPayments(business.id, { linkId: null, status, before: null })
+
+      assert.equal(page.next, null)
+      assert.equal(page.stats.pending, page.payments.filter((payment) => payment.status === "pending").length)
+      assert.equal(page.stats.expired, page.payments.filter((payment) => payment.status === "expired").length)
+      assert.equal(page.stats.succeeded, page.payments.filter((payment) => payment.status === "succeeded").length)
+      assert.equal(page.stats.collectedMinor, status === null || status === "succeeded" ? paid.amountMinor : 0n)
+
+      if (status === "pending") {
+        assert.deepEqual(page.payments.map((payment) => payment.id), [pending.id])
+      }
+
+      if (status === "expired") {
+        assert.deepEqual(page.payments.map((payment) => payment.id), [expired.id])
+      }
+    }
+
+    for (const before of ["!", Encoding.encodeBase64Url("{}"), Encoding.encodeBase64Url('{"at":"2026-02-30 12:00:00+00","id":"pay_bad"}')]) {
+      assert.ok(Predicate.isTagged(yield* Effect.flip(service.listPayments(business.id, {
+        linkId: null, status: null, before: Payments.Cursor.make(before),
+      })), "Payments.CursorError"))
+    }
+  }))))
+
+void test("expired filters isolate both the business and the link, including overdue pending payments", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const service = yield* Payments.Service
+        const database = yield* Database
+        const business = yield* createBusiness
+        const other = yield* createBusiness
+        const { link } = yield* create(business.id, key(), fixed())
+        const sibling = (yield* create(business.id, key(), fixed())).link
+        const foreign = (yield* create(other.id, key(), fixed())).link
+
+        const expire = Effect.fnUntraced(function* (link: Payments.Link) {
+          const { payment } = yield* service.startPayment(link.shareToken, key(), null)
+
+          yield* database.use((db) =>
+            db.update(paymentRows)
+              .set({
+                createdAt: sql`now() - interval '1 hour'`,
+                expiresAt: sql`now() - interval '1 minute'`,
+              })
+              .where(eq(paymentRows.id, payment.id)),
+          )
+
+          return payment.id
+        })
+
+        const own = yield* expire(link)
+        const sameBusiness = yield* expire(sibling)
+        const otherBusiness = yield* expire(foreign)
+
+        for (const linkId of [null, link.id]) {
+          const page = yield* service.listPayments(business.id, {
+            linkId,
+            status: "expired",
+            before: null,
+          })
+
+          const expected = linkId === null ? [own, sameBusiness] : [own]
+
+          assert.deepEqual(new Set(page.payments.map((payment) => payment.id)), new Set(expected))
+          assert.equal(page.stats.expired, expected.length)
+          assert.equal(page.stats.pending, 0)
+          assert.ok(page.payments.every((payment) => payment.businessId === business.id))
+          assert.ok(!page.payments.some((payment) => payment.id === otherBusiness))
         }
       }),
     ),

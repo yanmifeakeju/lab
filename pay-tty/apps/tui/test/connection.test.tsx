@@ -19,6 +19,8 @@ import {
   first,
   inTurn,
   listed,
+  merchantPayment,
+  paymentPage,
   me,
   overview,
   paid,
@@ -360,8 +362,8 @@ const listings = (plane: ReturnType<typeof fakePlane>) =>
 
 // From the business, through its links, to the link form.
 const openForm = Effect.fnUntraced(function* (tui: Effect.Success<ReturnType<typeof screen>>) {
-  yield* tui.showing("press p to")
-  tui.keys.pressKey("p")
+  yield* tui.showing("Payment links   l")
+  tui.keys.pressKey("l")
   yield* tui.showing("Payment links ·")
   tui.keys.pressKey("n")
 })
@@ -486,7 +488,7 @@ void test(
       const other = yield* screen(unopened)
 
       yield* other.showing("Payment links need it.")
-      other.keys.pressKey("p")
+      other.keys.pressKey("l")
 
       assert.doesNotMatch(yield* other.frame, /Create payment link/)
 
@@ -888,7 +890,8 @@ void test(
   scenario(
     Effect.gen(function* () {
       const plane = fakePlane({ me: me(active), createPaymentLink: createdLink() })
-      const tui = yield* screen(plane, { width: 32, height: 10 })
+
+    const tui = yield* screen(plane, { width: 32, height: 10 })
 
       yield* openForm(tui)
       yield* tui.showing("Create payment link")
@@ -926,14 +929,14 @@ void test(
 const rowsOf = (frame: string) => frame.split("\n").map((row) => row.replace(/^│ /, "").replace(/ *[▀▄█]? *│$/, ""))
 
 void test(
-  "p shows the links with their totals; Enter opens one with its payments, and Esc steps back a screen at a time",
+  "l shows the links with their totals; Enter opens one with its payments, and Esc steps back a screen at a time",
   scenario(
     Effect.gen(function* () {
       const plane = fakePlane({ me: me(active), listPaymentLinks: listed(paid, tips) })
       const tui = yield* screen(plane)
 
-      yield* tui.showing("Payment links: press p to manage.")
-      tui.keys.pressKey("p")
+      yield* tui.showing("Payment links   l")
+      tui.keys.pressKey("l")
 
       const list = rowsOf(yield* tui.showing("Payment links · 2 links · 1 active"))
 
@@ -963,12 +966,12 @@ void test(
       tui.keys.pressEscape()
       yield* tui.showing("› Tips")
       tui.keys.pressEscape()
-      yield* tui.showing("Payment links: press p to manage.")
+      yield* tui.showing("Payment links   l")
 
       // Opening the list asks plane once; stepping around it asks again only on p.
       assert.equal(listings(plane).length, 1)
 
-      tui.keys.pressKey("p")
+      tui.keys.pressKey("l")
       yield* tui.showing("› Logo design")
 
       assert.equal(listings(plane).length, 2)
@@ -1030,8 +1033,8 @@ void test(
 
       const tui = yield* screen(plane)
 
-      yield* tui.showing("press p to manage")
-      tui.keys.pressKey("p")
+      yield* tui.showing("Payment links   l")
+      tui.keys.pressKey("l")
       yield* tui.showing("› Tips")
       tui.keys.pressKey("r")
 
@@ -1061,10 +1064,11 @@ void test(
         summary({ id: `plink_${at}`, title: `Link ${at}`, stats: { ...paid.stats, collected_minor: String((at + 1) * 100) } }))
 
       const plane = fakePlane({ me: me(active), listPaymentLinks: listed(...many) })
-      const tui = yield* screen(plane, { width: 32, height: 10 })
 
-      yield* tui.showing("press p to")
-      tui.keys.pressKey("p")
+    const tui = yield* screen(plane, { width: 32, height: 10 })
+
+      yield* tui.showing("Payment links   l")
+      tui.keys.pressKey("l")
 
       const top = rowsOf(yield* tui.showing("› Link 0"))
 
@@ -1105,8 +1109,8 @@ void test(
 
       const tui = yield* screen(plane)
 
-      yield* tui.showing("press p to")
-      tui.keys.pressKey("p")
+      yield* tui.showing("Payment links   l")
+      tui.keys.pressKey("l")
 
       const frame = yield* tui.showing("Two lines")
       const rows = frame.split("\n").filter((row) => row.includes("₦50,000.00") && !row.includes("Collected"))
@@ -1124,3 +1128,191 @@ void test(
     }),
   ),
 )
+
+void test("business menu arrows and p/l open the sections; link p preserves the origin and payments fit a narrow terminal", scenario(
+  Effect.gen(function* () {
+    const payment = merchantPayment()
+
+    const plane = fakePlane({
+      me: me(active),
+      listPaymentLinks: listed(paid, tips),
+      listPayments: () => ({ status: 200, body: paymentPage([payment]) }),
+    })
+
+    const tui = yield* screen(plane)
+
+    yield* tui.showing("› Payments")
+    tui.keys.pressArrow("down")
+    yield* tui.showing("› Payment links")
+    tui.keys.pressEnter()
+    yield* tui.showing("Payment links ·")
+    tui.keys.pressArrow("down")
+    yield* tui.showing("› Tips")
+    tui.keys.pressEnter()
+    yield* tui.showing("Inactive:")
+    tui.keys.pressKey("p")
+
+    const filtered = yield* tui.showing("Payments · Tips")
+
+    assert.ok(!filtered.includes("all links"))
+    assert.equal(plane.calls.at(-1)?.query.get("link_id"), tips.id)
+
+    tui.keys.pressEscape()
+    yield* tui.showing("Inactive:")
+    tui.keys.pressEscape()
+    yield* tui.showing("› Tips")
+    tui.keys.pressEscape()
+    yield* tui.showing("Payment links   l")
+    tui.keys.pressArrow("up")
+    tui.keys.pressEnter()
+    yield* tui.matching((frame) => rowsOf(frame).includes("Payments"))
+    tui.keys.pressEnter()
+
+    const detail = yield* tui.showing("Payment ID: pay_one")
+
+    assert.match(detail, /Status: succeeded/)
+    assert.match(detail, /Link: Logo design/)
+    assert.ok(!detail.includes("c copy"))
+    assert.ok(!detail.includes("l link"))
+
+    tui.keys.pressEscape()
+    yield* tui.matching((frame) => rowsOf(frame).includes("Payments"))
+
+    for (const width of [32, 53, 54, 55]) {
+      tui.setup.resize(width, 10)
+
+      const frame = yield* tui.matching((frame) => frame.includes("₦25,000.00") && frame.includes("Esc"))
+      const rows = frame.split("\n").filter((row) => row !== "")
+
+      assert.equal(rows.length, 10)
+      assert.ok(rows.every((row) => stringWidth(row) === width))
+      assert.match(frame, /₦25,000.00/)
+      assert.match(frame, /Esc/)
+    }
+
+    tui.setup.resize(70, 20)
+    tui.keys.pressEscape()
+    yield* tui.showing("Payment links   l")
+    tui.keys.pressKey("p")
+    yield* tui.matching((frame) => rowsOf(frame).includes("Payments"))
+    tui.keys.pressEscape()
+    yield* tui.showing("Payment links   l")
+    tui.keys.pressKey("l")
+    yield* tui.showing("Payment links ·")
+
+    tui.close()
+    yield* Fiber.join(tui.fiber)
+  }),
+))
+
+void test("payments load more, cycle filters, refresh and show empty states", scenario(
+  Effect.gen(function* () {
+    const plane = fakePlane({
+      me: me(active),
+      listPayments: inTurn(
+        { status: 200, body: paymentPage([merchantPayment()], "next") },
+        { status: 200, body: paymentPage([merchantPayment({ id: "pay_two", status: "failed" })]) },
+        { status: 200, body: paymentPage([]) },
+        { status: 200, body: paymentPage([]) },
+        { status: 200, body: paymentPage([]) },
+      ),
+    })
+
+    const tui = yield* screen(plane)
+
+    yield* tui.showing("› Payments")
+    tui.keys.pressKey("p")
+    yield* tui.showing("Load more")
+    tui.keys.pressArrow("down")
+    yield* tui.showing("› Load more")
+    tui.keys.pressEnter()
+
+    const appended = yield* tui.showing("failed")
+
+    assert.ok(!appended.includes("Load more"))
+    assert.equal(plane.calls.at(-1)?.query.get("before"), "next")
+
+    tui.keys.pressArrow("right")
+    yield* tui.showing("No succeeded payments.")
+    tui.keys.pressKey("r")
+    yield* tui.showing("No succeeded payments.")
+
+    assert.equal(plane.calls.at(-1)?.query.get("before"), null)
+
+    tui.keys.pressArrow("left")
+    yield* tui.showing("No payments yet.")
+
+    tui.close()
+    yield* Fiber.join(tui.fiber)
+  }),
+))
+
+
+void test("the business menu fits at 32×10 and payment detail offers l for a link in the loaded overview", scenario(
+  Effect.gen(function* () {
+    const plane = fakePlane({
+      me: me(opened), listPaymentLinks: listed(paid),
+      listPayments: () => ({ status: 200, body: paymentPage([merchantPayment()]) }),
+    })
+
+    const tui = yield* screen(plane, { width: 32, height: 10 })
+
+    const menu = yield* tui.showing("Payment links")
+
+    assert.match(menu, /Payments/)
+    assert.match(menu, /Ctrl\+C to quit/)
+
+    tui.keys.pressKey("l")
+    yield* tui.showing("Logo design")
+    tui.keys.pressEnter()
+    const linkDetail = yield* tui.showing("Esc · c copy · p payments")
+
+    assert.ok(rowsOf(linkDetail).includes("Esc · c copy · p payments"))
+
+    tui.keys.pressKey("p")
+    yield* tui.showing("Payments · Logo design")
+    tui.keys.pressEnter()
+    tui.setup.resize(70, 20)
+
+    const detail = yield* tui.showing("l link")
+
+    assert.ok(!detail.includes("c copy"))
+
+    tui.keys.pressKey("l")
+    yield* tui.showing("Customers pay with:")
+
+    tui.close()
+    yield* Fiber.join(tui.fiber)
+  }),
+))
+
+
+void test("wide payments show filter arrows and unswept expiry has an expired-at detail", scenario(
+  Effect.gen(function* () {
+    const plane = fakePlane({
+      me: me(active),
+      listPayments: () => ({
+        status: 200,
+        body: paymentPage([merchantPayment({ status: "expired", completed_at: null })]),
+      }),
+    })
+
+    const tui = yield* screen(plane, { width: 100, height: 20 })
+
+    yield* tui.showing("› Payments")
+    tui.keys.pressKey("p")
+
+    const list = yield* tui.showing("Expired →")
+
+    assert.match(list, /← \[All\]/)
+
+    tui.keys.pressEnter()
+
+    const detail = yield* tui.showing("Expired at: 2026-10-22 14:32 UTC")
+
+    assert.ok(!detail.includes("Expires at:"))
+
+    tui.close()
+    yield* Fiber.join(tui.fiber)
+  }),
+))

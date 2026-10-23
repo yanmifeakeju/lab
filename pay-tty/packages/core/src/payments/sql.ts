@@ -138,6 +138,7 @@ export const payments = pgTable(
       foreignColumns: [paymentLinks.id, paymentLinks.businessId, paymentLinks.currencyCode, paymentLinks.scale],
     }).onDelete("restrict"),
     uniqueIndex("payments_link_id_idempotency_key_unique").on(table.linkId, table.idempotencyKey),
+    index("payments_business_id_created_at_id_idx").on(table.businessId, table.createdAt.desc().nullsFirst(), table.id.desc().nullsFirst()),
     index("payments_link_id_created_at_idx").on(table.linkId, table.createdAt),
     index("payments_pending_expires_at_idx").on(table.expiresAt).where(sql`${table.status} = 'pending'`),
     check("payments_idempotency_key_valid", idempotencyKeyValid(table.idempotencyKey)),

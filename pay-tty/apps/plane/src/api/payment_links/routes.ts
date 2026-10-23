@@ -3,6 +3,7 @@ import { Schema, SchemaTransformation } from "effect"
 import * as HttpApiEndpoint from "effect/unstable/httpapi/HttpApiEndpoint"
 import * as HttpApiGroup from "effect/unstable/httpapi/HttpApiGroup"
 
+import { PaymentStats, stats } from "../payment-stats.ts"
 import { Conflict } from "../errors.ts"
 import { Authentication } from "../middleware/authentication.ts"
 import { BusinessContext } from "../middleware/business.ts"
@@ -139,19 +140,6 @@ const fieldsOf = (link: Payments.Link) => ({
 export const paymentLink = (link: Payments.Link, created: boolean) =>
   created ? new CreatedPaymentLink(fieldsOf(link)) : new PaymentLink(fieldsOf(link))
 
-export class PaymentStats extends Schema.Class<PaymentStats>("PaymentStats")({
-  succeeded: Schema.Int,
-  failed: Schema.Int,
-  cancelled: Schema.Int,
-  // Includes pending payments past their window, marked or not.
-  expired: Schema.Int,
-  pending: Schema.Int,
-  // Minor units as a decimal string: a sum can pass the safe integers.
-  collected_minor: Schema.String.check(Schema.isPattern(/^\d+$/).annotate({ expected: "a non-negative integer" })),
-  // When the latest succeeded payment completed.
-  last_paid_at: Schema.NullOr(Schema.String),
-}) {}
-
 export class PaymentLinkSummary extends Schema.Class<PaymentLinkSummary>("PaymentLinkSummary")({
   ...linkFields,
   // False once deactivated: it starts no new payments.
@@ -167,17 +155,6 @@ export class PaymentLinkList extends Schema.Class<PaymentLinkList>("PaymentLinkL
   active_link_count: Schema.Int,
   totals: PaymentStats,
 }) {}
-
-const stats = (stats: Payments.Stats) =>
-  new PaymentStats({
-    succeeded: stats.succeeded,
-    failed: stats.failed,
-    cancelled: stats.cancelled,
-    expired: stats.expired,
-    pending: stats.pending,
-    collected_minor: stats.collectedMinor.toString(),
-    last_paid_at: stats.lastPaidAt?.toISOString() ?? null,
-  })
 
 export const paymentLinkList = (overview: Payments.Overview) =>
   new PaymentLinkList({
