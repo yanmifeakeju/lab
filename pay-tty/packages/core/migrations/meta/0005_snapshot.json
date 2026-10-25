@@ -1,0 +1,935 @@
+{
+  "id": "92152dc0-685d-48b4-a74f-d3eef1dcf477",
+  "prevId": "d4cf4ea6-3f3a-41f6-9703-4237e5fbe96a",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.business_principals": {
+      "name": "business_principals",
+      "schema": "",
+      "columns": {
+        "principal_id": {
+          "name": "principal_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "business_id": {
+          "name": "business_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "business_principals_business_id_idx": {
+          "name": "business_principals_business_id_idx",
+          "columns": [
+            {
+              "expression": "business_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "business_principals_principal_id_principals_id_fk": {
+          "name": "business_principals_principal_id_principals_id_fk",
+          "tableFrom": "business_principals",
+          "tableTo": "principals",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "business_principals_business_id_businesses_id_fk": {
+          "name": "business_principals_business_id_businesses_id_fk",
+          "tableFrom": "business_principals",
+          "tableTo": "businesses",
+          "columnsFrom": [
+            "business_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.businesses": {
+      "name": "businesses",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "country_code": {
+          "name": "country_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'NG'"
+        },
+        "currency_code": {
+          "name": "currency_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "primary_ledger": {
+          "name": "primary_ledger",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "primary_payable_account_ref": {
+          "name": "primary_payable_account_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ledger_holder_ref": {
+          "name": "ledger_holder_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "business_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'created'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "businesses_primary_payable_account_ref_unique": {
+          "name": "businesses_primary_payable_account_ref_unique",
+          "columns": [
+            {
+              "expression": "primary_payable_account_ref",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "businesses_primary_ledger_fk": {
+          "name": "businesses_primary_ledger_fk",
+          "tableFrom": "businesses",
+          "tableTo": "ledgers",
+          "columnsFrom": [
+            "primary_ledger",
+            "currency_code"
+          ],
+          "columnsTo": [
+            "slug",
+            "currency"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "businesses_id_primary_ledger_unique": {
+          "name": "businesses_id_primary_ledger_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "primary_ledger"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "businesses_name_trimmed": {
+          "name": "businesses_name_trimmed",
+          "value": "\"businesses\".\"name\" !~ '^[\\t\\n\\v\\f\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]|[\\t\\n\\v\\f\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]$'"
+        },
+        "businesses_country_code_valid": {
+          "name": "businesses_country_code_valid",
+          "value": "\"businesses\".\"country_code\" in ('NG', 'US')"
+        },
+        "businesses_currency_code_matches_country": {
+          "name": "businesses_currency_code_matches_country",
+          "value": "(\"businesses\".\"country_code\", \"businesses\".\"currency_code\") in (('NG', 'NGN'), ('US', 'USD'))"
+        },
+        "businesses_holder_with_account": {
+          "name": "businesses_holder_with_account",
+          "value": "(\"businesses\".\"ledger_holder_ref\" is null) = (\"businesses\".\"primary_payable_account_ref\" is null)"
+        },
+        "businesses_active_has_account": {
+          "name": "businesses_active_has_account",
+          "value": "\"businesses\".\"status\" <> 'active' or \"businesses\".\"primary_payable_account_ref\" is not null"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.ledgers": {
+      "name": "ledgers",
+      "schema": "",
+      "columns": {
+        "slug": {
+          "name": "slug",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "currency": {
+          "name": "currency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "scale": {
+          "name": "scale",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "country_code": {
+          "name": "country_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_country_default": {
+          "name": "is_country_default",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "ledgers_country_default_unique": {
+          "name": "ledgers_country_default_unique",
+          "columns": [
+            {
+              "expression": "country_code",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"ledgers\".\"is_country_default\"",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "ledgers_slug_currency_unique": {
+          "name": "ledgers_slug_currency_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "slug",
+            "currency"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ledgers_slug_not_blank": {
+          "name": "ledgers_slug_not_blank",
+          "value": "\"ledgers\".\"slug\" ~ '\\S'"
+        },
+        "ledgers_currency_valid": {
+          "name": "ledgers_currency_valid",
+          "value": "\"ledgers\".\"currency\" ~ '^[A-Z]{3}$'"
+        },
+        "ledgers_scale_valid": {
+          "name": "ledgers_scale_valid",
+          "value": "\"ledgers\".\"scale\" between 0 and 4"
+        },
+        "ledgers_country_code_valid": {
+          "name": "ledgers_country_code_valid",
+          "value": "\"ledgers\".\"country_code\" ~ '^[A-Z]{2}$'"
+        },
+        "ledgers_country_default_has_country": {
+          "name": "ledgers_country_default_has_country",
+          "value": "not \"ledgers\".\"is_country_default\" or \"ledgers\".\"country_code\" is not null"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.platform_accounts": {
+      "name": "platform_accounts",
+      "schema": "",
+      "columns": {
+        "ledger": {
+          "name": "ledger",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "label": {
+          "name": "label",
+          "type": "platform_account_label",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ledger_account_ref": {
+          "name": "ledger_account_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "platform_accounts_ledger_ledgers_slug_fk": {
+          "name": "platform_accounts_ledger_ledgers_slug_fk",
+          "tableFrom": "platform_accounts",
+          "tableTo": "ledgers",
+          "columnsFrom": [
+            "ledger"
+          ],
+          "columnsTo": [
+            "slug"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {
+        "platform_accounts_ledger_label_pk": {
+          "name": "platform_accounts_ledger_label_pk",
+          "columns": [
+            "ledger",
+            "label"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.payment_links": {
+      "name": "payment_links",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "business_id": {
+          "name": "business_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "share_token": {
+          "name": "share_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ledger": {
+          "name": "ledger",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pricing_mode": {
+          "name": "pricing_mode",
+          "type": "payment_link_pricing_mode",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount": {
+          "name": "amount",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "suggested_amount": {
+          "name": "suggested_amount",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "minimum_amount": {
+          "name": "minimum_amount",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "maximum_amount": {
+          "name": "maximum_amount",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deactivated_at": {
+          "name": "deactivated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "payment_links_business_id_idempotency_key_unique": {
+          "name": "payment_links_business_id_idempotency_key_unique",
+          "columns": [
+            {
+              "expression": "business_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "payment_links_share_token_unique": {
+          "name": "payment_links_share_token_unique",
+          "columns": [
+            {
+              "expression": "share_token",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "payment_links_business_id_businesses_id_fk": {
+          "name": "payment_links_business_id_businesses_id_fk",
+          "tableFrom": "payment_links",
+          "tableTo": "businesses",
+          "columnsFrom": [
+            "business_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "payment_links_business_ledger_fk": {
+          "name": "payment_links_business_ledger_fk",
+          "tableFrom": "payment_links",
+          "tableTo": "businesses",
+          "columnsFrom": [
+            "business_id",
+            "ledger"
+          ],
+          "columnsTo": [
+            "id",
+            "primary_ledger"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "payment_links_payment_target_unique": {
+          "name": "payment_links_payment_target_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "business_id",
+            "ledger"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "payment_links_idempotency_key_valid": {
+          "name": "payment_links_idempotency_key_valid",
+          "value": "\"payment_links\".\"idempotency_key\" ~ '^[!-~]{1,255}$'"
+        },
+        "payment_links_share_token_valid": {
+          "name": "payment_links_share_token_valid",
+          "value": "\"payment_links\".\"share_token\" ~ '^[A-Za-z0-9_][A-Za-z0-9_-]{42}$'"
+        },
+        "payment_links_title_valid": {
+          "name": "payment_links_title_valid",
+          "value": "\"payment_links\".\"title\" <> '' and char_length(\"payment_links\".\"title\") <= 255 and \"payment_links\".\"title\" !~ '^[\\t\\n\\v\\f\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]|[\\t\\n\\v\\f\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]$'"
+        },
+        "payment_links_description_valid": {
+          "name": "payment_links_description_valid",
+          "value": "\"payment_links\".\"description\" is null or (\"payment_links\".\"description\" <> '' and char_length(\"payment_links\".\"description\") <= 500 and \"payment_links\".\"description\" !~ '^[\\t\\n\\v\\f\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]|[\\t\\n\\v\\f\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]$')"
+        },
+        "payment_links_pricing_settings": {
+          "name": "payment_links_pricing_settings",
+          "value": "case \"payment_links\".\"pricing_mode\"\n        when 'fixed' then \"payment_links\".\"amount\" is not null\n          and \"payment_links\".\"suggested_amount\" is null\n          and \"payment_links\".\"minimum_amount\" is null\n          and \"payment_links\".\"maximum_amount\" is null\n        else \"payment_links\".\"amount\" is null\n      end"
+        },
+        "payment_links_amount_valid": {
+          "name": "payment_links_amount_valid",
+          "value": "\"payment_links\".\"amount\" is null or \"payment_links\".\"amount\" between 1 and 9007199254740991"
+        },
+        "payment_links_suggested_amount_valid": {
+          "name": "payment_links_suggested_amount_valid",
+          "value": "\"payment_links\".\"suggested_amount\" is null or \"payment_links\".\"suggested_amount\" between 1 and 9007199254740991"
+        },
+        "payment_links_minimum_amount_valid": {
+          "name": "payment_links_minimum_amount_valid",
+          "value": "\"payment_links\".\"minimum_amount\" is null or \"payment_links\".\"minimum_amount\" between 1 and 9007199254740991"
+        },
+        "payment_links_maximum_amount_valid": {
+          "name": "payment_links_maximum_amount_valid",
+          "value": "\"payment_links\".\"maximum_amount\" is null or \"payment_links\".\"maximum_amount\" between 1 and 9007199254740991"
+        },
+        "payment_links_minimum_within_maximum": {
+          "name": "payment_links_minimum_within_maximum",
+          "value": "\"payment_links\".\"minimum_amount\" is null or \"payment_links\".\"maximum_amount\" is null or \"payment_links\".\"minimum_amount\" <= \"payment_links\".\"maximum_amount\""
+        },
+        "payment_links_suggested_within_bounds": {
+          "name": "payment_links_suggested_within_bounds",
+          "value": "\"payment_links\".\"suggested_amount\" is null or (\n        (\"payment_links\".\"minimum_amount\" is null or \"payment_links\".\"suggested_amount\" >= \"payment_links\".\"minimum_amount\")\n        and (\"payment_links\".\"maximum_amount\" is null or \"payment_links\".\"suggested_amount\" <= \"payment_links\".\"maximum_amount\")\n      )"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.payments": {
+      "name": "payments",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "business_id": {
+          "name": "business_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "link_id": {
+          "name": "link_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount": {
+          "name": "amount",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ledger": {
+          "name": "ledger",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "payment_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "payments_link_id_idempotency_key_unique": {
+          "name": "payments_link_id_idempotency_key_unique",
+          "columns": [
+            {
+              "expression": "link_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "payments_business_id_created_at_id_idx": {
+          "name": "payments_business_id_created_at_id_idx",
+          "columns": [
+            {
+              "expression": "business_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "first"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "first"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "payments_link_id_created_at_idx": {
+          "name": "payments_link_id_created_at_idx",
+          "columns": [
+            {
+              "expression": "link_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "payments_pending_expires_at_idx": {
+          "name": "payments_pending_expires_at_idx",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"payments\".\"status\" = 'pending'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "payments_business_id_businesses_id_fk": {
+          "name": "payments_business_id_businesses_id_fk",
+          "tableFrom": "payments",
+          "tableTo": "businesses",
+          "columnsFrom": [
+            "business_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "payments_link_fk": {
+          "name": "payments_link_fk",
+          "tableFrom": "payments",
+          "tableTo": "payment_links",
+          "columnsFrom": [
+            "link_id",
+            "business_id",
+            "ledger"
+          ],
+          "columnsTo": [
+            "id",
+            "business_id",
+            "ledger"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "payments_id_ledger_unique": {
+          "name": "payments_id_ledger_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "ledger"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "payments_idempotency_key_valid": {
+          "name": "payments_idempotency_key_valid",
+          "value": "\"payments\".\"idempotency_key\" ~ '^[!-~]{1,255}$'"
+        },
+        "payments_amount_valid": {
+          "name": "payments_amount_valid",
+          "value": "\"payments\".\"amount\" between 1 and 9007199254740991"
+        },
+        "payments_expires_after_created": {
+          "name": "payments_expires_after_created",
+          "value": "\"payments\".\"expires_at\" > \"payments\".\"created_at\""
+        },
+        "payments_completed_with_status": {
+          "name": "payments_completed_with_status",
+          "value": "(\"payments\".\"status\" = 'pending') = (\"payments\".\"completed_at\" is null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.principals": {
+      "name": "principals",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "issuer": {
+          "name": "issuer",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subject": {
+          "name": "subject",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "principals_issuer_subject_unique": {
+          "name": "principals_issuer_subject_unique",
+          "columns": [
+            {
+              "expression": "issuer",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "subject",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {
+    "public.business_status": {
+      "name": "business_status",
+      "schema": "public",
+      "values": [
+        "created",
+        "active"
+      ]
+    },
+    "public.platform_account_label": {
+      "name": "platform_account_label",
+      "schema": "public",
+      "values": [
+        "cash",
+        "fee"
+      ]
+    },
+    "public.payment_status": {
+      "name": "payment_status",
+      "schema": "public",
+      "values": [
+        "pending",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "expired"
+      ]
+    },
+    "public.payment_link_pricing_mode": {
+      "name": "payment_link_pricing_mode",
+      "schema": "public",
+      "values": [
+        "fixed",
+        "customer_chooses"
+      ]
+    }
+  },
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

@@ -56,7 +56,7 @@ export const paymentRows = (
   const gap = narrow ? " " : "  "
 
   const amounts = payments.map((payment) =>
-    formatMoney(BigInt(payment.amount_minor), payment.scale, payment.currency_code),
+    formatMoney(BigInt(payment.amount), payment.scale, payment.currency_code),
   )
 
   const amountWidth = amounts.reduce((widest, amount) => Math.max(widest, stringWidth(amount)), 0)

@@ -6,6 +6,7 @@ import { businesses } from "../business/sql.ts"
 import { Database } from "../database/client.ts"
 import { createId } from "../database/ids.ts"
 import { Currency } from "../ledger/currency.ts"
+import { Ledger } from "../ledger/slug.ts"
 import { ledgers } from "../ledger/sql.ts"
 import { maxAmount, paymentLinks, payments, paymentStatuses } from "./sql.ts"
 
@@ -43,22 +44,25 @@ export const Title = Schema.NonEmptyString.check(Schema.isTrimmed(), Schema.isMa
 
 export const Description = Schema.NonEmptyString.check(Schema.isTrimmed(), Schema.isMaxLength(500))
 
+/** One whole unit of the currency: the least a link or payment takes. */
+export const minimumAmount = (scale: number) => 10n ** BigInt(scale)
+
 export class Fixed extends Schema.Class<Fixed>("Payments.Fixed")({
   mode: Schema.tag("fixed"),
-  amountMinor: Amount,
+  amount: Amount,
 }) {}
 
 export interface Bounds {
-  readonly suggestedAmountMinor: bigint | null
-  readonly minimumAmountMinor: bigint | null
-  readonly maximumAmountMinor: bigint | null
+  readonly suggestedAmount: bigint | null
+  readonly minimumAmount: bigint | null
+  readonly maximumAmount: bigint | null
 }
 
 /** The setting that breaks the bounds and why, or undefined when they hold. */
 export const boundsViolation = (
   bounds: Bounds,
 ): { readonly setting: "suggested" | "maximum"; readonly message: string } | undefined => {
-  const { suggestedAmountMinor: suggested, minimumAmountMinor: minimum, maximumAmountMinor: maximum } = bounds
+  const { suggestedAmount: suggested, minimumAmount: minimum, maximumAmount: maximum } = bounds
 
   if (minimum !== null && maximum !== null && minimum > maximum) {
     return { setting: "maximum", message: "the maximum must be at least the minimum" }
@@ -79,16 +83,16 @@ export const boundsViolation = (
 export class CustomerChooses extends Schema.Class<CustomerChooses>("Payments.CustomerChooses")(
   Schema.Struct({
     mode: Schema.tag("customer_chooses"),
-    suggestedAmountMinor: Schema.NullOr(Amount),
-    minimumAmountMinor: Schema.NullOr(Amount),
-    maximumAmountMinor: Schema.NullOr(Amount),
+    suggestedAmount: Schema.NullOr(Amount),
+    minimumAmount: Schema.NullOr(Amount),
+    maximumAmount: Schema.NullOr(Amount),
   }).check(
     Schema.makeFilter((bounds) => {
       const violation = boundsViolation(bounds)
 
       return violation === undefined
         ? undefined
-        : { path: [`${violation.setting}AmountMinor`], issue: violation.message }
+        : { path: [`${violation.setting}Amount`], issue: violation.message }
     }),
   ),
 ) {}
@@ -109,6 +113,8 @@ export class Link extends Schema.Class<Link>("Payments.Link")({
   businessId: Business.ID,
   title: Schema.String,
   description: Schema.NullOr(Schema.String),
+  ledger: Ledger.Slug,
+  /** The ledger's, as are the payments'. */
   currencyCode: Currency.Code,
   scale: Schema.Int,
   pricing: Pricing,
@@ -145,7 +151,8 @@ export class Payment extends Schema.Class<Payment>("Payments.Payment")({
   id: PaymentID,
   linkId: ID,
   businessId: Business.ID,
-  amountMinor: Schema.BigInt,
+  amount: Schema.BigInt,
+  ledger: Ledger.Slug,
   currencyCode: Currency.Code,
   scale: Schema.Int,
   status: Status,
@@ -202,7 +209,7 @@ export class Stats extends Schema.Class<Stats>("Payments.Stats")({
   expired: Schema.Int,
   pending: Schema.Int,
   /** The sum of succeeded payments, in minor units at the link's scale. */
-  collectedMinor: Schema.BigInt,
+  collected: Schema.BigInt,
   /** When the latest succeeded payment completed. */
   lastPaidAt: Schema.NullOr(Schema.Date),
 }) {}
@@ -256,7 +263,13 @@ export class LinkInactiveError extends Schema.TaggedError<LinkInactiveError>()(
 
 /** The requested amount doesn't fit the link's pricing. */
 export class AmountError extends Schema.TaggedError<AmountError>()("Payments.AmountError", {
-  reason: Schema.Literals(["required", "unexpected", "below_minimum", "above_maximum"]),
+  reason: Schema.Literals(["required", "unexpected", "below_currency_minimum", "below_minimum", "above_maximum"]),
+  message: Schema.String,
+}) {}
+
+/** A pricing setting is below one whole unit of the ledger's currency. */
+export class DetailsError extends Schema.TaggedError<DetailsError>()("Payments.DetailsError", {
+  field: Schema.Literals(["amount", "suggestedAmount", "minimumAmount", "maximumAmount"]),
   message: Schema.String,
 }) {}
 
@@ -280,15 +293,15 @@ export class PaymentClosedError extends Schema.TaggedError<PaymentClosedError>()
 
 export interface Interface {
   /**
-   * Saves a link in the business's currency and scale. Idempotent per
-   * business and key: a repeat with the same details returns the saved link
-   * as first created, and one with other details conflicts.
+   * Saves a link in the business's primary ledger. Idempotent per business
+   * and key: a repeat with the same details returns the saved link as first
+   * created, and one with other details conflicts.
    */
   readonly createLink: (
     businessId: Business.ID,
     idempotencyKey: IdempotencyKey,
     details: Details,
-  ) => Effect.Effect<Created, Business.NotFoundError | ConflictError>
+  ) => Effect.Effect<Created, Business.NotFoundError | DetailsError | ConflictError>
   /** The link behind a share token, deactivated or not. */
   readonly findLink: (shareToken: string) => Effect.Effect<Payable, LinkNotFoundError>
   /**
@@ -300,7 +313,7 @@ export interface Interface {
   readonly startPayment: (
     shareToken: string,
     idempotencyKey: IdempotencyKey,
-    amountMinor: bigint | null,
+    amount: bigint | null,
   ) => Effect.Effect<
     Started,
     LinkNotFoundError | LinkInactiveError | AmountError | PaymentConflictError
@@ -327,49 +340,68 @@ export class Service extends Context.Service<Service, Interface>()("Payments") {
 
 type Row = typeof paymentLinks.$inferSelect
 
+// A link or payment with the currency and scale of its ledger.
+const inLedger = { currency: ledgers.currency, scale: ledgers.scale }
+
+const linkColumns = { link: paymentLinks, ...inLedger }
+
+interface LinkRow {
+  readonly link: Row
+  readonly currency: string
+  readonly scale: number
+}
+
 const pricingOf = (row: Row): Pricing => {
   if (row.pricingMode === "fixed") {
-    if (row.amountMinor === null) {
+    if (row.amount === null) {
       throw new Error(`fixed payment link ${row.id} has no amount`)
     }
 
-    return new Fixed({ amountMinor: row.amountMinor })
+    return new Fixed({ amount: row.amount })
   }
 
   return new CustomerChooses({
-    suggestedAmountMinor: row.suggestedAmountMinor,
-    minimumAmountMinor: row.minimumAmountMinor,
-    maximumAmountMinor: row.maximumAmountMinor,
+    suggestedAmount: row.suggestedAmount,
+    minimumAmount: row.minimumAmount,
+    maximumAmount: row.maximumAmount,
   })
 }
 
-const fromRow = (row: Row) =>
+const fromRow = ({ link, currency, scale }: LinkRow) =>
   new Link({
-    id: ID.make(row.id),
-    businessId: Business.ID.make(row.businessId),
-    title: row.title,
-    description: row.description,
-    currencyCode: Currency.Code.make(row.currencyCode),
-    scale: row.scale,
-    pricing: pricingOf(row),
-    shareToken: row.shareToken,
-    deactivatedAt: row.deactivatedAt,
-    createdAt: row.createdAt,
+    id: ID.make(link.id),
+    businessId: Business.ID.make(link.businessId),
+    title: link.title,
+    description: link.description,
+    ledger: Ledger.Slug.make(link.ledger),
+    currencyCode: Currency.Code.make(currency),
+    scale,
+    pricing: pricingOf(link),
+    shareToken: link.shareToken,
+    deactivatedAt: link.deactivatedAt,
+    createdAt: link.createdAt,
   })
 
-type PaymentRow = typeof payments.$inferSelect
+const paymentColumns = { payment: payments, ...inLedger }
 
-const paymentFields = (row: PaymentRow) => ({
-  id: PaymentID.make(row.id),
-  linkId: ID.make(row.linkId),
-  businessId: Business.ID.make(row.businessId),
-  amountMinor: row.amountMinor,
-  currencyCode: Currency.Code.make(row.currencyCode),
-  scale: row.scale,
-  status: row.status,
-  createdAt: row.createdAt,
-  expiresAt: row.expiresAt,
-  completedAt: row.completedAt,
+interface PaymentRow {
+  readonly payment: typeof payments.$inferSelect
+  readonly currency: string
+  readonly scale: number
+}
+
+const paymentFields = ({ payment, currency, scale }: PaymentRow) => ({
+  id: PaymentID.make(payment.id),
+  linkId: ID.make(payment.linkId),
+  businessId: Business.ID.make(payment.businessId),
+  amount: payment.amount,
+  ledger: Ledger.Slug.make(payment.ledger),
+  currencyCode: Currency.Code.make(currency),
+  scale,
+  status: payment.status,
+  createdAt: payment.createdAt,
+  expiresAt: payment.expiresAt,
+  completedAt: payment.completedAt,
 })
 
 const paymentOf = (row: PaymentRow) => new Payment(paymentFields(row))
@@ -402,7 +434,7 @@ const statsColumns = {
   expired: counted(statusCondition("expired")),
   pending: counted(statusCondition("pending")),
   // As text: a sum can pass what a JavaScript number holds exactly.
-  collectedMinor: sql<string>`coalesce(sum(${payments.amountMinor}) filter (where ${isStatus("succeeded")}), 0)::text`,
+  collected: sql<string>`coalesce(sum(${payments.amount}) filter (where ${isStatus("succeeded")}), 0)::text`,
   lastPaidAt: sql`max(${payments.completedAt}) filter (where ${isStatus("succeeded")})`.mapWith(payments.completedAt),
 }
 
@@ -410,13 +442,29 @@ type StatsRow = {
   readonly [K in keyof typeof statsColumns]: (typeof statsColumns)[K]["_"]["type"]
 }
 
-const statsOf = (row: StatsRow) => new Stats({ ...row, collectedMinor: BigInt(row.collectedMinor) })
+const statsOf = (row: StatsRow) => new Stats({ ...row, collected: BigInt(row.collected) })
 
-/** The amount a payment of this pricing charges, or why the request can't have it. */
-export const amountFor = (pricing: Pricing, requested: bigint | null): Result.Result<bigint, AmountError> => {
+/** The currency and scale amounts are in. */
+export interface Unit {
+  readonly currencyCode: string
+  readonly scale: number
+}
+
+const leastText = (unit: Unit) =>
+  `must be at least ${Currency.format(minimumAmount(unit.scale), unit.scale, unit.currencyCode)}`
+
+/**
+ * The amount a payment of this pricing charges, or why the request can't have
+ * it. No amount is below one whole unit; a link's minimum only raises that.
+ */
+export const amountFor = (
+  pricing: Pricing,
+  unit: Unit,
+  requested: bigint | null,
+): Result.Result<bigint, AmountError> => {
   if (pricing.mode === "fixed") {
     return requested === null
-      ? Result.succeed(pricing.amountMinor)
+      ? Result.succeed(pricing.amount)
       : Result.fail(new AmountError({ reason: "unexpected", message: "a fixed-price link charges its own amount" }))
   }
 
@@ -424,36 +472,59 @@ export const amountFor = (pricing: Pricing, requested: bigint | null): Result.Re
     return Result.fail(new AmountError({ reason: "required", message: "this link needs the amount to pay" }))
   }
 
-  if (pricing.minimumAmountMinor !== null && requested < pricing.minimumAmountMinor) {
+  if (requested < minimumAmount(unit.scale)) {
+    return Result.fail(new AmountError({ reason: "below_currency_minimum", message: `the amount ${leastText(unit)}` }))
+  }
+
+  if (pricing.minimumAmount !== null && requested < pricing.minimumAmount) {
     return Result.fail(new AmountError({ reason: "below_minimum", message: "the amount must be at least the minimum" }))
   }
 
-  if (pricing.maximumAmountMinor !== null && requested > pricing.maximumAmountMinor) {
+  if (pricing.maximumAmount !== null && requested > pricing.maximumAmount) {
     return Result.fail(new AmountError({ reason: "above_maximum", message: "the amount must be at most the maximum" }))
   }
 
   return Result.succeed(requested)
 }
 
+// The first setting below one whole unit, if any.
+const belowUnit = (pricing: Pricing, unit: Unit): DetailsError | undefined => {
+  const settings = pricing.mode === "fixed"
+    ? [["amount", pricing.amount] as const]
+    : ([
+        ["suggestedAmount", pricing.suggestedAmount],
+        ["minimumAmount", pricing.minimumAmount],
+        ["maximumAmount", pricing.maximumAmount],
+      ] as const)
+
+  for (const [field, amount] of settings) {
+    if (amount !== null && amount < minimumAmount(unit.scale)) {
+      return new DetailsError({ field, message: leastText(unit) })
+    }
+  }
+
+  return undefined
+}
+
 const columnsOf = (pricing: Pricing) =>
   pricing.mode === "fixed"
     ? {
         pricingMode: pricing.mode,
-        amountMinor: pricing.amountMinor,
-        suggestedAmountMinor: null,
-        minimumAmountMinor: null,
-        maximumAmountMinor: null,
+        amount: pricing.amount,
+        suggestedAmount: null,
+        minimumAmount: null,
+        maximumAmount: null,
       }
     : {
         pricingMode: pricing.mode,
-        amountMinor: null,
-        suggestedAmountMinor: pricing.suggestedAmountMinor,
-        minimumAmountMinor: pricing.minimumAmountMinor,
-        maximumAmountMinor: pricing.maximumAmountMinor,
+        amount: null,
+        suggestedAmount: pricing.suggestedAmount,
+        minimumAmount: pricing.minimumAmount,
+        maximumAmount: pricing.maximumAmount,
       }
 
-// The submitted details only: currency and scale come from the server, and a
-// repeat is answered with what was saved, whatever they are now.
+// The submitted details only: the ledger comes from the server, and a repeat
+// is answered with what was saved, whatever the business's ledger is now.
 const sameDetails = (row: Row, details: Details) => {
   const pricing = columnsOf(details.pricing)
 
@@ -461,10 +532,10 @@ const sameDetails = (row: Row, details: Details) => {
     row.title === details.title &&
     row.description === details.description &&
     row.pricingMode === pricing.pricingMode &&
-    row.amountMinor === pricing.amountMinor &&
-    row.suggestedAmountMinor === pricing.suggestedAmountMinor &&
-    row.minimumAmountMinor === pricing.minimumAmountMinor &&
-    row.maximumAmountMinor === pricing.maximumAmountMinor
+    row.amount === pricing.amount &&
+    row.suggestedAmount === pricing.suggestedAmount &&
+    row.minimumAmount === pricing.minimumAmount &&
+    row.maximumAmount === pricing.maximumAmount
   )
 }
 
@@ -486,7 +557,7 @@ const make = Effect.gen(function* () {
   ) {
     const owners = yield* database.use((db) =>
       db
-        .select({ currency: ledgers.currency, scale: ledgers.scale })
+        .select({ ledger: ledgers.slug, ...inLedger })
         .from(businesses)
         .innerJoin(ledgers, eq(ledgers.slug, businesses.primaryLedger))
         .where(eq(businesses.id, businessId)),
@@ -496,6 +567,13 @@ const make = Effect.gen(function* () {
 
     if (owner === undefined) {
       return yield* new Business.NotFoundError({ id: businessId })
+    }
+
+    const unit = { currencyCode: owner.currency, scale: owner.scale }
+    const below = belowUnit(details.pricing, unit)
+
+    if (below !== undefined) {
+      return yield* below
     }
 
     // A concurrent insert with the same key waits on the unique index, and
@@ -510,8 +588,7 @@ const make = Effect.gen(function* () {
           shareToken: shareToken(),
           title: details.title,
           description: details.description,
-          currencyCode: owner.currency,
-          scale: owner.scale,
+          ledger: owner.ledger,
           ...columnsOf(details.pricing),
         })
         .onConflictDoNothing({ target: [paymentLinks.businessId, paymentLinks.idempotencyKey] })
@@ -519,13 +596,15 @@ const make = Effect.gen(function* () {
     )
 
     if (inserted[0] !== undefined) {
-      return { link: fromRow(inserted[0]), created: true }
+      return { link: fromRow({ link: inserted[0], currency: owner.currency, scale: owner.scale }), created: true }
     }
 
+    // In the ledger it was saved in, which need not be the primary one now.
     const existing = yield* database.use((db) =>
       db
-        .select()
+        .select(linkColumns)
         .from(paymentLinks)
+        .innerJoin(ledgers, eq(ledgers.slug, paymentLinks.ledger))
         .where(and(eq(paymentLinks.businessId, businessId), eq(paymentLinks.idempotencyKey, idempotencyKey))),
     )
 
@@ -535,8 +614,8 @@ const make = Effect.gen(function* () {
       return yield* Effect.die(new Error(`payment link for key vanished in ${businessId}`))
     }
 
-    if (!sameDetails(row, details)) {
-      return yield* new ConflictError({ businessId, existing: ID.make(row.id) })
+    if (!sameDetails(row.link, details)) {
+      return yield* new ConflictError({ businessId, existing: ID.make(row.link.id) })
     }
 
     return { link: fromRow(row), created: false }
@@ -545,8 +624,9 @@ const make = Effect.gen(function* () {
   const findLink = Effect.fn("Payments.findLink")(function* (shareToken: string) {
     const found = yield* database.use((db) =>
       db
-        .select({ link: paymentLinks, businessName: businesses.name })
+        .select({ ...linkColumns, businessName: businesses.name })
         .from(paymentLinks)
+        .innerJoin(ledgers, eq(ledgers.slug, paymentLinks.ledger))
         .innerJoin(businesses, eq(businesses.id, paymentLinks.businessId))
         .where(eq(paymentLinks.shareToken, shareToken)),
     )
@@ -557,7 +637,7 @@ const make = Effect.gen(function* () {
       return yield* new LinkNotFoundError()
     }
 
-    return new Payable({ link: fromRow(row.link), businessName: row.businessName })
+    return new Payable({ link: fromRow(row), businessName: row.businessName })
   })
 
   // A pending payment whose window has passed becomes expired, as of its expiry.
@@ -573,20 +653,24 @@ const make = Effect.gen(function* () {
   const byKey = (linkId: string, idempotencyKey: IdempotencyKey) =>
     database.use((db) =>
       db
-        .select()
+        .select(paymentColumns)
         .from(payments)
+        .innerJoin(ledgers, eq(ledgers.slug, payments.ledger))
         .where(and(eq(payments.linkId, linkId), eq(payments.idempotencyKey, idempotencyKey))),
     )
 
   // The payment a key already started, if the repeat asks for the same one.
-  const repeated = Effect.fnUntraced(function* (row: PaymentRow, amountMinor: bigint) {
-    if (row.amountMinor !== amountMinor) {
-      return yield* new PaymentConflictError({ linkId: ID.make(row.linkId), existing: PaymentID.make(row.id) })
+  const repeated = Effect.fnUntraced(function* (row: PaymentRow, amount: bigint) {
+    if (row.payment.amount !== amount) {
+      return yield* new PaymentConflictError({
+        linkId: ID.make(row.payment.linkId),
+        existing: PaymentID.make(row.payment.id),
+      })
     }
 
-    const expired = yield* expireIfDue(row.id)
+    const expired = yield* expireIfDue(row.payment.id)
 
-    return { payment: paymentOf(expired[0] ?? row), created: false }
+    return { payment: paymentOf({ ...row, payment: expired[0] ?? row.payment }), created: false }
   })
 
   const startPayment = Effect.fn("Payments.startPayment")(function* (
@@ -598,21 +682,30 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         // Shared, so a deactivation waits until this payment is saved.
         const found = yield* database.use((db) =>
-          db.select().from(paymentLinks).where(eq(paymentLinks.shareToken, shareToken)).for("share"),
+          db
+            .select(linkColumns)
+            .from(paymentLinks)
+            .innerJoin(ledgers, eq(ledgers.slug, paymentLinks.ledger))
+            .where(eq(paymentLinks.shareToken, shareToken))
+            .for("share", { of: paymentLinks }),
         )
 
-        const row = found[0]
+        const joined = found[0]
 
-        if (row === undefined) {
+        if (joined === undefined) {
           return yield* new LinkNotFoundError()
         }
 
-        const amountMinor = yield* Effect.fromResult(amountFor(pricingOf(row), requested))
+        const { link: row, ...ledger } = joined
+
+        const amount = yield* Effect.fromResult(
+          amountFor(pricingOf(row), { currencyCode: ledger.currency, scale: ledger.scale }, requested),
+        )
 
         const existing = (yield* byKey(row.id, idempotencyKey))[0]
 
         if (existing !== undefined) {
-          return yield* repeated(existing, amountMinor)
+          return yield* repeated(existing, amount)
         }
 
         if (row.deactivatedAt !== null) {
@@ -629,9 +722,8 @@ const make = Effect.gen(function* () {
               businessId: row.businessId,
               linkId: row.id,
               idempotencyKey,
-              amountMinor,
-              currencyCode: row.currencyCode,
-              scale: row.scale,
+              amount,
+              ledger: row.ledger,
               expiresAt: sql`now() + make_interval(mins => ${paymentWindowMinutes})`,
             })
             .onConflictDoNothing({ target: [payments.linkId, payments.idempotencyKey] })
@@ -639,7 +731,7 @@ const make = Effect.gen(function* () {
         )
 
         if (inserted[0] !== undefined) {
-          return { payment: paymentOf(inserted[0]), created: true }
+          return { payment: paymentOf({ payment: inserted[0], ...ledger }), created: true }
         }
 
         const raced = (yield* byKey(row.id, idempotencyKey))[0]
@@ -648,7 +740,7 @@ const make = Effect.gen(function* () {
           return yield* Effect.die(new Error(`payment for key vanished in ${row.id}`))
         }
 
-        return yield* repeated(raced, amountMinor)
+        return yield* repeated(raced, amount)
       }),
     )
   })
@@ -677,14 +769,18 @@ const make = Effect.gen(function* () {
         .returning(),
     )
 
+    // A payment is always in its link's ledger.
+    const ledger = { currency: link.currencyCode, scale: link.scale }
+
     if (ended[0] !== undefined) {
-      return paymentOf(ended[0])
+      return paymentOf({ payment: ended[0], ...ledger })
     }
 
     const found = yield* database.use((db) =>
       db
-        .select()
+        .select(paymentColumns)
         .from(payments)
+        .innerJoin(ledgers, eq(ledgers.slug, payments.ledger))
         .where(and(eq(payments.id, paymentId), eq(payments.linkId, link.id))),
     )
 
@@ -694,19 +790,20 @@ const make = Effect.gen(function* () {
       return yield* new PaymentNotFoundError({ linkId: link.id, id: paymentId })
     }
 
-    const expired = yield* expireIfDue(row.id)
+    const expired = yield* expireIfDue(row.payment.id)
 
-    return yield* new PaymentClosedError({ payment: paymentOf(expired[0] ?? row) })
+    return yield* new PaymentClosedError({ payment: paymentOf({ ...row, payment: expired[0] ?? row.payment }) })
   })
 
   const listLinks = Effect.fn("Payments.listLinks")(function* (businessId: Business.ID) {
     const listed = yield* database.use((db) =>
       db
-        .select({ link: paymentLinks, ...statsColumns })
+        .select({ ...linkColumns, ...statsColumns })
         .from(paymentLinks)
+        .innerJoin(ledgers, eq(ledgers.slug, paymentLinks.ledger))
         .leftJoin(payments, eq(payments.linkId, paymentLinks.id))
         .where(eq(paymentLinks.businessId, businessId))
-        .groupBy(paymentLinks.id)
+        .groupBy(paymentLinks.id, ledgers.slug)
         .orderBy(desc(paymentLinks.createdAt), desc(paymentLinks.id))
         .limit(linkListLimit),
     )
@@ -733,7 +830,9 @@ const make = Effect.gen(function* () {
     const { linkCount, activeLinkCount, ...total } = row
 
     return new Overview({
-      links: listed.map(({ link, ...stats }) => new Summary({ link: fromRow(link), stats: statsOf(stats) })),
+      links: listed.map(({ link, currency, scale, ...stats }) =>
+        new Summary({ link: fromRow({ link, currency, scale }), stats: statsOf(stats) }),
+      ),
       linkCount,
       activeLinkCount,
       totals: statsOf(total),
@@ -779,13 +878,14 @@ const make = Effect.gen(function* () {
         const listed = yield* database.use((db) =>
           db
             .select({
-              payment: payments,
+              ...paymentColumns,
               status: effectiveStatus,
               title: paymentLinks.title,
               // Stable across DateStyle settings, with every microsecond retained.
               at: sql<string>`to_char(${payments.createdAt} at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') || '+00'`,
             })
             .from(payments)
+            .innerJoin(ledgers, eq(ledgers.slug, payments.ledger))
             .innerJoin(paymentLinks, eq(paymentLinks.id, payments.linkId))
             .where(
               and(
@@ -824,9 +924,9 @@ const make = Effect.gen(function* () {
 
         return new PaymentPage({
           payments: page.map(
-            ({ payment, status, title }) =>
+            ({ payment, currency, scale, status, title }) =>
               new PaymentSummary({
-                ...paymentFields(payment),
+                ...paymentFields({ payment, currency, scale }),
                 status,
                 source: { kind: "link", id: ID.make(payment.linkId), title },
               }),

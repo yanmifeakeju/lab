@@ -36,8 +36,8 @@ export const countdown = (expiresAt: string, now: number) => {
 
 // What the amount field starts with: the suggestion, if the link has one.
 const suggested = (link: Payable) =>
-  link.pricing.mode === "customer_chooses" && link.pricing.suggested_amount_minor !== null
-    ? formatDecimal(link.pricing.suggested_amount_minor, link.scale)
+  link.pricing.mode === "customer_chooses" && link.pricing.suggested_amount !== null
+    ? formatDecimal(link.pricing.suggested_amount, link.scale)
     : ""
 
 const bounds = (link: Payable) => {
@@ -48,9 +48,9 @@ const bounds = (link: Payable) => {
   }
 
   const settings = [
-    ["Suggested", pricing.suggested_amount_minor],
-    ["Min", pricing.minimum_amount_minor],
-    ["Max", pricing.maximum_amount_minor],
+    ["Suggested", pricing.suggested_amount],
+    ["Min", pricing.minimum_amount],
+    ["Max", pricing.maximum_amount],
   ] as const
 
   return settings.flatMap(([label, minor]) => (minor === null ? [] : [`${label} ${money(link, minor)}`])).join(" · ")
@@ -80,7 +80,7 @@ const LinkScreen = (props: {
         <text flexShrink={0} fg={error}>This link is no longer accepting payments.</text>
       </Match>
       <Match when={props.link.pricing.mode === "fixed" ? props.link.pricing : undefined}>
-        {(fixed) => <text flexShrink={0}>▸ Pay {money(props.link, fixed().amount_minor)}</text>}
+        {(fixed) => <text flexShrink={0}>▸ Pay {money(props.link, fixed().amount)}</text>}
       </Match>
       <Match when={props.link.pricing.mode === "customer_chooses"}>
         <box flexDirection="column" flexShrink={0}>
@@ -110,7 +110,7 @@ const PayingScreen = (props: {
   <box flexDirection="column" flexGrow={1} flexShrink={1}>
     <scrollbox flexGrow={1} flexShrink={1} scrollY contentOptions={gutter}>
       <Heading link={props.link} />
-      <text flexShrink={0}>Paying {money(props.link, props.payment.amount_minor)}</text>
+      <text flexShrink={0}>Paying {money(props.link, props.payment.amount)}</text>
       <text flexShrink={0} fg={muted}>Expires in {countdown(props.payment.expires_at, props.now)}</text>
       <text flexShrink={0} fg={warning}>SIMULATED · no money moves</text>
     </scrollbox>
@@ -136,7 +136,7 @@ const results: Readonly<Record<Payment["status"], { readonly line: (amount: stri
 const EndedScreen = (props: { readonly link: Payable; readonly payment: Payment }) => (
   <scrollbox flexGrow={1} flexShrink={1} scrollY contentOptions={gutter}>
     <text flexShrink={0} fg={results[props.payment.status].color}>
-      {results[props.payment.status].line(money(props.link, props.payment.amount_minor))}
+      {results[props.payment.status].line(money(props.link, props.payment.amount))}
     </text>
     <Heading link={props.link} />
     <text flexShrink={0} fg={muted}>Reference {props.payment.id}</text>

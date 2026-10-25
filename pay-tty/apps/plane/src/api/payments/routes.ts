@@ -6,13 +6,14 @@ import * as HttpApiGroup from "effect/unstable/httpapi/HttpApiGroup"
 import { InvalidRequestError, NotFound } from "../errors.ts"
 import { Authentication } from "../middleware/authentication.ts"
 import { BusinessContext } from "../middleware/business.ts"
+import { inMinorUnits } from "../payment_links/routes.ts"
 import { PaymentStats, stats } from "../payment-stats.ts"
 
 export class PaymentSummary extends Schema.Class<PaymentSummary>("PaymentSummary")({
   id: Schema.String,
   link_id: Schema.String,
   business_id: Schema.String,
-  amount_minor: Schema.String,
+  amount: Schema.String.annotate(inMinorUnits),
   currency_code: Schema.String,
   scale: Schema.Int,
   status: Payments.Status,
@@ -35,7 +36,7 @@ export const paymentPage = (page: Payments.PaymentPage) => new PaymentPage({
     id: payment.id,
     link_id: payment.linkId,
     business_id: payment.businessId,
-    amount_minor: payment.amountMinor.toString(),
+    amount: payment.amount.toString(),
     currency_code: payment.currencyCode,
     scale: payment.scale,
     status: payment.status,

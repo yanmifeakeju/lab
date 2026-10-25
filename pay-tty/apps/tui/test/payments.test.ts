@@ -49,9 +49,9 @@ void test("payment rows fit wide titles and fall back below narrowRow without sp
 
 void test("mixed-date pages align time, status and amount cells at narrow and wide widths", () => {
   const payments = [
-    merchantPayment({ amount_minor: "100", created_at: "2026-10-22T14:02:00.000Z" }),
-    merchantPayment({ status: "expired", amount_minor: "2500000", created_at: "2026-10-21T13:58:00.000Z" }),
-    merchantPayment({ status: "pending", amount_minor: "10000", completed_at: null }),
+    merchantPayment({ amount: "100", created_at: "2026-10-22T14:02:00.000Z" }),
+    merchantPayment({ status: "expired", amount: "2500000", created_at: "2026-10-21T13:58:00.000Z" }),
+    merchantPayment({ status: "pending", amount: "10000", completed_at: null }),
   ]
 
   const amounts = ["₦1.00", "₦25,000.00", "₦100.00"]
@@ -94,8 +94,8 @@ void test("detail timing uses effective status for both unswept and persisted ex
 
 void test("seven-figure amounts stay complete at width 24, using time today and date for older payments", () => {
   const payments = [
-    merchantPayment({ amount_minor: "125000000", created_at: "2026-10-22T14:02:00.000Z" }),
-    merchantPayment({ amount_minor: "100", created_at: "2026-10-21T13:58:00.000Z" }),
+    merchantPayment({ amount: "125000000", created_at: "2026-10-22T14:02:00.000Z" }),
+    merchantPayment({ amount: "100", created_at: "2026-10-21T13:58:00.000Z" }),
   ]
 
   const rows = paymentRows(payments, 24, false, "2026-10-22")
@@ -117,8 +117,8 @@ void test("seven-figure amounts stay complete at width 24, using time today and 
 
 void test("large amounts omit time and shorten status without losing digits", () => {
   const payments = [
-    merchantPayment({ amount_minor: "1250000000000" }),
-    merchantPayment({ amount_minor: "100" }),
+    merchantPayment({ amount: "1250000000000" }),
+    merchantPayment({ amount: "100" }),
   ]
 
   const rows = paymentRows(payments, 24, false, "2026-10-22")
@@ -126,7 +126,7 @@ void test("large amounts omit time and shorten status without losing digits", ()
   assert.ok(rows[0]?.includes("₦12,500,000,000.00"))
   assert.ok(rows.every((row) => stringWidth(row) === 24 && !row.includes("14:02") && !row.includes("…")))
 
-  const largest = paymentRow(merchantPayment({ amount_minor: "9007199254740991" }), 24, false, "2026-10-22")
+  const largest = paymentRow(merchantPayment({ amount: "9007199254740991" }), 24, false, "2026-10-22")
 
   assert.ok(largest.includes("₦90,071,992,547,409.91"))
   assert.equal(stringWidth(largest), 24)
@@ -134,7 +134,7 @@ void test("large amounts omit time and shorten status without losing digits", ()
 })
 
 void test("small amounts use only their own width, leaving room for the title", () => {
-  const payment = merchantPayment({ amount_minor: "10000" })
+  const payment = merchantPayment({ amount: "10000" })
   const row = paymentRow(payment, 60, false, "2026-10-22")
 
   assert.ok(row.startsWith("14:02  succeeded  ₦100.00  Logo design"))
@@ -143,8 +143,8 @@ void test("small amounts use only their own width, leaving room for the title", 
 
 void test("five-column timestamps distinguish today from older payments beside large amounts", () => {
   const rows = paymentRows([
-    merchantPayment({ amount_minor: "999999999999999", created_at: "2026-10-22T14:02:00.000Z" }),
-    merchantPayment({ amount_minor: "125000000", created_at: "2026-10-21T14:02:00.000Z" }),
+    merchantPayment({ amount: "999999999999999", created_at: "2026-10-22T14:02:00.000Z" }),
+    merchantPayment({ amount: "125000000", created_at: "2026-10-21T14:02:00.000Z" }),
   ], 32, false, "2026-10-22")
 
   assert.match(rows[0] ?? "", /^14:02 S +₦9,999,999,999,999\.99/)
@@ -154,8 +154,8 @@ void test("five-column timestamps distinguish today from older payments beside l
 
 void test("expiry is either complete or absent around wide-row fit boundaries", () => {
   const payments = [
-    merchantPayment({ amount_minor: "9007199254740991" }),
-    merchantPayment({ amount_minor: "100", status: "pending", completed_at: null }),
+    merchantPayment({ amount: "9007199254740991" }),
+    merchantPayment({ amount: "100", status: "pending", completed_at: null }),
   ]
 
   for (const linked of [false, true]) {

@@ -340,7 +340,7 @@ void test(
       const call = plane.calls.at(-1)
 
       assert.deepEqual(state, idle(View.HasBusiness({ business: active })))
-      assert.deepEqual([call?.method, call?.path, call?.body], ["POST", "/account", null])
+      assert.deepEqual([call?.method, call?.path, call?.body], ["POST", "/business/account", null])
     }),
   ),
 )
@@ -406,7 +406,7 @@ void test(
         )
 
         assert.deepEqual(state, idle(View.HasBusiness({ business: business() })), code)
-        assert.deepEqual(paths(plane), ["POST /session", "GET /me", "POST /account", "GET /me"], code)
+        assert.deepEqual(paths(plane), ["POST /session", "GET /me", "POST /business/account", "GET /me"], code)
       }
     }),
   ),
@@ -464,7 +464,7 @@ void test(
 
       yield* run(activePlane, loadThen((session) => session.openAccount))
 
-      assert.equal(activePlane.calls.some(({ path }) => path === "/account"), false)
+      assert.equal(activePlane.calls.some(({ path }) => path === "/business/account"), false)
 
       const gone = fakePlane({ me: inTurn(me(business())(), me(null)()), openAccount: () => failure(409, "business_required") })
 

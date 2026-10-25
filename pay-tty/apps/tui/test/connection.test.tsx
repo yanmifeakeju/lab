@@ -255,7 +255,7 @@ void test(
         tui.keys.pressKey("o")
         yield* tui.frame
 
-        assert.deepEqual(paths(plane), ["POST /session", "GET /me", "POST /account"], code)
+        assert.deepEqual(paths(plane), ["POST /session", "GET /me", "POST /business/account"], code)
 
         tui.keys.pressEscape()
 
@@ -264,7 +264,7 @@ void test(
         assert.doesNotMatch(frame, /Contact support/)
         assert.deepEqual(
           paths(plane),
-          ["POST /session", "GET /me", "POST /account", "GET /me"],
+          ["POST /session", "GET /me", "POST /business/account", "GET /me"],
           code,
         )
 
@@ -397,7 +397,7 @@ void test(
       assert.match(result, /ssh tok@tui\.test/)
       assert.doesNotMatch(result, /pay\.test/)
       assert.deepEqual(links(plane).map(({ body }) => body), [
-        { title: "Consulting", description: null, pricing: { mode: "fixed", amount_minor: 250_000 } },
+        { title: "Consulting", description: null, pricing: { mode: "fixed", amount: 250_000 } },
       ])
 
       tui.keys.pressEscape()
@@ -456,7 +456,7 @@ void test(
         {
           title: "Community fundraiser",
           description: "Help equip the library",
-          pricing: { mode: "customer_chooses", suggested_amount_minor: 250_000, minimum_amount_minor: null, maximum_amount_minor: null },
+          pricing: { mode: "customer_chooses", suggested_amount: 250_000, minimum_amount: null, maximum_amount: null },
         },
       ])
 
@@ -684,7 +684,7 @@ for (const size of [{ width: 32, height: 10 }, { width: 40, height: 10 }, small]
         assert.deepEqual(links(plane)[0]?.body, {
           title: "Fundraiser",
           description: "For the library",
-          pricing: { mode: "customer_chooses", suggested_amount_minor: 3_000, minimum_amount_minor: 2_000, maximum_amount_minor: 4_000 },
+          pricing: { mode: "customer_chooses", suggested_amount: 3_000, minimum_amount: 2_000, maximum_amount: 4_000 },
         })
 
         tui.close()
@@ -802,7 +802,7 @@ void test(
       yield* tui.showing("Creating your payment link…")
 
       assert.deepEqual(links(plane).map(({ body }) => body), [
-        { title: "Consulting", description: null, pricing: { mode: "fixed", amount_minor: 2_500_000 } },
+        { title: "Consulting", description: null, pricing: { mode: "fixed", amount: 2_500_000 } },
       ])
 
       tui.close()
@@ -986,7 +986,7 @@ void test(
   "a link created from the list joins it once Esc reloads it",
   scenario(
     Effect.gen(function* () {
-      const created = summary({ title: "Consulting", pricing: { mode: "fixed", amount_minor: 250_000 } })
+      const created = summary({ title: "Consulting", pricing: { mode: "fixed", amount: 250_000 } })
 
       const plane = fakePlane({
         me: me(active),
@@ -1061,7 +1061,7 @@ void test(
   scenario(
     Effect.gen(function* () {
       const many = Array.from({ length: 8 }, (_, at) =>
-        summary({ id: `plink_${at}`, title: `Link ${at}`, stats: { ...paid.stats, collected_minor: String((at + 1) * 100) } }))
+        summary({ id: `plink_${at}`, title: `Link ${at}`, stats: { ...paid.stats, collected: String((at + 1) * 100) } }))
 
       const plane = fakePlane({ me: me(active), listPaymentLinks: listed(...many) })
 

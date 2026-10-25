@@ -3,7 +3,7 @@ import { Context, Effect, Layer, Schema } from "effect"
 
 import { Database } from "../database/client.ts"
 import { Currency } from "./currency.ts"
-import { Ledger } from "./ledger.ts"
+import { Ledger } from "./slug.ts"
 import { ledgers } from "./sql.ts"
 
 export class Entry extends Schema.Class<Entry>("Catalog.Entry")({

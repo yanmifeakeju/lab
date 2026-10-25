@@ -6,6 +6,7 @@ import {
   pgEnum,
   pgTable,
   text,
+  unique,
   uniqueIndex,
 } from "drizzle-orm/pg-core"
 
@@ -67,6 +68,8 @@ export const businesses = pgTable(
       .onDelete("restrict")
       .onUpdate("cascade"),
     uniqueIndex("businesses_primary_payable_account_ref_unique").on(table.primaryPayableAccountRef),
+    // The target of payment_links' (business_id, ledger) foreign key.
+    unique("businesses_id_primary_ledger_unique").on(table.id, table.primaryLedger),
   ],
 )
 

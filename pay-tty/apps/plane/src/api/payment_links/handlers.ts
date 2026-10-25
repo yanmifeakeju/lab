@@ -2,10 +2,35 @@ import { Payments } from "@pay-tty/core/payments"
 import { Effect } from "effect"
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder"
 
-import { Conflict } from "../errors.ts"
+import { Conflict, InvalidRequestError, ValidationError, ValidationErrorDetail } from "../errors.ts"
 import { CurrentBusiness } from "../middleware/business.ts"
 import { api } from "../api.ts"
 import { bounds, paymentLink, paymentLinkList } from "./routes.ts"
+
+const fields = {
+  amount: "pricing.amount",
+  suggestedAmount: "pricing.suggested_amount",
+  minimumAmount: "pricing.minimum_amount",
+  maximumAmount: "pricing.maximum_amount",
+} as const
+
+// Only the business's ledger knows the least amount, so this is checked after
+// the request decoded, and answered like any other invalid field.
+const invalidDetails = (error: Payments.DetailsError) =>
+  new InvalidRequestError({
+    message: "The request is invalid.",
+    error: new ValidationError({
+      code: "validation_error",
+      details: [
+        new ValidationErrorDetail({
+          location: "body",
+          field: fields[error.field],
+          code: "invalid_value",
+          message: error.message,
+        }),
+      ],
+    }),
+  })
 
 export const PaymentLinksLive = HttpApiBuilder.group(api, "paymentLinks", (handlers) =>
   handlers
@@ -29,7 +54,7 @@ export const PaymentLinksLive = HttpApiBuilder.group(api, "paymentLinks", (handl
           description: payload.description == null || payload.description === "" ? null : payload.description,
           pricing:
             pricing.mode === "fixed"
-              ? new Payments.Fixed({ amountMinor: BigInt(pricing.amount_minor) })
+              ? new Payments.Fixed({ amount: BigInt(pricing.amount) })
               : new Payments.CustomerChooses(bounds(pricing)),
         })
 
@@ -38,6 +63,7 @@ export const PaymentLinksLive = HttpApiBuilder.group(api, "paymentLinks", (handl
           Effect.catchTags({
             // The middleware found it, and a business is never deleted.
             "Business.NotFoundError": Effect.die,
+            "Payments.DetailsError": (error) => Effect.fail(invalidDetails(error)),
             "Payments.ConflictError": () =>
               new Conflict({
                 message: "This idempotency key already created a different payment link.",

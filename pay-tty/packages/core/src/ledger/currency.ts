@@ -40,4 +40,16 @@ export const Code = Schema.String.pipe(
 
 export type Code = typeof Code.Type
 
+const symbols = new Map([["NGN", "₦"], ["USD", "$"]])
+
+/** Minor units as grouped decimal text with the currency's symbol, e.g. `₦2,500.00`. */
+export const format = (minor: bigint, scale: number, code: string) => {
+  const digits = minor.toString().padStart(scale + 1, "0")
+  const whole = digits.slice(0, digits.length - scale).replace(/\B(?=(\d{3})+$)/g, ",")
+  const amount = scale === 0 ? whole : `${whole}.${digits.slice(digits.length - scale)}`
+  const symbol = symbols.get(code)
+
+  return symbol === undefined ? `${code} ${amount}` : `${symbol}${amount}`
+}
+
 export * as Currency from "./currency.ts"

@@ -19,7 +19,7 @@ const invalidAmount = (error: Payments.AmountError) =>
       details: [
         new ValidationErrorDetail({
           location: "body",
-          field: "amount_minor",
+          field: "amount",
           code: Match.value(error.reason).pipe(
             Match.when("required", () => "required" as const),
             Match.when("unexpected", () => "unknown_field" as const),
@@ -53,10 +53,10 @@ export const PayLive = HttpApiBuilder.group(api, "pay", (handlers) =>
       Effect.gen(function* () {
         const payments = yield* Payments.Service
 
-        const amountMinor = payload.amount_minor == null ? null : BigInt(payload.amount_minor)
+        const amount = payload.amount == null ? null : BigInt(payload.amount)
 
         const started = yield* payments
-          .startPayment(params.share_token, headers["idempotency-key"], amountMinor)
+          .startPayment(params.share_token, headers["idempotency-key"], amount)
           .pipe(
             Effect.catchTags({
               "Payments.LinkNotFoundError": () => Effect.fail(linkNotFound()),

@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 
 import { eq } from "drizzle-orm"
-import { Cause, DateTime, Effect, Exit, Predicate } from "effect"
+import { Cause, DateTime, Effect, Exit, Predicate, Result } from "effect"
 import { ulid } from "ulid"
 
 import { Business } from "../src/business/business.ts"
@@ -28,7 +28,7 @@ const key = () => Payments.IdempotencyKey.make(`key_${ulid()}`)
 const fixed = new Payments.Details({
   title: "Logo design",
   description: "Two concepts and one revision.",
-  pricing: new Payments.Fixed({ amountMinor: 2_500_000n }),
+  pricing: new Payments.Fixed({ amount: 2_500_000n }),
 })
 
 const chooses = (bounds: Partial<Payments.Bounds> = {}) =>
@@ -36,9 +36,9 @@ const chooses = (bounds: Partial<Payments.Bounds> = {}) =>
     title: "Tip jar",
     description: null,
     pricing: new Payments.CustomerChooses({
-      suggestedAmountMinor: null,
-      minimumAmountMinor: null,
-      maximumAmountMinor: null,
+      suggestedAmount: null,
+      minimumAmount: null,
+      maximumAmount: null,
       ...bounds,
     }),
   })
@@ -57,12 +57,12 @@ const createLink = (details: Payments.Details = fixed) =>
 const start = (
   shareToken: string,
   idempotencyKey: Payments.IdempotencyKey,
-  amountMinor: bigint | null = null,
+  amount: bigint | null = null,
 ) =>
   Effect.gen(function* () {
     const service = yield* Payments.Service
 
-    return yield* service.startPayment(shareToken, idempotencyKey, amountMinor)
+    return yield* service.startPayment(shareToken, idempotencyKey, amount)
   })
 
 const simulate = (shareToken: string, paymentId: string, outcome: Payments.Outcome) =>
@@ -127,7 +127,8 @@ void test("a fixed-price payment charges the link's amount in its currency, pend
         assert.match(payment.id, /^pay_[0-9A-HJKMNP-TV-Z]{26}$/)
         assert.equal(payment.linkId, link.id)
         assert.equal(payment.businessId, link.businessId)
-        assert.equal(payment.amountMinor, 2_500_000n)
+        assert.equal(payment.amount, 2_500_000n)
+        assert.equal(payment.ledger, link.ledger)
         assert.equal(payment.currencyCode, "NGN")
         assert.equal(payment.scale, 2)
         assert.equal(payment.status, "pending")
@@ -144,8 +145,8 @@ void test("a customer-chosen payment needs an amount within the link's bounds", 
   runtime.runPromise(
     Testing.rolledBack(
       Effect.gen(function* () {
-        const bounded = yield* createLink(chooses({ minimumAmountMinor: 100_000n, maximumAmountMinor: 500_000n }))
-        const open = yield* createLink(chooses({ suggestedAmountMinor: 500_000n }))
+        const bounded = yield* createLink(chooses({ minimumAmount: 100_000n, maximumAmount: 500_000n }))
+        const open = yield* createLink(chooses({ suggestedAmount: 500_000n }))
 
         const reason = (shareToken: string, amount: bigint | null) =>
           Effect.map(Effect.flip(start(shareToken, key(), amount)), (error) =>
@@ -157,16 +158,25 @@ void test("a customer-chosen payment needs an amount within the link's bounds", 
         assert.equal(yield* reason(bounded.shareToken, 500_001n), "above_maximum")
 
         for (const amount of [100_000n, 250_000n, 500_000n]) {
-          assert.equal((yield* start(bounded.shareToken, key(), amount)).payment.amountMinor, amount)
+          assert.equal((yield* start(bounded.shareToken, key(), amount)).payment.amount, amount)
         }
 
-        // A suggestion is no bound.
-        assert.equal((yield* start(open.shareToken, key(), 1n)).payment.amountMinor, 1n)
-        assert.equal((yield* start(open.shareToken, key(), Payments.maxAmount)).payment.amountMinor, Payments.maxAmount)
+        // A suggestion is no bound, but one whole naira always is.
+        assert.equal(yield* reason(open.shareToken, 99n), "below_currency_minimum")
+        assert.equal((yield* start(open.shareToken, key(), 100n)).payment.amount, 100n)
+        assert.equal((yield* start(open.shareToken, key(), Payments.maxAmount)).payment.amount, Payments.maxAmount)
 
         assert.deepEqual(
-          Payments.amountFor(new Payments.Fixed({ amountMinor: 5n }), null),
-          Payments.amountFor(open.pricing, 5n),
+          Payments.amountFor(open.pricing, open, 99n),
+          Result.fail(new Payments.AmountError({
+            reason: "below_currency_minimum",
+            message: "the amount must be at least ₦1.00",
+          })),
+        )
+
+        assert.deepEqual(
+          Payments.amountFor(new Payments.Fixed({ amount: 500n }), open, null),
+          Payments.amountFor(open.pricing, open, 500n),
         )
       }),
     ),
@@ -194,7 +204,7 @@ void test("one link takes many payments; a repeated key returns its payment and 
         const rows = yield* stored(link.id)
 
         assert.equal(rows.length, 3)
-        assert.deepEqual(rows.map((row) => row.amountMinor).sort((a, b) => (a < b ? -1 : 1)), [5_000n, 6_000n, 7_000n])
+        assert.deepEqual(rows.map((row) => row.amount).sort((a, b) => (a < b ? -1 : 1)), [5_000n, 6_000n, 7_000n])
       }),
     ),
   ))
@@ -235,8 +245,8 @@ void test("a simulated outcome ends a pending payment once; later outcomes are r
           assert.equal(ended.status, outcome)
           assert.ok(ended.completedAt !== null)
           assert.deepEqual(
-            [ended.id, ended.amountMinor, ended.createdAt, ended.expiresAt],
-            [payment.id, payment.amountMinor, payment.createdAt, payment.expiresAt],
+            [ended.id, ended.amount, ended.createdAt, ended.expiresAt],
+            [payment.id, payment.amount, payment.createdAt, payment.expiresAt],
           )
 
           for (const again of ["succeeded", "failed", "cancelled"] as const) {
@@ -344,7 +354,7 @@ void test("concurrent identical starts settle on one payment, and concurrent out
     }),
   ))
 
-void test("the database keeps a payment in its link's business, currency, and scale, and its status consistent", () =>
+void test("the database keeps a payment in its link's business and ledger, and its status consistent", () =>
   runtime.runPromise(
     Testing.rolledBack(
       Effect.gen(function* () {
@@ -359,9 +369,8 @@ void test("the database keeps a payment in its link's business, currency, and sc
             businessId: link.businessId,
             linkId: link.id,
             idempotencyKey: `key_${ulid()}`,
-            amountMinor: 100n,
-            currencyCode: "NGN",
-            scale: 2,
+            amount: 100n,
+            ledger: link.ledger,
             status: "pending",
             createdAt: now,
             expiresAt: DateTime.toDate(DateTime.add(DateTime.fromDateUnsafe(now), { minutes: 30 })),
@@ -377,11 +386,10 @@ void test("the database keeps a payment in its link's business, currency, and sc
 
         const rejected: ReadonlyArray<readonly [string, Partial<typeof paymentRows.$inferInsert>, string]> = [
           ["another business", { businessId: elsewhere.id }, "payments_link_fk"],
-          ["another currency", { currencyCode: "USD" }, "payments_link_fk"],
-          ["another scale", { scale: 0 }, "payments_link_fk"],
+          ["another ledger", { ledger: "usd_us" }, "payments_link_fk"],
           ["unknown link", { linkId: `plink_${ulid()}` }, "payments_link_fk"],
-          ["zero amount", { amountMinor: 0n }, "payments_amount_minor_valid"],
-          ["unsafe amount", { amountMinor: Payments.maxAmount + 1n }, "payments_amount_minor_valid"],
+          ["zero amount", { amount: 0n }, "payments_amount_valid"],
+          ["unsafe amount", { amount: Payments.maxAmount + 1n }, "payments_amount_valid"],
           ["key with a space", { idempotencyKey: "a b" }, "payments_idempotency_key_valid"],
           ["expiry at creation", { expiresAt: now }, "payments_expires_after_created"],
           ["pending but completed", { completedAt: now }, "payments_completed_with_status"],
@@ -425,7 +433,7 @@ const noStats = new Payments.Stats({
   cancelled: 0,
   expired: 0,
   pending: 0,
-  collectedMinor: 0n,
+  collected: 0n,
   lastPaidAt: null,
 })
 
@@ -472,12 +480,12 @@ void test("a listing counts each link's payments by status and sums only what su
             cancelled: 1,
             expired: 0,
             pending: 1,
-            collectedMinor: 5_000n,
+            collected: 5_000n,
             lastPaidAt: latest.completedAt,
           }),
         )
         assert.deepEqual(
-          [logoStats?.succeeded, logoStats?.expired, logoStats?.pending, logoStats?.collectedMinor],
+          [logoStats?.succeeded, logoStats?.expired, logoStats?.pending, logoStats?.collected],
           [1, 1, 0, 2_500_000n],
         )
         assert.equal((yield* stored(logo.id)).find((row) => row.id === lapsed.payment.id)?.status, "pending")
@@ -492,7 +500,7 @@ void test("a listing counts each link's payments by status and sums only what su
             cancelled: 1,
             expired: 1,
             pending: 1,
-            collectedMinor: 2_505_000n,
+            collected: 2_505_000n,
             lastPaidAt: overview.totals.lastPaidAt,
           }),
         )
@@ -543,7 +551,7 @@ void test("a listing returns the newest links up to its limit, with counts and t
         assert.equal(overview.linkCount, Payments.linkListLimit + 1)
         assert.equal(overview.activeLinkCount, Payments.linkListLimit)
         assert.equal(overview.totals.succeeded, 1)
-        assert.equal(overview.totals.collectedMinor, 2_500_000n)
+        assert.equal(overview.totals.collected, 2_500_000n)
       }),
     ),
   ))

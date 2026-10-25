@@ -117,28 +117,28 @@ void test("amounts parse at the scale with integer arithmetic alone", () => {
 })
 
 void test("the form becomes plane's request, reading only the chosen mode's settings", () => {
-  assert.deepEqual(toRequest(fixed, 2), Result.succeed({
+  assert.deepEqual(toRequest(fixed, 2, "NGN"), Result.succeed({
     title: "Consulting",
     description: null,
-    pricing: { mode: "fixed", amount_minor: 250_000 },
+    pricing: { mode: "fixed", amount: 250_000 },
   }))
 
-  assert.deepEqual(toRequest(donation, 2), Result.succeed({
+  assert.deepEqual(toRequest(donation, 2, "NGN"), Result.succeed({
     title: "Community fundraiser",
     description: "Help equip the library",
-    pricing: { mode: "customer_chooses", suggested_amount_minor: 250_000, minimum_amount_minor: null, maximum_amount_minor: null },
+    pricing: { mode: "customer_chooses", suggested_amount: 250_000, minimum_amount: null, maximum_amount: null },
   }))
 
   // Every setting may be blank.
-  assert.deepEqual(toRequest({ ...emptyForm, title: "Tips", mode: "customer_chooses" }, 2), Result.succeed({
+  assert.deepEqual(toRequest({ ...emptyForm, title: "Tips", mode: "customer_chooses" }, 2, "NGN"), Result.succeed({
     title: "Tips",
     description: null,
-    pricing: { mode: "customer_chooses", suggested_amount_minor: null, minimum_amount_minor: null, maximum_amount_minor: null },
+    pricing: { mode: "customer_chooses", suggested_amount: null, minimum_amount: null, maximum_amount: null },
   }))
 
   // Stale settings of the other mode never reach plane.
-  assert.deepEqual(toRequest({ ...fixed, suggested: "1", minimum: "x" }, 2), toRequest(fixed, 2))
-  assert.deepEqual(toRequest({ ...donation, amount: "9" }, 2), toRequest(donation, 2))
+  assert.deepEqual(toRequest({ ...fixed, suggested: "1", minimum: "x" }, 2, "NGN"), toRequest(fixed, 2, "NGN"))
+  assert.deepEqual(toRequest({ ...donation, amount: "9" }, 2, "NGN"), toRequest(donation, 2, "NGN"))
 
   // Switching mode clears them, keeping the title and description.
   assert.deepEqual(withMode(fixed, "customer_chooses"), { ...emptyForm, title: "Consulting", mode: "customer_chooses" })
@@ -156,15 +156,29 @@ void test("the form becomes plane's request, reading only the chosen mode's sett
     [{ ...donation, suggested: "", minimum: "20", maximum: "10" }, "The maximum must be at least the minimum."],
     [{ ...donation, minimum: "3000" }, "The suggested amount must be within the minimum and maximum."],
     [{ ...donation, maximum: "2000" }, "The suggested amount must be within the minimum and maximum."],
+    [{ ...fixed, amount: "0.99" }, "Amount must be at least ₦1.00."],
+    [{ ...donation, suggested: "0.99" }, "Suggested amount must be at least ₦1.00."],
+    [{ ...donation, minimum: "0.99" }, "Minimum amount must be at least ₦1.00."],
+    [{ ...donation, suggested: "", maximum: "0.99" }, "Maximum amount must be at least ₦1.00."],
   ]
 
   for (const [form, message] of refusals) {
-    assert.deepEqual(toRequest(form, 2), Result.fail(message), message)
+    assert.deepEqual(toRequest(form, 2, "NGN"), Result.fail(message), message)
   }
+
+  // One whole naira is the least, in either mode.
+  assert.deepEqual(Result.map(toRequest({ ...fixed, amount: "1.00" }, 2, "NGN"), ({ pricing }) => pricing), Result.succeed({
+    mode: "fixed",
+    amount: 100,
+  }))
+  assert.deepEqual(
+    Result.map(toRequest({ ...donation, suggested: "1", minimum: "1", maximum: "1" }, 2, "NGN"), ({ pricing }) => pricing),
+    Result.succeed({ mode: "customer_chooses", suggested_amount: 100, minimum_amount: 100, maximum_amount: 100 }),
+  )
 })
 
 void test("the result lists the pricing in the link's currency", () => {
-  const request = Result.getOrThrow(toRequest({ ...donation, minimum: "1,000", maximum: "10000" }, 2))
+  const request = Result.getOrThrow(toRequest({ ...donation, minimum: "1,000", maximum: "10000" }, 2, "NGN"))
 
   assert.deepEqual(pricingLines(linkFor(request)), [
     "Amount: Customer chooses · NGN",
@@ -172,7 +186,7 @@ void test("the result lists the pricing in the link's currency", () => {
     "Minimum: ₦1,000.00",
     "Maximum: ₦10,000.00",
   ])
-  assert.deepEqual(pricingLines(linkFor(Result.getOrThrow(toRequest(fixed, 2)))), ["Amount: ₦2,500.00 · NGN"])
+  assert.deepEqual(pricingLines(linkFor(Result.getOrThrow(toRequest(fixed, 2, "NGN")))), ["Amount: ₦2,500.00 · NGN"])
   assert.deepEqual(pricingLines(linkFor({ title: "Tips", pricing: { mode: "customer_chooses" } })), [
     "Amount: Customer chooses · NGN",
   ])
@@ -190,7 +204,7 @@ void test(
 
           yield* session.createPaymentLink(fixed)
 
-          const request = Result.getOrThrow(toRequest(fixed, 2))
+          const request = Result.getOrThrow(toRequest(fixed, 2, "NGN"))
 
           assert.deepEqual(yield* current(session), idle(View.LinkCreated({ business: active, overview: noLinks, link: linkFor(request) })))
 
@@ -205,7 +219,7 @@ void test(
       assert.equal(rest.length, 0)
       assert.deepEqual([call?.method, call?.path, call?.authorization], ["POST", "/payment_links", "Bearer tok_1"])
       assert.match(call?.idempotencyKey ?? "", /^[A-Za-z0-9_-]{22}$/)
-      assert.deepEqual(call?.body, { title: "Consulting", description: null, pricing: { mode: "fixed", amount_minor: 250_000 } })
+      assert.deepEqual(call?.body, { title: "Consulting", description: null, pricing: { mode: "fixed", amount: 250_000 } })
     }),
   ),
 )
@@ -224,7 +238,7 @@ void test(
       assert.deepEqual(links(plane)[0]?.body, {
         title: "Tips",
         description: null,
-        pricing: { mode: "customer_chooses", suggested_amount_minor: null, minimum_amount_minor: null, maximum_amount_minor: null },
+        pricing: { mode: "customer_chooses", suggested_amount: null, minimum_amount: null, maximum_amount: null },
       })
     }),
   ),

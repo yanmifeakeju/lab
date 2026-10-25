@@ -51,6 +51,13 @@ export const parseAmount = (text: string, scale: number): Parsed => {
   return Parsed.Amount({ minor: Number(minor) })
 }
 
+/** Why plane refuses the amount as below one whole unit of the currency, if it does. */
+export const belowWholeUnit = (minor: number, scale: number, currency: string) => {
+  const unit = 10 ** scale
+
+  return minor < unit ? `must be at least ${formatMoney(unit, scale, currency)}` : undefined
+}
+
 /** Minor units as grouped decimal text, e.g. 250000 at scale 2 is `2,500.00`. */
 export const formatDecimal = (minor: number | bigint, scale: number) => {
   const digits = BigInt(minor).toString().padStart(scale + 1, "0")

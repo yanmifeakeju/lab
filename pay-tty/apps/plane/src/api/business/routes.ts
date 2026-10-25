@@ -3,11 +3,12 @@ import { Effect, Schema, SchemaTransformation } from "effect"
 import * as HttpApiEndpoint from "effect/unstable/httpapi/HttpApiEndpoint"
 import * as HttpApiGroup from "effect/unstable/httpapi/HttpApiGroup"
 
-import { Conflict, ServiceUnavailable } from "../errors.ts"
+import { BadGateway, Conflict, ServiceUnavailable } from "../errors.ts"
 import { Authentication } from "../middleware/authentication.ts"
+import { BusinessContext } from "../middleware/business.ts"
 
 // Snake case on the wire, timestamps as ISO 8601 strings; `businessInfo` maps
-// core's camelCase and dates explicitly. /me, /business, and /account share it.
+// core's camelCase and dates explicitly. /me, /business, and /business/account share it.
 
 export class BusinessLedger extends Schema.Class<BusinessLedger>("BusinessLedger")({
   slug: Schema.String,
@@ -78,5 +79,13 @@ export const business = HttpApiGroup.make("business")
       success: BusinessInfo,
       error: [Conflict, ServiceUnavailable],
     }),
+  )
+  .add(
+    // No body: the account opens in the ledger saved when the business was
+    // created. Only this route needs the caller to have a business already.
+    HttpApiEndpoint.post("createAccount", "/business/account", {
+      success: BusinessInfo,
+      error: [Conflict, BadGateway, ServiceUnavailable],
+    }).middleware(BusinessContext),
   )
   .middleware(Authentication)

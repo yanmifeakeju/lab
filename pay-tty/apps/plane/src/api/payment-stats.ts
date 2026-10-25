@@ -8,8 +8,9 @@ export class PaymentStats extends Schema.Class<PaymentStats>("PaymentStats")({
   // Includes pending payments past their window, marked or not.
   expired: Schema.Int,
   pending: Schema.Int,
-  // Minor units as a decimal string: a sum can pass the safe integers.
-  collected_minor: Schema.String.check(Schema.isPattern(/^\d+$/).annotate({ expected: "a non-negative integer" })),
+  // A decimal string: a sum can pass the safe integers.
+  collected: Schema.String.check(Schema.isPattern(/^\d+$/).annotate({ expected: "a non-negative integer" }))
+    .annotate({ description: "In minor units of the links' currency." }),
   // When the latest succeeded payment completed.
   last_paid_at: Schema.NullOr(Schema.String),
 }) {}
@@ -21,7 +22,7 @@ export const stats = (stats: Payments.Stats) =>
     cancelled: stats.cancelled,
     expired: stats.expired,
     pending: stats.pending,
-    collected_minor: stats.collectedMinor.toString(),
+    collected: stats.collected.toString(),
     last_paid_at: stats.lastPaidAt?.toISOString() ?? null,
   })
 

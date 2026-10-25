@@ -1,7 +1,6 @@
 import * as HttpApi from "effect/unstable/httpapi/HttpApi"
 import * as OpenApi from "effect/unstable/httpapi/OpenApi"
 
-import { account } from "./account/routes.ts"
 import { business } from "./business/routes.ts"
 import { health } from "./health/routes.ts"
 import { me } from "./me/routes.ts"
@@ -16,7 +15,6 @@ export const api = HttpApi.make("plane")
   .add(session)
   .add(me)
   .add(business)
-  .add(account)
   .add(paymentLinks)
   .add(payments)
   .add(pay)

@@ -1,10 +1,12 @@
-import { Schema } from "effect"
+// The ledger as other packages see it: slugs, the catalog, currencies, the
+// client for wiring, and the account calls. Core's own modules import the
+// files directly.
+export { Catalog } from "./catalog.ts"
 
-export const Slug = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/\S/)),
-  Schema.brand("Ledger.Slug"),
-)
+export { LedgerClient } from "./client.ts"
 
-export type Slug = typeof Slug.Type
+export { Currency } from "./currency.ts"
 
-export * as Ledger from "./ledger.ts"
+export { Ledger } from "./slug.ts"
+
+export { PayableAccounts } from "./payable-accounts.ts"

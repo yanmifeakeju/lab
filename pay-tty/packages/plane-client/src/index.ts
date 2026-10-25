@@ -122,13 +122,13 @@ export const createClient = (httpClient: HttpClient.HttpClient, options: ClientO
             }),
           ),
         createAccount: <Config extends OperationConfig>(request: { readonly config?: Config } | undefined) =>
-          client.accountCreateAccount(request).pipe(
+          client.businessCreateAccount(request).pipe(
             Effect.catchTags({
-              AccountCreateAccount400: ({ cause }) => Effect.fail(cause),
-              AccountCreateAccount401: ({ cause }) => Effect.fail(cause),
-              AccountCreateAccount409: ({ cause }) => Effect.fail(cause),
-              AccountCreateAccount502: ({ cause }) => Effect.fail(cause),
-              AccountCreateAccount503: ({ cause }) => Effect.fail(cause),
+              BusinessCreateAccount400: ({ cause }) => Effect.fail(cause),
+              BusinessCreateAccount401: ({ cause }) => Effect.fail(cause),
+              BusinessCreateAccount409: ({ cause }) => Effect.fail(cause),
+              BusinessCreateAccount502: ({ cause }) => Effect.fail(cause),
+              BusinessCreateAccount503: ({ cause }) => Effect.fail(cause),
             }),
           ),
         /** A new link answers 201 and a repeat of its key 200, with the same body. */

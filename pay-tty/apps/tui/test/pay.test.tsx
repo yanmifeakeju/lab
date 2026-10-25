@@ -182,7 +182,7 @@ void test(
       tui.keys.pressEnter()
       yield* tui.showing("Paying ₦5,000.00")
 
-      assert.deepEqual(plane.calls.at(-1)?.body, { amount_minor: 500_000 })
+      assert.deepEqual(plane.calls.at(-1)?.body, { amount: 500_000 })
 
       yield* tui.finish
     }),
@@ -220,7 +220,38 @@ void test(
       yield* tui.showing("Paying ₦2,500.50")
 
       assert.deepEqual(paths(plane), [`GET ${base}`, `POST ${base}/payments`])
-      assert.deepEqual(plane.calls[1]?.body, { amount_minor: 250_050 })
+      assert.deepEqual(plane.calls[1]?.body, { amount: 250_050 })
+
+      yield* tui.finish
+    }),
+  ),
+)
+
+void test(
+  "a link without bounds still takes no less than one naira",
+  scenario(
+    Effect.gen(function* () {
+      const plane = fakePlane({ payableLink: link(choosing({})), startPayment: startedPayment() })
+      const tui = yield* screen(plane)
+
+      yield* tui.showing("Amount (NGN)")
+
+      yield* Effect.promise(() => tui.keys.typeText("0.99"))
+      tui.keys.pressEnter()
+      yield* tui.showing("The amount must be at least ₦1.00.")
+      tui.keys.pressEnter()
+      yield* tui.showing("Enter pay")
+
+      for (let index = 0; index < "0.99".length; index++) {
+        tui.keys.pressBackspace()
+      }
+
+      yield* Effect.promise(() => tui.keys.typeText("1.00"))
+      tui.keys.pressEnter()
+      yield* tui.showing("Paying ₦1.00")
+
+      assert.deepEqual(paths(plane), [`GET ${base}`, `POST ${base}/payments`])
+      assert.deepEqual(plane.calls[1]?.body, { amount: 100 })
 
       yield* tui.finish
     }),

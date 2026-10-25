@@ -682,7 +682,7 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
 
     const { business, overview } = shown;
 
-    const request = toRequest(form, ledger.scale);
+    const request = toRequest(form, ledger.scale, ledger.currency);
 
     if (Result.isFailure(request)) {
       return yield* begin(showing, (current) => ({

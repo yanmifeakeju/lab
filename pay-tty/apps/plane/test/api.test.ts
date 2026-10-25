@@ -4,9 +4,7 @@ import { test } from "node:test"
 import { NodeHttpServer } from "@effect/platform-node"
 import { Business } from "@pay-tty/core/business"
 import { Database, layer as DatabaseLayer } from "@pay-tty/core/database"
-import { Catalog } from "@pay-tty/core/catalog"
-import { Currency } from "@pay-tty/core/currency"
-import { Ledger } from "@pay-tty/core/ledger"
+import { Catalog, Currency, Ledger, PayableAccounts } from "@pay-tty/core/ledger"
 import { Payments } from "@pay-tty/core/payments"
 import { Principal } from "@pay-tty/core/principal"
 import { Testing } from "@pay-tty/core/testing"
@@ -25,7 +23,6 @@ import { SessionResponse } from "../src/api/session/routes.ts"
 import { ApiLive } from "../src/api/server.ts"
 import { AuthenticationLive } from "../src/api/middleware/authentication.ts"
 import { UnknownErrorResponse } from "../src/api/middleware/defect.ts"
-import { BusinessLedger as BusinessLedgerService } from "../src/ledger/business-ledger.ts"
 import { Token } from "../src/token/token.ts"
 import { created as accountCreated, current, failing, fakeLedger, invalid, keys, previous, secret, type FakeLedger, type Payload, type Reply } from "./support.ts"
 
@@ -39,7 +36,7 @@ const domain = Layer.mergeAll(Principal.layer, Business.layer).pipe(
 
 interface ServerOptions {
   readonly ledger?: FakeLedger
-  // A stand-in for what the ledger endpoint sees, to inject local failures.
+  // A stand-in for the business service, to inject local failures.
   readonly businesses?: Business.Interface
   // A stand-in catalog for creating businesses.
   readonly catalog?: Catalog.Interface
@@ -53,22 +50,21 @@ const server = (options: ServerOptions = {}) =>
     Effect.sync(() => {
       const ledger = options.ledger ?? fakeLedger()
 
-      const ledgerEndpoint = BusinessLedgerService.layer.pipe(
-        Layer.provide(ledger.layer),
-        Layer.provide(
-          options.businesses === undefined ? Business.layer : Layer.succeed(Business.Service, options.businesses),
-        ),
-      )
-
       return {
         ledger,
         app: HttpRouter.toWebHandler(
           Layer.mergeAll(ApiLive, UnknownErrorResponse).pipe(
             Layer.provideMerge(
-              Layer.mergeAll(AuthenticationLive, ledgerEndpoint),
+              Layer.mergeAll(AuthenticationLive, PayableAccounts.layer.pipe(Layer.provide(ledger.layer))),
             ),
             Layer.provideMerge(Token.layerFrom(keys)),
-            Layer.provideMerge(Layer.mergeAll(Principal.layer, Business.layer, Payments.layer)),
+            Layer.provideMerge(
+              Layer.mergeAll(
+                Principal.layer,
+                options.businesses === undefined ? Business.layer : Layer.succeed(Business.Service, options.businesses),
+                Payments.layer,
+              ),
+            ),
             Layer.provideMerge(
               options.catalog === undefined ? Catalog.layer : Layer.succeed(Catalog.Service, options.catalog),
             ),
@@ -153,7 +149,7 @@ const created = (server: Server, authorization: string, extra: Partial<Call> = {
   )
 
 const openAccount = (server: Server, authorization: string, extra: Partial<Call> = {}) =>
-  send(server, { method: "POST", path: "/account", authorization, ...extra })
+  send(server, { method: "POST", path: "/business/account", authorization, ...extra })
 
 // A successful account opening, decoded strictly.
 const opened = (server: Server, authorization: string, extra: Partial<Call> = {}) =>
@@ -163,7 +159,7 @@ const opened = (server: Server, authorization: string, extra: Partial<Call> = {}
     ),
   )
 
-const fixedLink = { title: "Consulting", pricing: { mode: "fixed", amount_minor: 250_000 } }
+const fixedLink = { title: "Consulting", pricing: { mode: "fixed", amount: 250_000 } }
 
 const createLink = (
   server: Server,
@@ -243,7 +239,7 @@ void test("serves health without a token", () =>
     }),
   ))
 
-void test("publishes exactly /health, /session, /me, /business, /account, /payment_links, /payments, and the /pay routes", () =>
+void test("publishes exactly /health, /session, /me, /business, /business/account, /payment_links, /payments, and the /pay routes", () =>
   run(
     Effect.gen(function* () {
       const plane = yield* server()
@@ -276,8 +272,8 @@ void test("publishes exactly /health, /session, /me, /business, /account, /payme
 
       assert.equal(status, 200)
       assert.deepEqual(Object.keys(paths).sort(), [
-        "/account",
         "/business",
+        "/business/account",
         "/health",
         "/me",
         "/pay/payment_links/{share_token}",
@@ -311,9 +307,9 @@ void test("publishes exactly /health, /session, /me, /business, /account, /payme
       assert.equal(success.content["application/json"].schema.$ref, "#/components/schemas/BusinessInfoEncoded")
 
       // Neither route names the business; the caller's token does.
-      assert.deepEqual(Object.keys(paths["/account"] ?? {}), ["post"])
+      assert.deepEqual(Object.keys(paths["/business/account"] ?? {}), ["post"])
 
-      const ledger = paths["/account"]?.["post"]
+      const ledger = paths["/business/account"]?.["post"]
 
       assert.deepEqual(ledger?.security, paths["/me"]?.["get"]?.security)
       assert.equal(ledger?.requestBody, undefined)
@@ -820,7 +816,7 @@ void test("ledger creation ignores a caller-supplied ledger, currency, name, or 
       const { authorization, id } = yield* withBusiness(plane)
 
       const response = yield* opened(plane, authorization, {
-        path: "/account?ledger=usd_us&currency_code=USD",
+        path: "/business/account?ledger=usd_us&currency_code=USD",
         body: { ledger: "usd_us", currency_code: "USD", name: "Other Ltd", holder_ref: "hld_x", payable_account_ref: "acct_x" },
         headers: { "x-ledger": "usd_us" },
       })
@@ -1154,7 +1150,7 @@ void test("POST /business/:id/payment_links creates a fixed link in the business
         description: null,
         currency_code: "NGN",
         scale: 2,
-        pricing: { mode: "fixed", amount_minor: 250_000 },
+        pricing: { mode: "fixed", amount: 250_000 },
         share_token: body.share_token,
         created_at: body.created_at,
       })
@@ -1182,9 +1178,9 @@ void test("a customer-chosen link may leave every amount unset; omitted and null
       assert.equal(open.status, 201)
       assert.deepEqual(open.body.pricing, new CustomerChoosesPricing({
         mode: "customer_chooses",
-        suggested_amount_minor: null,
-        minimum_amount_minor: null,
-        maximum_amount_minor: null,
+        suggested_amount: null,
+        minimum_amount: null,
+        maximum_amount: null,
       }))
       assert.equal(open.body.description, "Help equip the library")
 
@@ -1192,22 +1188,22 @@ void test("a customer-chosen link may leave every amount unset; omitted and null
 
       const suggested = yield* createdLink(plane, authorization, {
         title: "Tips",
-        pricing: { mode: "customer_chooses", suggested_amount_minor: 250_000, minimum_amount_minor: null },
+        pricing: { mode: "customer_chooses", suggested_amount: 250_000, minimum_amount: null },
       }, key)
 
       assert.equal(suggested.status, 201)
       assert.deepEqual(suggested.body.pricing, new CustomerChoosesPricing({
         mode: "customer_chooses",
-        suggested_amount_minor: 250_000,
-        minimum_amount_minor: null,
-        maximum_amount_minor: null,
+        suggested_amount: 250_000,
+        minimum_amount: null,
+        maximum_amount: null,
       }))
 
       // The same settings spelled the other way are a repeat, not a conflict.
       const repeat = yield* createdLink(plane, authorization, {
         title: "Tips",
         description: null,
-        pricing: { mode: "customer_chooses", suggested_amount_minor: 250_000, maximum_amount_minor: null },
+        pricing: { mode: "customer_chooses", suggested_amount: 250_000, maximum_amount: null },
       }, key)
 
       assert.equal(repeat.status, 200)
@@ -1217,17 +1213,17 @@ void test("a customer-chosen link may leave every amount unset; omitted and null
         title: "Donation",
         pricing: {
           mode: "customer_chooses",
-          suggested_amount_minor: 5_000,
-          minimum_amount_minor: 1_000,
-          maximum_amount_minor: Number.MAX_SAFE_INTEGER,
+          suggested_amount: 5_000,
+          minimum_amount: 1_000,
+          maximum_amount: Number.MAX_SAFE_INTEGER,
         },
       }, ulid())
 
       assert.deepEqual(bounded.body.pricing, new CustomerChoosesPricing({
         mode: "customer_chooses",
-        suggested_amount_minor: 5_000,
-        minimum_amount_minor: 1_000,
-        maximum_amount_minor: Number.MAX_SAFE_INTEGER,
+        suggested_amount: 5_000,
+        minimum_amount: 1_000,
+        maximum_amount: Number.MAX_SAFE_INTEGER,
       }))
     }),
   ))
@@ -1256,8 +1252,8 @@ void test("a retry after a lost response returns the original link; other conten
       const changed: ReadonlyArray<{ readonly [key: string]: Body }> = [
         { ...fixedLink, title: "Advice" },
         { ...fixedLink, description: "Hourly" },
-        { ...fixedLink, pricing: { mode: "fixed", amount_minor: 250_001 } },
-        { ...fixedLink, pricing: { mode: "customer_chooses", suggested_amount_minor: 250_000 } },
+        { ...fixedLink, pricing: { mode: "fixed", amount: 250_001 } },
+        { ...fixedLink, pricing: { mode: "customer_chooses", suggested_amount: 250_000 } },
       ]
 
       for (const body of changed) {
@@ -1330,7 +1326,7 @@ void test("a link takes its currency and scale from the business, whatever the r
         account_ref: "acct_x",
         status: "active",
         path: "/tmp/business.db",
-        pricing: { mode: "fixed", amount_minor: 100, currency: "USD" },
+        pricing: { mode: "fixed", amount: 100, currency: "USD" },
       }, ulid())
 
       assert.equal(status, 201)
@@ -1338,7 +1334,7 @@ void test("a link takes its currency and scale from the business, whatever the r
       assert.equal(body.currency_code, "NGN")
       assert.equal(body.scale, 2)
       assert.match(body.share_token, shareToken)
-      assert.deepEqual(body.pricing, new FixedPricing({ mode: "fixed", amount_minor: 100 }))
+      assert.deepEqual(body.pricing, new FixedPricing({ mode: "fixed", amount: 100 }))
     }),
   ))
 
@@ -1374,24 +1370,29 @@ void test("invalid content or idempotency keys are a 400 naming each field, and 
         ["title not a string", { ...fixedLink, title: 5 }, ["body:title"]],
         ["long description", { ...fixedLink, description: "x".repeat(501) }, ["body:description"]],
         ["no pricing", { title: "Consulting" }, ["body:pricing"]],
-        ["no mode", { ...fixedLink, pricing: { amount_minor: 100 } }, []],
-        ["unknown mode", { ...fixedLink, pricing: { mode: "donation", amount_minor: 100 } }, []],
-        ["fixed without amount", fixed({}), ["body:pricing.amount_minor"]],
-        ["fixed with null amount", fixed({ amount_minor: null }), ["body:pricing.amount_minor"]],
-        ["zero amount", fixed({ amount_minor: 0 }), ["body:pricing.amount_minor"]],
-        ["negative amount", fixed({ amount_minor: -100 }), ["body:pricing.amount_minor"]],
-        ["fractional amount", fixed({ amount_minor: 1.5 }), ["body:pricing.amount_minor"]],
-        ["unsafe amount", fixed({ amount_minor: Number.MAX_SAFE_INTEGER + 1 }), ["body:pricing.amount_minor"]],
-        ["amount as a string", fixed({ amount_minor: "100" }), ["body:pricing.amount_minor"]],
-        ["fixed with a suggestion", fixed({ amount_minor: 100, suggested_amount_minor: 100 }), ["body:pricing.suggested_amount_minor"]],
-        ["fixed with a null minimum", fixed({ amount_minor: 100, minimum_amount_minor: null }), ["body:pricing.minimum_amount_minor"]],
-        ["fixed with a maximum", fixed({ amount_minor: 100, maximum_amount_minor: 100 }), ["body:pricing.maximum_amount_minor"]],
-        ["customer chooses with an amount", chooses({ amount_minor: 100 }), ["body:pricing.amount_minor"]],
-        ["zero suggestion", chooses({ suggested_amount_minor: 0 }), ["body:pricing.suggested_amount_minor"]],
-        ["fractional minimum", chooses({ minimum_amount_minor: 0.5 }), ["body:pricing.minimum_amount_minor"]],
-        ["inverted bounds", chooses({ minimum_amount_minor: 200, maximum_amount_minor: 100 }), ["body:pricing.maximum_amount_minor"]],
-        ["suggestion below the minimum", chooses({ suggested_amount_minor: 99, minimum_amount_minor: 100 }), ["body:pricing.suggested_amount_minor"]],
-        ["suggestion above the maximum", chooses({ suggested_amount_minor: 101, maximum_amount_minor: 100 }), ["body:pricing.suggested_amount_minor"]],
+        ["no mode", { ...fixedLink, pricing: { amount: 100 } }, []],
+        ["unknown mode", { ...fixedLink, pricing: { mode: "donation", amount: 100 } }, []],
+        ["fixed without amount", fixed({}), ["body:pricing.amount"]],
+        ["fixed with null amount", fixed({ amount: null }), ["body:pricing.amount"]],
+        ["zero amount", fixed({ amount: 0 }), ["body:pricing.amount"]],
+        ["negative amount", fixed({ amount: -100 }), ["body:pricing.amount"]],
+        ["fractional amount", fixed({ amount: 1.5 }), ["body:pricing.amount"]],
+        ["unsafe amount", fixed({ amount: Number.MAX_SAFE_INTEGER + 1 }), ["body:pricing.amount"]],
+        ["amount as a string", fixed({ amount: "100" }), ["body:pricing.amount"]],
+        ["fixed with a suggestion", fixed({ amount: 100, suggested_amount: 100 }), ["body:pricing.suggested_amount"]],
+        ["fixed with a null minimum", fixed({ amount: 100, minimum_amount: null }), ["body:pricing.minimum_amount"]],
+        ["fixed with a maximum", fixed({ amount: 100, maximum_amount: 100 }), ["body:pricing.maximum_amount"]],
+        ["customer chooses with an amount", chooses({ amount: 100 }), ["body:pricing.amount"]],
+        ["zero suggestion", chooses({ suggested_amount: 0 }), ["body:pricing.suggested_amount"]],
+        ["fractional minimum", chooses({ minimum_amount: 0.5 }), ["body:pricing.minimum_amount"]],
+        ["inverted bounds", chooses({ minimum_amount: 200, maximum_amount: 100 }), ["body:pricing.maximum_amount"]],
+        ["suggestion below the minimum", chooses({ suggested_amount: 99, minimum_amount: 100 }), ["body:pricing.suggested_amount"]],
+        ["suggestion above the maximum", chooses({ suggested_amount: 101, maximum_amount: 100 }), ["body:pricing.suggested_amount"]],
+        // Below one whole naira, which only the business's ledger can tell.
+        ["amount below one naira", fixed({ amount: 99 }), ["body:pricing.amount"]],
+        ["suggestion below one naira", chooses({ suggested_amount: 99 }), ["body:pricing.suggested_amount"]],
+        ["minimum below one naira", chooses({ minimum_amount: 99 }), ["body:pricing.minimum_amount"]],
+        ["maximum below one naira", chooses({ maximum_amount: 99 }), ["body:pricing.maximum_amount"]],
       ]
 
       for (const [reason, body, fields] of cases) {
@@ -1408,6 +1409,18 @@ void test("invalid content or idempotency keys are a 400 naming each field, and 
 
         // Nothing was saved under the key.
         assert.equal((yield* createdLink(plane, authorization, fixedLink, key)).status, 201, reason)
+      }
+
+      assert.deepEqual((yield* createLink(plane, authorization, fixed({ amount: 99 }), ulid())).json, {
+        message: "The request is invalid.",
+        error: {
+          code: "validation_error",
+          details: [{ location: "body", field: "pricing.amount", code: "invalid_value", message: "must be at least ₦1.00" }],
+        },
+      })
+
+      for (const pricing of [fixed({ amount: 100 }), chooses({ suggested_amount: 100, minimum_amount: 100, maximum_amount: 100 })]) {
+        assert.equal((yield* createLink(plane, authorization, pricing, ulid())).status, 201)
       }
 
       for (const key of [undefined, "", " ", "has space", "x".repeat(256), "naïve"]) {
@@ -1474,7 +1487,7 @@ void test("accepts only tokens plane would have issued", () =>
       const routes: ReadonlyArray<Pick<Call, "method" | "path" | "body" | "headers">> = [
         { method: "GET", path: "/me" },
         { method: "POST", path: "/business", body: { name: "Acme Ltd" } },
-        { method: "POST", path: "/account" },
+        { method: "POST", path: "/business/account" },
         { method: "POST", path: "/payment_links", body: fixedLink, headers: { "idempotency-key": ulid() } },
       ]
 
@@ -1549,7 +1562,7 @@ void test("a customer reads a link by its share token alone, without the merchan
         description: "Two concepts and one revision.",
         currency_code: "NGN",
         scale: 2,
-        pricing: new FixedPricing({ mode: "fixed", amount_minor: 250_000 }),
+        pricing: new FixedPricing({ mode: "fixed", amount: 250_000 }),
         active: true,
       }))
 
@@ -1570,7 +1583,7 @@ void test("a customer starts a pending payment of a fixed link's amount; a repea
       assert.match(first.body.id, /^pay_[0-9A-HJKMNP-TV-Z]{26}$/)
       assert.deepEqual(first.json, {
         id: first.body.id,
-        amount_minor: 250_000,
+        amount: 250_000,
         currency_code: "NGN",
         scale: 2,
         status: "pending",
@@ -1601,7 +1614,7 @@ void test("the amount must fit the link's pricing, and is checked as a field of 
 
       const bounded = yield* linkToPay(plane, {
         title: "Tip jar",
-        pricing: { mode: "customer_chooses", minimum_amount_minor: 1_000, maximum_amount_minor: 5_000 },
+        pricing: { mode: "customer_chooses", minimum_amount: 1_000, maximum_amount: 5_000 },
       })
 
       const details = (token: string, body: { readonly [key: string]: Body }) =>
@@ -1620,17 +1633,31 @@ void test("the amount must fit the link's pricing, and is checked as a field of 
           ),
         )
 
-      assert.deepEqual(yield* details(fixed.token, { amount_minor: 250_000 }), ["amount_minor:unknown_field"])
-      assert.deepEqual(yield* details(bounded.token, {}), ["amount_minor:required"])
-      assert.deepEqual(yield* details(bounded.token, { amount_minor: null }), ["amount_minor:required"])
-      assert.deepEqual(yield* details(bounded.token, { amount_minor: 999 }), ["amount_minor:invalid_value"])
-      assert.deepEqual(yield* details(bounded.token, { amount_minor: 5_001 }), ["amount_minor:invalid_value"])
+      assert.deepEqual(yield* details(fixed.token, { amount: 250_000 }), ["amount:unknown_field"])
+      assert.deepEqual(yield* details(bounded.token, {}), ["amount:required"])
+      assert.deepEqual(yield* details(bounded.token, { amount: null }), ["amount:required"])
+      assert.deepEqual(yield* details(bounded.token, { amount: 999 }), ["amount:invalid_value"])
+      assert.deepEqual(yield* details(bounded.token, { amount: 5_001 }), ["amount:invalid_value"])
+
+      // With no bounds of its own, a link still takes no less than one naira.
+      const open = yield* linkToPay(plane, { title: "Tips", pricing: { mode: "customer_chooses" } })
+      const below = yield* startPayment(plane, open.token, { amount: 99 })
+
+      assert.equal(below.status, 400)
+      assert.deepEqual(below.json, {
+        message: "The request is invalid.",
+        error: {
+          code: "validation_error",
+          details: [{ location: "body", field: "amount", code: "invalid_value", message: "the amount must be at least ₦1.00" }],
+        },
+      })
+      assert.equal((yield* started(plane, open.token, { amount: 100 })).body.amount, 100)
 
       // Malformed requests fail before any link is read.
       for (const [reason, body] of [
-        ["zero amount", { amount_minor: 0 }],
-        ["fractional amount", { amount_minor: 1.5 }],
-        ["amount as a string", { amount_minor: "2500" }],
+        ["zero amount", { amount: 0 }],
+        ["fractional amount", { amount: 1.5 }],
+        ["amount as a string", { amount: "2500" }],
       ] as const) {
         assert.equal((yield* startPayment(plane, bounded.token, body)).status, 400, reason)
       }
@@ -1639,9 +1666,9 @@ void test("the amount must fit the link's pricing, and is checked as a field of 
         "header:idempotency-key",
       ])
 
-      const chosen = yield* started(plane, bounded.token, { amount_minor: 2_500 })
+      const chosen = yield* started(plane, bounded.token, { amount: 2_500 })
 
-      assert.equal(chosen.body.amount_minor, 2_500)
+      assert.equal(chosen.body.amount, 2_500)
     }),
   ))
 
@@ -1766,7 +1793,7 @@ void test("GET /payment_links lists the caller's links newest first, with each o
 
       yield* simulatePayment(plane, token, paid.body.id, "succeeded")
       yield* started(plane, token)
-      yield* started(plane, tips.body.share_token, { amount_minor: 1_000 })
+      yield* started(plane, tips.body.share_token, { amount: 1_000 })
 
       const list = yield* listed(plane, authorization)
 
@@ -1786,18 +1813,18 @@ void test("GET /payment_links lists the caller's links newest first, with each o
           cancelled: 0,
           expired: 0,
           pending: 1,
-          collected_minor: "250000",
+          collected: "250000",
           last_paid_at: logoSummary.stats.last_paid_at,
         }),
       )
       assert.equal(tipsSummary?.stats.pending, 1)
-      assert.equal(tipsSummary?.stats.collected_minor, "0")
+      assert.equal(tipsSummary?.stats.collected, "0")
 
       assert.equal(list.link_count, 2)
       assert.equal(list.active_link_count, 2)
       assert.equal(list.totals.succeeded, 1)
       assert.equal(list.totals.pending, 2)
-      assert.equal(list.totals.collected_minor, "250000")
+      assert.equal(list.totals.collected, "250000")
     }),
   ))
 
@@ -1813,7 +1840,7 @@ void test("GET /payment_links shows only the caller's business, needs one, and n
 
       assert.deepEqual(empty.links, [])
       assert.equal(empty.link_count, 0)
-      assert.equal(empty.totals.collected_minor, "0")
+      assert.equal(empty.totals.collected, "0")
       assert.deepEqual((yield* listed(plane, theirs.authorization)).links.map((link) => link.id), [theirs.link.id])
 
       assert.deepEqual(yield* listLinks(plane, stranger.authorization), {
@@ -1858,7 +1885,7 @@ void test("GET /payments requires auth, pages and filters within the caller's bu
     assert.equal(page.stats.succeeded, 1)
     assert.ok(page.next !== null)
     assert.ok(page.payments.every((payment) => payment.source.id === ours.link.id))
-    assert.ok(page.payments.every((payment) => payment.amount_minor === "250000"))
+    assert.ok(page.payments.every((payment) => payment.amount === "250000"))
 
     const last = yield* Schema.decodeUnknownEffect(PaymentPage)((yield* get(
       "?link_id=" + ours.link.id + "&before=" + encodeURIComponent(page.next),

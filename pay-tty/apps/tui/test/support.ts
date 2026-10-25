@@ -171,12 +171,12 @@ export const linkFor = (
     scale: 2,
     pricing:
       request.pricing.mode === "fixed"
-        ? { mode: "fixed", amount_minor: request.pricing.amount_minor }
+        ? { mode: "fixed", amount: request.pricing.amount }
         : {
             mode: "customer_chooses",
-            suggested_amount_minor: request.pricing.suggested_amount_minor ?? null,
-            minimum_amount_minor: request.pricing.minimum_amount_minor ?? null,
-            maximum_amount_minor: request.pricing.maximum_amount_minor ?? null,
+            suggested_amount: request.pricing.suggested_amount ?? null,
+            minimum_amount: request.pricing.minimum_amount ?? null,
+            maximum_amount: request.pricing.maximum_amount ?? null,
           },
     share_token: "tok",
     created_at: "2026-10-15T00:00:00.000Z",
@@ -205,7 +205,7 @@ export const payable = (fields: Partial<PayableLinkEncoded> = {}): PayableLinkEn
   description: "Two concepts and one revision.",
   currency_code: "NGN",
   scale: 2,
-  pricing: { mode: "fixed", amount_minor: 2_500_000 },
+  pricing: { mode: "fixed", amount: 2_500_000 },
   active: true,
   ...fields,
 })
@@ -216,9 +216,9 @@ export const choosing = (bounds: Partial<{ suggested: number; minimum: number; m
     description: null,
     pricing: {
       mode: "customer_chooses",
-      suggested_amount_minor: bounds.suggested ?? null,
-      minimum_amount_minor: bounds.minimum ?? null,
-      maximum_amount_minor: bounds.maximum ?? null,
+      suggested_amount: bounds.suggested ?? null,
+      minimum_amount: bounds.minimum ?? null,
+      maximum_amount: bounds.maximum ?? null,
     },
   })
 
@@ -228,7 +228,7 @@ export const paymentOf = (fields: Partial<PaymentEncoded> = {}): PaymentEncoded 
 
   return {
     id: "pay_01K33YV8M82N9MXP4E7J6B1QWK",
-    amount_minor: 2_500_000,
+    amount: 2_500_000,
     currency_code: "NGN",
     scale: 2,
     status: "pending",
@@ -248,7 +248,7 @@ export const startedPayment = (fields: Partial<PaymentEncoded> = {}) => (call: C
 
   const payment = paymentOf(fields)
 
-  return { status: 201, body: { ...payment, amount_minor: call.body.amount_minor ?? payment.amount_minor } }
+  return { status: 201, body: { ...payment, amount: call.body.amount ?? payment.amount } }
 }
 
 // Plane's answer to a simulated outcome: the payment, ended that way.
@@ -266,13 +266,13 @@ export const noStats: PaymentStatsEncoded = {
   cancelled: 0,
   expired: 0,
   pending: 0,
-  collected_minor: "0",
+  collected: "0",
   last_paid_at: null,
 }
 
 // A listed link: a fixed one with no payments unless told otherwise.
 export const summary = (fields: Partial<PaymentLinkSummaryEncoded> = {}): PaymentLinkSummaryEncoded => ({
-  ...linkFor({ title: "Logo design", description: null, pricing: { mode: "fixed", amount_minor: 2_500_000 } }),
+  ...linkFor({ title: "Logo design", description: null, pricing: { mode: "fixed", amount: 2_500_000 } }),
   active: true,
   stats: noStats,
   ...fields,
@@ -292,7 +292,7 @@ export const overview = (
     cancelled: links.reduce((sum, link) => sum + link.stats.cancelled, 0),
     expired: links.reduce((sum, link) => sum + link.stats.expired, 0),
     pending: links.reduce((sum, link) => sum + link.stats.pending, 0),
-    collected_minor: links.reduce((sum, link) => sum + BigInt(link.stats.collected_minor), 0n).toString(),
+    collected: links.reduce((sum, link) => sum + BigInt(link.stats.collected), 0n).toString(),
     last_paid_at: null,
   },
   ...fields,
@@ -313,7 +313,7 @@ export const paid = summary({
     cancelled: 0,
     expired: 3,
     pending: 1,
-    collected_minor: "5000000",
+    collected: "5000000",
     last_paid_at: "2026-10-19T14:02:31.000Z",
   },
 })
@@ -321,7 +321,7 @@ export const paid = summary({
 export const tips = summary({
   id: "plink_tips",
   title: "Tips",
-  pricing: { mode: "customer_chooses", suggested_amount_minor: null, minimum_amount_minor: null, maximum_amount_minor: null },
+  pricing: { mode: "customer_chooses", suggested_amount: null, minimum_amount: null, maximum_amount: null },
   active: false,
 })
 
@@ -330,7 +330,7 @@ export const merchantPayment = (fields: Partial<PaymentSummaryEncoded> = {}): Pa
   id: "pay_one",
   link_id: paid.id,
   business_id: active.id,
-  amount_minor: "2500000",
+  amount: "2500000",
   currency_code: "NGN",
   scale: 2,
   status: "succeeded",

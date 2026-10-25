@@ -10,7 +10,7 @@ import { businesses } from "../src/business/sql.ts"
 import { Database } from "../src/database/client.ts"
 import { Catalog } from "../src/ledger/catalog.ts"
 import { Currency } from "../src/ledger/currency.ts"
-import { Ledger } from "../src/ledger/ledger.ts"
+import { Ledger } from "../src/ledger/slug.ts"
 import { ledgers } from "../src/ledger/sql.ts"
 import { Principal } from "../src/principal/principal.ts"
 import { Testing } from "../src/testing/testing.ts"
@@ -568,15 +568,14 @@ void test("the database rejects catalog rows that break the country defaults", (
           "ledgers_country_code_valid",
         )
 
-        // A ledger in use can't change currency under its businesses.
-        assert.equal(
-          violated(
-            yield* Testing.attempt(
-              database.use((db) => db.update(ledgers).set({ currency: "USD" }).where(eq(ledgers.slug, ledger))),
-            ),
-          ),
-          "businesses_currency_code_matches_country",
+        // No ledger changes currency, so its businesses' checks never see one
+        // that has: the trigger refuses it first.
+        const recurrency = yield* Testing.attempt(
+          database.use((db) => db.update(ledgers).set({ currency: "USD" }).where(eq(ledgers.slug, ledger))),
         )
+
+        assert.ok(Exit.isFailure(recurrency))
+        assert.equal(violated(recurrency), undefined)
 
         // A non-default ledger in a country with one is fine.
         assert.ok(Exit.isSuccess(yield* insert({ slug: slug(), currency: "NGN", scale: 2, countryCode: "NG" })))

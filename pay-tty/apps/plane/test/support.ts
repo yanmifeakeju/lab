@@ -1,12 +1,12 @@
-import { CreatePayableAccountRequestJson, createClient } from "@pay-tty/ledger-client"
-import { Effect, Layer, Schema } from "effect"
+import { LedgerClient } from "@pay-tty/core/ledger"
+import { CreatePayableAccountRequestJson } from "@pay-tty/ledger-client"
+import { ConfigProvider, Effect, Layer, Schema } from "effect"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientError from "effect/unstable/http/HttpClientError"
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse"
 import { ulid } from "ulid"
 
-import { LedgerClient } from "../src/ledger/client.ts"
 import { Token } from "../src/token/token.ts"
 
 export const secret = () => crypto.getRandomValues(new Uint8Array(32))
@@ -121,7 +121,11 @@ export const fakeLedger = (reply: (payload: Payload) => Reply = remembering()): 
   return {
     requests,
     replies,
-    // Built directly, so the tests need no LEDGER_BASE_URL.
-    layer: Layer.succeed(LedgerClient.Service, createClient(http, { baseUrl: "http://ledger.test" })),
+    // Configured here, so the tests need no LEDGER_BASE_URL.
+    layer: LedgerClient.layer.pipe(
+      Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),
+      Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LEDGER_BASE_URL: "http://ledger.test" }))),
+      Layer.orDie,
+    ),
   }
 }

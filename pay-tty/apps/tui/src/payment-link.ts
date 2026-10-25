@@ -8,7 +8,7 @@ import type {
 import { Result } from "effect"
 import stringWidth from "string-width"
 
-import { formatMoney, Parsed, parseAmount } from "./money.ts"
+import { belowWholeUnit, formatMoney, Parsed, parseAmount } from "./money.ts"
 
 export type Link = PaymentLinkEncoded
 
@@ -50,10 +50,10 @@ export const withMode = (form: Form, mode: Mode): Form =>
 const optional = (parsed: Parsed) => (Parsed.$is("Amount")(parsed) ? parsed.minor : null)
 
 /**
- * The request the form describes at the business's scale, or why it can't be
+ * The request the form describes in the business's ledger, or why it can't be
  * sent. Only the chosen mode's settings are read.
  */
-export const toRequest = (form: Form, scale: number): Result.Result<Request, string> => {
+export const toRequest = (form: Form, scale: number, currency: string): Result.Result<Request, string> => {
   const title = form.title.trim()
   const description = form.description.trim()
 
@@ -75,8 +75,13 @@ export const toRequest = (form: Form, scale: number): Result.Result<Request, str
     return Parsed.$match(parseAmount(form.amount, scale), {
       Blank: () => Result.fail("Enter the amount."),
       Invalid: ({ reason }) => Result.fail(`Amount: ${reason}`),
-      Amount: ({ minor }): Result.Result<Request, string> =>
-        Result.succeed({ ...base, pricing: { mode: "fixed", amount_minor: minor } }),
+      Amount: ({ minor }): Result.Result<Request, string> => {
+        const below = belowWholeUnit(minor, scale, currency)
+
+        return below === undefined
+          ? Result.succeed({ ...base, pricing: { mode: "fixed", amount: minor } })
+          : Result.fail(`Amount ${below}.`)
+      },
     })
   }
 
@@ -89,6 +94,12 @@ export const toRequest = (form: Form, scale: number): Result.Result<Request, str
   for (const [label, parsed] of settings) {
     if (Parsed.$is("Invalid")(parsed)) {
       return Result.fail(`${label}: ${parsed.reason}`)
+    }
+
+    const below = Parsed.$is("Amount")(parsed) ? belowWholeUnit(parsed.minor, scale, currency) : undefined
+
+    if (below !== undefined) {
+      return Result.fail(`${label} ${below}.`)
     }
   }
 
@@ -106,9 +117,9 @@ export const toRequest = (form: Form, scale: number): Result.Result<Request, str
     ...base,
     pricing: {
       mode: "customer_chooses",
-      suggested_amount_minor: suggested ?? null,
-      minimum_amount_minor: minimum ?? null,
-      maximum_amount_minor: maximum ?? null,
+      suggested_amount: suggested ?? null,
+      minimum_amount: minimum ?? null,
+      maximum_amount: maximum ?? null,
     },
   })
 }
@@ -119,13 +130,13 @@ export const pricingLines = (link: Link): ReadonlyArray<string> => {
   const { pricing } = link
 
   if (pricing.mode === "fixed") {
-    return [`Amount: ${money(pricing.amount_minor)} · ${link.currency_code}`]
+    return [`Amount: ${money(pricing.amount)} · ${link.currency_code}`]
   }
 
   const settings = [
-    ["Suggested", pricing.suggested_amount_minor],
-    ["Minimum", pricing.minimum_amount_minor],
-    ["Maximum", pricing.maximum_amount_minor],
+    ["Suggested", pricing.suggested_amount],
+    ["Minimum", pricing.minimum_amount],
+    ["Maximum", pricing.maximum_amount],
   ] as const
 
   return [
@@ -136,7 +147,7 @@ export const pricingLines = (link: Link): ReadonlyArray<string> => {
 
 /** What succeeded payments came to, at the scale and in the currency given. */
 export const collected = (stats: Stats, scale: number, currency: string) =>
-  formatMoney(BigInt(stats.collected_minor), scale, currency)
+  formatMoney(BigInt(stats.collected), scale, currency)
 
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`
 
@@ -172,7 +183,7 @@ export const formatTime = (iso: string) => `${iso.slice(0, 10)} ${iso.slice(11, 
 
 const price = (link: Link) =>
   link.pricing.mode === "fixed"
-    ? formatMoney(link.pricing.amount_minor, link.scale, link.currency_code)
+    ? formatMoney(link.pricing.amount, link.scale, link.currency_code)
     : "Customer chooses"
 
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })

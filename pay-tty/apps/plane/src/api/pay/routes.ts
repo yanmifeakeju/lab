@@ -4,7 +4,7 @@ import * as HttpApiEndpoint from "effect/unstable/httpapi/HttpApiEndpoint"
 import * as HttpApiGroup from "effect/unstable/httpapi/HttpApiGroup"
 
 import { Conflict, NotFound } from "../errors.ts"
-import { Amount, CustomerChoosesPricing, FixedPricing, pricing } from "../payment_links/routes.ts"
+import { Amount, CustomerChoosesPricing, FixedPricing, pricing, SavedAmount } from "../payment_links/routes.ts"
 
 // The customer's side: no merchant token, and the share token is the only
 // credential. Nothing here names a business or a link reference.
@@ -24,7 +24,7 @@ export class PayableLink extends Schema.Class<PayableLink>("PayableLink")({
 export class StartPaymentRequest extends Schema.Class<StartPaymentRequest>("StartPaymentRequest")({
   // Required by a customer-chosen link and refused by a fixed one, which
   // charges its own amount; only the link can tell which.
-  amount_minor: Schema.optionalKey(Schema.NullOr(Amount)),
+  amount: Schema.optionalKey(Schema.NullOr(Amount)),
 }) {}
 
 export class SimulatePaymentRequest extends Schema.Class<SimulatePaymentRequest>("SimulatePaymentRequest")({
@@ -33,7 +33,7 @@ export class SimulatePaymentRequest extends Schema.Class<SimulatePaymentRequest>
 
 const paymentFields = {
   id: Schema.String,
-  amount_minor: Schema.Int,
+  amount: SavedAmount,
   currency_code: Schema.String,
   scale: Schema.Int,
   status: Payments.Status,
@@ -64,7 +64,7 @@ export const payableLink = ({ link, businessName }: Payments.Payable) =>
 export const payment = (payment: Payments.Payment, created = false) => {
   const fields = {
     id: payment.id,
-    amount_minor: Number(payment.amountMinor),
+    amount: Number(payment.amount),
     currency_code: payment.currencyCode,
     scale: payment.scale,
     status: payment.status,

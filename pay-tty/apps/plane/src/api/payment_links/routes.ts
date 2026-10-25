@@ -8,12 +8,16 @@ import { Conflict } from "../errors.ts"
 import { Authentication } from "../middleware/authentication.ts"
 import { BusinessContext } from "../middleware/business.ts"
 
-// Minor units at the business's scale, as JSON numbers: every one is a safe
-// integer, so none loses precision on the way.
+export const inMinorUnits = { description: "In minor units of the link's currency." }
+
+// As JSON numbers: every amount is a safe integer, so none loses precision on
+// the way.
 export const Amount = Schema.Int.check(
   Schema.isGreaterThan(0).annotate({ expected: "a positive integer" }),
   Schema.isLessThanOrEqualTo(Number(Payments.maxAmount)).annotate({ expected: "a safe integer" }),
-)
+).annotate(inMinorUnits)
+
+export const SavedAmount = Schema.Int.annotate(inMinorUnits)
 
 // Settings of the other mode are refused, not dropped: a merchant who sent one
 // meant something this link wouldn't do.
@@ -33,21 +37,21 @@ const trimmed = (max: number) =>
 const setting = (amount: number | null | undefined) => (amount == null ? null : BigInt(amount))
 
 export const bounds = (pricing: {
-  readonly suggested_amount_minor?: number | null
-  readonly minimum_amount_minor?: number | null
-  readonly maximum_amount_minor?: number | null
+  readonly suggested_amount?: number | null
+  readonly minimum_amount?: number | null
+  readonly maximum_amount?: number | null
 }): Payments.Bounds => ({
-  suggestedAmountMinor: setting(pricing.suggested_amount_minor),
-  minimumAmountMinor: setting(pricing.minimum_amount_minor),
-  maximumAmountMinor: setting(pricing.maximum_amount_minor),
+  suggestedAmount: setting(pricing.suggested_amount),
+  minimumAmount: setting(pricing.minimum_amount),
+  maximumAmount: setting(pricing.maximum_amount),
 })
 
 export class FixedPricingRequest extends Schema.Class<FixedPricingRequest>("FixedPricingRequest")({
   mode: Schema.Literal("fixed"),
-  amount_minor: Amount,
-  suggested_amount_minor: Absent,
-  minimum_amount_minor: Absent,
-  maximum_amount_minor: Absent,
+  amount: Amount,
+  suggested_amount: Absent,
+  minimum_amount: Absent,
+  maximum_amount: Absent,
 }) {}
 
 // Omitted and null settings are the same: unset.
@@ -56,17 +60,17 @@ export class CustomerChoosesPricingRequest extends Schema.Class<CustomerChoosesP
 )(
   Schema.Struct({
     mode: Schema.Literal("customer_chooses"),
-    amount_minor: Absent,
-    suggested_amount_minor: Schema.optionalKey(Schema.NullOr(Amount)),
-    minimum_amount_minor: Schema.optionalKey(Schema.NullOr(Amount)),
-    maximum_amount_minor: Schema.optionalKey(Schema.NullOr(Amount)),
+    amount: Absent,
+    suggested_amount: Schema.optionalKey(Schema.NullOr(Amount)),
+    minimum_amount: Schema.optionalKey(Schema.NullOr(Amount)),
+    maximum_amount: Schema.optionalKey(Schema.NullOr(Amount)),
   }).check(
     Schema.makeFilter((pricing) => {
       const violation = Payments.boundsViolation(bounds(pricing))
 
       return violation === undefined
         ? undefined
-        : { path: [`${violation.setting}_amount_minor`], issue: violation.message }
+        : { path: [`${violation.setting}_amount`], issue: violation.message }
     }),
   ),
 ) {}
@@ -82,15 +86,15 @@ export class CreatePaymentLinkRequest extends Schema.Class<CreatePaymentLinkRequ
 
 export class FixedPricing extends Schema.Class<FixedPricing>("FixedPricing")({
   mode: Schema.Literal("fixed"),
-  amount_minor: Schema.Int,
+  amount: SavedAmount,
 }) {}
 
 // Null for a setting the merchant left unset.
 export class CustomerChoosesPricing extends Schema.Class<CustomerChoosesPricing>("CustomerChoosesPricing")({
   mode: Schema.Literal("customer_chooses"),
-  suggested_amount_minor: Schema.NullOr(Schema.Int),
-  minimum_amount_minor: Schema.NullOr(Schema.Int),
-  maximum_amount_minor: Schema.NullOr(Schema.Int),
+  suggested_amount: Schema.NullOr(SavedAmount),
+  minimum_amount: Schema.NullOr(SavedAmount),
+  maximum_amount: Schema.NullOr(SavedAmount),
 }) {}
 
 const linkFields = {
@@ -117,12 +121,12 @@ const amount = (minor: bigint | null) => (minor === null ? null : Number(minor))
 
 export const pricing = (pricing: Payments.Pricing) =>
   pricing.mode === "fixed"
-    ? new FixedPricing({ mode: "fixed", amount_minor: Number(pricing.amountMinor) })
+    ? new FixedPricing({ mode: "fixed", amount: Number(pricing.amount) })
     : new CustomerChoosesPricing({
         mode: "customer_chooses",
-        suggested_amount_minor: amount(pricing.suggestedAmountMinor),
-        minimum_amount_minor: amount(pricing.minimumAmountMinor),
-        maximum_amount_minor: amount(pricing.maximumAmountMinor),
+        suggested_amount: amount(pricing.suggestedAmount),
+        minimum_amount: amount(pricing.minimumAmount),
+        maximum_amount: amount(pricing.maximumAmount),
       })
 
 const fieldsOf = (link: Payments.Link) => ({

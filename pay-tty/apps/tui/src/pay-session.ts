@@ -2,7 +2,7 @@ import type { PayableLinkEncoded, PaymentEncoded } from "@pay-tty/plane-client"
 import { Clock, Data, Effect, Encoding, Match, Ref, Result, Schema, SubscriptionRef } from "effect"
 import * as HttpClientError from "effect/unstable/http/HttpClientError"
 
-import { Parsed, parseAmount } from "./money.ts"
+import { belowWholeUnit, Parsed, parseAmount } from "./money.ts"
 import { Plane } from "./plane.ts"
 import type { Popup } from "./session.ts"
 
@@ -83,11 +83,17 @@ const amountFor = (link: Payable, typed: string): Result.Result<number | null, s
     Blank: () => Result.fail("Enter the amount to pay."),
     Invalid: ({ reason }) => Result.fail(reason),
     Amount: ({ minor }): Result.Result<number | null, string> => {
-      if (pricing.minimum_amount_minor !== null && minor < pricing.minimum_amount_minor) {
+      const below = belowWholeUnit(minor, link.scale, link.currency_code)
+
+      if (below !== undefined) {
+        return Result.fail(`The amount ${below}.`)
+      }
+
+      if (pricing.minimum_amount !== null && minor < pricing.minimum_amount) {
         return Result.fail("The amount is below this link's minimum.")
       }
 
-      if (pricing.maximum_amount_minor !== null && minor > pricing.maximum_amount_minor) {
+      if (pricing.maximum_amount !== null && minor > pricing.maximum_amount) {
         return Result.fail("The amount is above this link's maximum.")
       }
 
@@ -169,7 +175,7 @@ export const make = Effect.fnUntraced(function* (shareToken: string) {
             Effect.map(
               plane.pay.startPayment(shareToken, {
                 params: { "idempotency-key": key },
-                payload: amount === null ? {} : { amount_minor: amount },
+                payload: amount === null ? {} : { amount: amount },
               }),
               // A repeat of a key may find the payment already ended.
               (payment) =>

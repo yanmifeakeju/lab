@@ -9,7 +9,6 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder"
 import * as HttpApiScalar from "effect/unstable/httpapi/HttpApiScalar"
 
 import { api } from "./api.ts"
-import { AccountLive } from "./account/handlers.ts"
 import { BusinessLive } from "./business/handlers.ts"
 import { HealthLive } from "./health/handlers.ts"
 import { MeLive } from "./me/handlers.ts"
@@ -25,7 +24,7 @@ export const ApiLive = Layer.mergeAll(
   HttpApiBuilder.layer(api, { openapiPath: "/openapi.json" }),
   HttpApiScalar.layer(api),
 ).pipe(
-  Layer.provide(Layer.mergeAll(HealthLive, SessionLive, MeLive, BusinessLive, AccountLive, PaymentLinksLive, PaymentsLive, PayLive)),
+  Layer.provide(Layer.mergeAll(HealthLive, SessionLive, MeLive, BusinessLive, PaymentLinksLive, PaymentsLive, PayLive)),
   Layer.provide(Layer.mergeAll(SchemaErrorLive, BusinessContextLive)),
 )
 

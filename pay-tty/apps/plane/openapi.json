@@ -211,12 +211,12 @@
         }
       }
     },
-    "/account": {
+    "/business/account": {
       "post": {
         "tags": [
-          "account"
+          "business"
         ],
-        "operationId": "account.createAccount",
+        "operationId": "business.createAccount",
         "parameters": [],
         "security": [
           {
@@ -1192,24 +1192,25 @@
               "fixed"
             ]
           },
-          "amount_minor": {
+          "amount": {
             "type": "integer",
             "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "maximum": 9007199254740991,
+            "description": "In minor units of the link's currency."
           },
-          "suggested_amount_minor": {
+          "suggested_amount": {
             "not": {}
           },
-          "minimum_amount_minor": {
+          "minimum_amount": {
             "not": {}
           },
-          "maximum_amount_minor": {
+          "maximum_amount": {
             "not": {}
           }
         },
         "required": [
           "mode",
-          "amount_minor"
+          "amount"
         ],
         "additionalProperties": false
       },
@@ -1222,39 +1223,42 @@
               "customer_chooses"
             ]
           },
-          "amount_minor": {
+          "amount": {
             "not": {}
           },
-          "suggested_amount_minor": {
+          "suggested_amount": {
             "anyOf": [
               {
                 "type": "integer",
                 "exclusiveMinimum": 0,
-                "maximum": 9007199254740991
+                "maximum": 9007199254740991,
+                "description": "In minor units of the link's currency."
               },
               {
                 "type": "null"
               }
             ]
           },
-          "minimum_amount_minor": {
+          "minimum_amount": {
             "anyOf": [
               {
                 "type": "integer",
                 "exclusiveMinimum": 0,
-                "maximum": 9007199254740991
+                "maximum": 9007199254740991,
+                "description": "In minor units of the link's currency."
               },
               {
                 "type": "null"
               }
             ]
           },
-          "maximum_amount_minor": {
+          "maximum_amount": {
             "anyOf": [
               {
                 "type": "integer",
                 "exclusiveMinimum": 0,
-                "maximum": 9007199254740991
+                "maximum": 9007199254740991,
+                "description": "In minor units of the link's currency."
               },
               {
                 "type": "null"
@@ -1310,13 +1314,14 @@
               "fixed"
             ]
           },
-          "amount_minor": {
-            "type": "integer"
+          "amount": {
+            "type": "integer",
+            "description": "In minor units of the link's currency."
           }
         },
         "required": [
           "mode",
-          "amount_minor"
+          "amount"
         ],
         "additionalProperties": false
       },
@@ -1329,30 +1334,33 @@
               "customer_chooses"
             ]
           },
-          "suggested_amount_minor": {
+          "suggested_amount": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "integer",
+                "description": "In minor units of the link's currency."
               },
               {
                 "type": "null"
               }
             ]
           },
-          "minimum_amount_minor": {
+          "minimum_amount": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "integer",
+                "description": "In minor units of the link's currency."
               },
               {
                 "type": "null"
               }
             ]
           },
-          "maximum_amount_minor": {
+          "maximum_amount": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "integer",
+                "description": "In minor units of the link's currency."
               },
               {
                 "type": "null"
@@ -1362,9 +1370,9 @@
         },
         "required": [
           "mode",
-          "suggested_amount_minor",
-          "minimum_amount_minor",
-          "maximum_amount_minor"
+          "suggested_amount",
+          "minimum_amount",
+          "maximum_amount"
         ],
         "additionalProperties": false
       },
@@ -1502,9 +1510,10 @@
           "pending": {
             "type": "integer"
           },
-          "collected_minor": {
+          "collected": {
             "type": "string",
-            "pattern": "^\\d+$"
+            "pattern": "^\\d+$",
+            "description": "In minor units of the links' currency."
           },
           "last_paid_at": {
             "anyOf": [
@@ -1523,7 +1532,7 @@
           "cancelled",
           "expired",
           "pending",
-          "collected_minor",
+          "collected",
           "last_paid_at"
         ],
         "additionalProperties": false
@@ -1633,8 +1642,9 @@
           "business_id": {
             "type": "string"
           },
-          "amount_minor": {
-            "type": "string"
+          "amount": {
+            "type": "string",
+            "description": "In minor units of the link's currency."
           },
           "currency_code": {
             "type": "string"
@@ -1700,7 +1710,7 @@
           "id",
           "link_id",
           "business_id",
-          "amount_minor",
+          "amount",
           "currency_code",
           "scale",
           "status",
@@ -1823,12 +1833,13 @@
       "StartPaymentRequestEncoded": {
         "type": "object",
         "properties": {
-          "amount_minor": {
+          "amount": {
             "anyOf": [
               {
                 "type": "integer",
                 "exclusiveMinimum": 0,
-                "maximum": 9007199254740991
+                "maximum": 9007199254740991,
+                "description": "In minor units of the link's currency."
               },
               {
                 "type": "null"
@@ -1844,8 +1855,9 @@
           "id": {
             "type": "string"
           },
-          "amount_minor": {
-            "type": "integer"
+          "amount": {
+            "type": "integer",
+            "description": "In minor units of the link's currency."
           },
           "currency_code": {
             "type": "string"
@@ -1882,7 +1894,7 @@
         },
         "required": [
           "id",
-          "amount_minor",
+          "amount",
           "currency_code",
           "scale",
           "status",
@@ -1898,8 +1910,9 @@
           "id": {
             "type": "string"
           },
-          "amount_minor": {
-            "type": "integer"
+          "amount": {
+            "type": "integer",
+            "description": "In minor units of the link's currency."
           },
           "currency_code": {
             "type": "string"
@@ -1936,7 +1949,7 @@
         },
         "required": [
           "id",
-          "amount_minor",
+          "amount",
           "currency_code",
           "scale",
           "status",
@@ -1984,9 +1997,6 @@
     },
     {
       "name": "business"
-    },
-    {
-      "name": "account"
     },
     {
       "name": "paymentLinks"

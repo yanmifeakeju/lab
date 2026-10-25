@@ -900,7 +900,7 @@ export const App = (props: {
             <LinkScreen heading="Payment" copied={null}
               hint={paymentLinkAvailable() ? "[Esc] Back · ↑/↓ · l link" : "[Esc] Back · ↑/↓"}
               onScroll={(scroll) => (scrollDetails = scroll)}>
-              <text flexShrink={0}>{formatMoney(BigInt(shown().payment.amount_minor), shown().payment.scale, shown().payment.currency_code)}</text>
+              <text flexShrink={0}>{formatMoney(BigInt(shown().payment.amount), shown().payment.scale, shown().payment.currency_code)}</text>
               <text flexShrink={0}>Status: {shown().payment.status}</text>
               <text flexShrink={0}>Link: {shown().payment.source.title}</text>
               <text flexShrink={0}>Created: {formatTime(shown().payment.created_at)}</text>
