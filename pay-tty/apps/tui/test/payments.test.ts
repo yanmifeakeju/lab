@@ -4,8 +4,8 @@ import { test } from "node:test"
 import stringWidth from "string-width"
 
 import { narrowRow } from "../src/payment-link.ts"
-import { paymentRows, paymentTiming } from "../src/payments.ts"
-import { merchantPayment } from "./support.ts"
+import { filterLine, filters, paymentRows, paymentTiming, timelineLines } from "../src/payments.ts"
+import { merchantPayment, paymentDetail } from "./support.ts"
 
 const paymentRow = (
   payment: Parameters<typeof paymentRows>[0][number],
@@ -14,7 +14,7 @@ const paymentRow = (
   today: string,
 ) => paymentRows([payment], width, linked, today)[0] ?? ""
 
-void test("payment rows show time, status, amount and source, with expiry for pending payments", () => {
+void test("payment rows show time, state, amount and source, with expiry for pending payments", () => {
   const payment = merchantPayment({ status: "pending", completed_at: null })
   const row = paymentRow(payment, 90, false, "2026-10-22")
 
@@ -35,7 +35,7 @@ void test("payment rows fit wide titles and fall back below narrowRow without sp
     assert.ok(!row.includes("\n"))
 
     if (width < narrowRow) {
-      assert.match(row, /paid/)
+      assert.match(row, /setl/)
       assert.ok(!row.includes("図"))
     }
   }
@@ -78,7 +78,7 @@ void test("mixed-date pages align time, status and amount cells at narrow and wi
   })), 30, false, "2026-10-22")
 
   assert.ok(today.every((row) => row.startsWith("14:02 ")))
-  assert.ok(today[0]?.includes("paid "))
+  assert.ok(today[0]?.includes("setl "))
   assert.ok(today[1]?.includes("exp  "))
 })
 
@@ -137,7 +137,7 @@ void test("small amounts use only their own width, leaving room for the title", 
   const payment = merchantPayment({ amount: "10000" })
   const row = paymentRow(payment, 60, false, "2026-10-22")
 
-  assert.ok(row.startsWith("14:02  succeeded  ₦100.00  Logo design"))
+  assert.ok(row.startsWith("14:02  settled    ₦100.00  Logo design"))
 })
 
 
@@ -171,4 +171,45 @@ void test("expiry is either complete or absent around wide-row fit boundaries", 
     assert.ok(!paymentRows(payments, 46, linked, "2026-10-22")[1]?.includes("exp"))
     assert.ok(paymentRows(payments, 55, linked, "2026-10-22")[1]?.includes("expires 14:32"))
   }
+})
+
+void test("rows show the merchant's state, shortened when narrow", () => {
+  const states = [
+    [merchantPayment(), "settled", "setl"],
+    [merchantPayment({ state: "settling", settled_at: null, journal_ref: null }), "settling", "stlg"],
+    [merchantPayment({ state: "attention", settled_at: null, journal_ref: null }), "attention", "attn"],
+    [merchantPayment({ status: "failed" }), "failed", "fail"],
+  ] as const
+
+  for (const [payment, wide, narrow] of states) {
+    assert.match(paymentRow(payment, 90, false, "2026-10-22"), new RegExp(`14:02  ${wide} +₦25,000.00`))
+    assert.match(paymentRow(payment, narrowRow - 1, false, "2026-10-22"), new RegExp(`14:02 ${narrow} ₦25,000.00`))
+  }
+})
+
+void test("a payment's timeline reads as paid, then settled with its journal entry or refused with the ledger's code", () => {
+  assert.deepEqual(timelineLines(paymentDetail(merchantPayment())), [
+    "Paid ₦25,000.00 · 14:03",
+    "Settled · 14:03 · jrn_one",
+  ])
+
+  const refused = merchantPayment({ state: "attention", settled_at: null, journal_ref: null })
+
+  assert.deepEqual(timelineLines(paymentDetail(refused, [
+    { kind: "paid", at: "2026-10-22T14:03:00.000Z" },
+    { kind: "refused", at: "2026-10-22T14:03:05.000Z", error_code: "account_closed" },
+  ])), ["Paid ₦25,000.00 · 14:03", "Ledger refused: account_closed"])
+
+  assert.deepEqual(timelineLines(paymentDetail(merchantPayment({ status: "pending", completed_at: null }))), [])
+})
+
+void test("the filter line lists every state while it fits, and only the chosen one when it doesn't", () => {
+  const all = filterLine("attention", 200)
+
+  assert.equal(all, "← All · Settled · Settling · Pending · Failed · Cancelled · Expired · [Attention] →")
+  assert.equal(filters.length, 8)
+
+  assert.equal(filterLine("attention", stringWidth(all)), all)
+  assert.equal(filterLine("attention", stringWidth(all) - 1), "← Attention →")
+  assert.equal(filterLine(null, 20), "← All →")
 })

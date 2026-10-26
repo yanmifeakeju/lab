@@ -7,7 +7,7 @@ import { Database } from "../database/client.ts"
 import { createId } from "../database/ids.ts"
 import { Currency } from "../ledger/currency.ts"
 import { Ledger } from "../ledger/slug.ts"
-import { ledgers } from "../ledger/sql.ts"
+import { ledgerPostings, ledgers, platformAccounts } from "../ledger/sql.ts"
 import { maxAmount, paymentLinks, payments, paymentStatuses } from "./sql.ts"
 
 export { maxAmount } from "./sql.ts"
@@ -147,6 +147,15 @@ export const Outcome = Schema.Literals(["succeeded", "failed", "cancelled"])
 
 export type Outcome = typeof Outcome.Type
 
+/**
+ * Where a payment stands for its merchant: its effective status until it
+ * succeeds, then how its posting to the ledger is going. Worked out when read,
+ * never stored.
+ */
+export const State = Schema.Literals(["pending", "expired", "failed", "cancelled", "settling", "settled", "attention"])
+
+export type State = typeof State.Type
+
 export class Payment extends Schema.Class<Payment>("Payments.Payment")({
   id: PaymentID,
   linkId: ID,
@@ -172,7 +181,36 @@ export const Source = Schema.Union([
 
 export class PaymentSummary extends Schema.Class<PaymentSummary>("Payments.PaymentSummary")({
   ...Payment.fields,
+  state: State,
+  /** When the ledger posted the payment; null until it is settled. */
+  settledAt: Schema.NullOr(Schema.Date),
+  /** The ledger's journal entry for it, once there is one. */
+  journalRef: Schema.NullOr(Schema.String),
   source: Source,
+}) {}
+
+export class Paid extends Schema.TaggedClass<Paid>("Payments.Paid")("paid", { at: Schema.Date }) {}
+
+/** The ledger posted the payment to the merchant's account. */
+export class Settled extends Schema.TaggedClass<Settled>("Payments.Settled")("settled", {
+  at: Schema.Date,
+  journalRef: Schema.String,
+}) {}
+
+/** The ledger won't take the payment's posting, as of its last attempt. */
+export class Refused extends Schema.TaggedClass<Refused>("Payments.Refused")("refused", {
+  at: Schema.Date,
+  errorCode: Schema.String,
+}) {}
+
+/** What happened to a payment, oldest first. */
+export const Event = Schema.Union([Paid, Settled, Refused])
+
+export type Event = typeof Event.Type
+
+export class PaymentDetail extends Schema.Class<PaymentDetail>("Payments.PaymentDetail")({
+  payment: PaymentSummary,
+  timeline: Schema.Array(Event),
 }) {}
 
 export class CursorError extends Schema.TaggedError<CursorError>()("Payments.CursorError", {}) {}
@@ -195,7 +233,7 @@ const cursorValue = Schema.fromJsonString(Schema.Struct({
 
 export interface Filter {
   readonly linkId: ID | null
-  readonly status: Status | null
+  readonly state: State | null
 }
 
 /**
@@ -208,8 +246,14 @@ export class Stats extends Schema.Class<Stats>("Payments.Stats")({
   cancelled: Schema.Int,
   expired: Schema.Int,
   pending: Schema.Int,
-  /** The sum of succeeded payments, in minor units at the link's scale. */
+  /** Succeeded payments by how their posting stands; together, `succeeded`. */
+  settling: Schema.Int,
+  settled: Schema.Int,
+  attention: Schema.Int,
+  /** The sum of settled payments, in minor units at the link's scale. */
   collected: Schema.BigInt,
+  /** The sum of payments still settling. */
+  settlingAmount: Schema.BigInt,
   /** When the latest succeeded payment completed. */
   lastPaidAt: Schema.NullOr(Schema.Date),
 }) {}
@@ -252,6 +296,12 @@ export class ConflictError extends Schema.TaggedError<ConflictError>()(
   { businessId: Business.ID, existing: ID },
 ) {}
 
+/** The business's account isn't open yet, so it can't take payments. */
+export class InactiveBusinessError extends Schema.TaggedError<InactiveBusinessError>()(
+  "Payments.InactiveBusinessError",
+  { businessId: Business.ID },
+) {}
+
 /** No link has this share token. */
 export class LinkNotFoundError extends Schema.TaggedError<LinkNotFoundError>()("Payments.LinkNotFoundError", {}) {}
 
@@ -279,10 +329,10 @@ export class PaymentConflictError extends Schema.TaggedError<PaymentConflictErro
   { linkId: ID, existing: PaymentID },
 ) {}
 
-/** The link has no payment with this ID. */
+/** The link, or the business when the link is null, has no payment with this ID. */
 export class PaymentNotFoundError extends Schema.TaggedError<PaymentNotFoundError>()(
   "Payments.PaymentNotFoundError",
-  { linkId: ID, id: Schema.String },
+  { linkId: Schema.NullOr(ID), id: Schema.String },
 ) {}
 
 /** The payment already left pending, as it now stands. */
@@ -293,15 +343,16 @@ export class PaymentClosedError extends Schema.TaggedError<PaymentClosedError>()
 
 export interface Interface {
   /**
-   * Saves a link in the business's primary ledger. Idempotent per business
-   * and key: a repeat with the same details returns the saved link as first
-   * created, and one with other details conflicts.
+   * Saves a link in the business's primary ledger, once its account there is
+   * open. Idempotent per business and key: a repeat with the same details
+   * returns the saved link as first created, and one with other details
+   * conflicts.
    */
   readonly createLink: (
     businessId: Business.ID,
     idempotencyKey: IdempotencyKey,
     details: Details,
-  ) => Effect.Effect<Created, Business.NotFoundError | DetailsError | ConflictError>
+  ) => Effect.Effect<Created, Business.NotFoundError | InactiveBusinessError | DetailsError | ConflictError>
   /** The link behind a share token, deactivated or not. */
   readonly findLink: (shareToken: string) => Effect.Effect<Payable, LinkNotFoundError>
   /**
@@ -320,7 +371,8 @@ export interface Interface {
   >
   /**
    * Ends a pending payment of the link with the outcome a simulated provider
-   * reported. A payment past its expiry is expired instead, and refused.
+   * reported. A payment past its expiry is expired instead, and refused. A
+   * success commits with its ledger posting, for the relay to send.
    */
   readonly simulate: (
     shareToken: string,
@@ -329,11 +381,13 @@ export interface Interface {
   ) => Effect.Effect<Payment, LinkNotFoundError | PaymentNotFoundError | PaymentClosedError>
   /** The business's links with what each collected, and its totals. */
   readonly listLinks: (businessId: Business.ID) => Effect.Effect<Overview>
-  /** The business's payments, newest first, with effective statuses and filtered totals. */
+  /** The business's payments, newest first, with their states and filtered totals. */
   readonly listPayments: (
     businessId: Business.ID,
     filter: Filter & { readonly before: Cursor | null },
   ) => Effect.Effect<PaymentPage, LinkNotFoundError | CursorError>
+  /** One of the business's payments, with what has happened to it. */
+  readonly getPayment: (businessId: Business.ID, id: string) => Effect.Effect<PaymentDetail, PaymentNotFoundError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("Payments") {}
@@ -426,23 +480,81 @@ const statusCondition = (status: Status): SQL => {
 
 const effectiveStatus = sql<Status>`case when ${isStatus("pending")} and ${due} then 'expired' else ${payments.status} end`
 
-// Over the payments joined to the links selected; a link without any has none.
+// Over payments left-joined to their posting. A succeeded payment without one,
+// or whose posting the ledger won't take, needs the merchant's attention. Null
+// where a link has no payment.
+const state = sql<State>`case
+  when ${isStatus("succeeded")} then case
+    when ${ledgerPostings.state} in ('created', 'pending') then 'settling'
+    when ${ledgerPostings.state} = 'posted' then 'settled'
+    else 'attention'
+  end
+  else (${effectiveStatus})::text
+end`
+
+const inState = (value: State) => sql`(${state}) = ${value}`
+
+// As text: a sum can pass what a JavaScript number holds exactly.
+const summed = (condition: SQL) => sql<string>`coalesce(sum(${payments.amount}) filter (where ${condition}), 0)::text`
+
+// Over the payments, and their postings, joined to the links selected; a link
+// without any has none.
 const statsColumns = {
   succeeded: counted(isStatus("succeeded")),
   failed: counted(isStatus("failed")),
   cancelled: counted(isStatus("cancelled")),
   expired: counted(statusCondition("expired")),
   pending: counted(statusCondition("pending")),
-  // As text: a sum can pass what a JavaScript number holds exactly.
-  collected: sql<string>`coalesce(sum(${payments.amount}) filter (where ${isStatus("succeeded")}), 0)::text`,
+  settling: counted(inState("settling")),
+  settled: counted(inState("settled")),
+  attention: counted(inState("attention")),
+  collected: summed(inState("settled")),
+  settlingAmount: summed(inState("settling")),
   lastPaidAt: sql`max(${payments.completedAt}) filter (where ${isStatus("succeeded")})`.mapWith(payments.completedAt),
 }
+
+const postingOf = eq(ledgerPostings.paymentId, payments.id)
 
 type StatsRow = {
   readonly [K in keyof typeof statsColumns]: (typeof statsColumns)[K]["_"]["type"]
 }
 
-const statsOf = (row: StatsRow) => new Stats({ ...row, collected: BigInt(row.collected) })
+const statsOf = (row: StatsRow) =>
+  new Stats({ ...row, collected: BigInt(row.collected), settlingAmount: BigInt(row.settlingAmount) })
+
+// A payment as its merchant lists it, joined to its ledger, link and posting.
+const summaryColumns = {
+  ...paymentColumns,
+  status: effectiveStatus,
+  state,
+  title: paymentLinks.title,
+  // Null without a posting.
+  postingState: ledgerPostings.state,
+  journalRef: ledgerPostings.journalRef,
+  recordedAt: ledgerPostings.recordedAt,
+}
+
+interface SummaryRow extends PaymentRow {
+  readonly status: Status
+  readonly state: State
+  readonly title: string
+  readonly postingState: string | null
+  readonly journalRef: string | null
+  readonly recordedAt: Date | null
+}
+
+const summaryOf = ({ status, state, title, postingState, journalRef, recordedAt, ...row }: SummaryRow) =>
+  new PaymentSummary({
+    ...paymentFields(row),
+    status,
+    state,
+    settledAt: postingState === "posted" ? recordedAt : null,
+    journalRef,
+    source: { kind: "link", id: ID.make(row.payment.linkId), title },
+  })
+
+// Every query sees the same committed state, so rows and totals agree.
+const snapshot = { isolationLevel: "repeatable read", accessMode: "read only" } as const
 
 /** The currency and scale amounts are in. */
 export interface Unit {
@@ -557,7 +669,7 @@ const make = Effect.gen(function* () {
   ) {
     const owners = yield* database.use((db) =>
       db
-        .select({ ledger: ledgers.slug, ...inLedger })
+        .select({ ledger: ledgers.slug, status: businesses.status, ...inLedger })
         .from(businesses)
         .innerJoin(ledgers, eq(ledgers.slug, businesses.primaryLedger))
         .where(eq(businesses.id, businessId)),
@@ -567,6 +679,11 @@ const make = Effect.gen(function* () {
 
     if (owner === undefined) {
       return yield* new Business.NotFoundError({ id: businessId })
+    }
+
+    // A link would take payments the ledger has no account to credit.
+    if (owner.status !== "active") {
+      return yield* new InactiveBusinessError({ businessId })
     }
 
     const unit = { currencyCode: owner.currency, scale: owner.scale }
@@ -745,6 +862,55 @@ const make = Effect.gen(function* () {
     )
   })
 
+  // Records the money a succeeded payment brought in: from the ledger's cash
+  // into the business's payable account. The cash account is seeded and only
+  // an active business has links, so a missing one is a defect.
+  const post = Effect.fnUntraced(function* (payment: typeof payments.$inferSelect) {
+    const found = yield* database.use((db) =>
+      db
+        .select({ cash: platformAccounts.ledgerAccountRef, payable: businesses.primaryPayableAccountRef })
+        .from(businesses)
+        .leftJoin(
+          platformAccounts,
+          and(eq(platformAccounts.ledger, payment.ledger), eq(platformAccounts.label, "cash")),
+        )
+        .where(eq(businesses.id, payment.businessId)),
+    )
+
+    const cash = found[0]?.cash ?? null
+    const payable = found[0]?.payable ?? null
+    const completedAt = payment.completedAt
+
+    if (cash === null || payable === null) {
+      return yield* Effect.die(new Error(`no cash or payable account for payment ${payment.id} in ${payment.ledger}`))
+    }
+
+    if (completedAt === null) {
+      return yield* Effect.die(new Error(`succeeded payment ${payment.id} has no completion time`))
+    }
+
+    yield* database.use((db) =>
+      db.insert(ledgerPostings).values({
+        id: createId("lpost"),
+        businessId: payment.businessId,
+        ledger: payment.ledger,
+        paymentId: payment.id,
+        kind: "payment",
+        description: `Payment ${payment.id} via link ${payment.linkId}`,
+        // To the millisecond, as it is sent.
+        effectiveAt: completedAt,
+        lines: [
+          {
+            debit_account_ref: cash,
+            credit_account_ref: payable,
+            amount: payment.amount.toString(),
+            purpose: "payment",
+          },
+        ],
+      }),
+    )
+  })
+
   // Each step is one statement that only moves a pending payment, so two
   // outcomes reported at once can't both land, and an expiry always commits.
   const simulate = Effect.fn("Payments.simulate")(function* (
@@ -754,26 +920,38 @@ const make = Effect.gen(function* () {
   ) {
     const { link } = yield* findLink(shareToken)
 
-    const ended = yield* database.use((db) =>
-      db
-        .update(payments)
-        .set({ status: outcome, completedAt: sql`now()` })
-        .where(
-          and(
-            eq(payments.id, paymentId),
-            eq(payments.linkId, link.id),
-            eq(payments.status, "pending"),
-            gt(payments.expiresAt, sql`now()`),
-          ),
+    const ended = yield* database.transaction(
+      Effect.gen(function* () {
+        const updated = yield* database.use((db) =>
+          db
+            .update(payments)
+            .set({ status: outcome, completedAt: sql`now()` })
+            .where(
+              and(
+                eq(payments.id, paymentId),
+                eq(payments.linkId, link.id),
+                eq(payments.status, "pending"),
+                gt(payments.expiresAt, sql`now()`),
+              ),
+            )
+            .returning(),
         )
-        .returning(),
+
+        const payment = updated[0]
+
+        if (payment?.status === "succeeded") {
+          yield* post(payment)
+        }
+
+        return payment
+      }),
     )
 
     // A payment is always in its link's ledger.
     const ledger = { currency: link.currencyCode, scale: link.scale }
 
-    if (ended[0] !== undefined) {
-      return paymentOf({ payment: ended[0], ...ledger })
+    if (ended !== undefined) {
+      return paymentOf({ payment: ended, ...ledger })
     }
 
     const found = yield* database.use((db) =>
@@ -796,28 +974,37 @@ const make = Effect.gen(function* () {
   })
 
   const listLinks = Effect.fn("Payments.listLinks")(function* (businessId: Business.ID) {
-    const listed = yield* database.use((db) =>
-      db
-        .select({ ...linkColumns, ...statsColumns })
-        .from(paymentLinks)
-        .innerJoin(ledgers, eq(ledgers.slug, paymentLinks.ledger))
-        .leftJoin(payments, eq(payments.linkId, paymentLinks.id))
-        .where(eq(paymentLinks.businessId, businessId))
-        .groupBy(paymentLinks.id, ledgers.slug)
-        .orderBy(desc(paymentLinks.createdAt), desc(paymentLinks.id))
-        .limit(linkListLimit),
-    )
+    const { listed, totals } = yield* database.transaction(
+      Effect.gen(function* () {
+        const listed = yield* database.use((db) =>
+          db
+            .select({ ...linkColumns, ...statsColumns })
+            .from(paymentLinks)
+            .innerJoin(ledgers, eq(ledgers.slug, paymentLinks.ledger))
+            .leftJoin(payments, eq(payments.linkId, paymentLinks.id))
+            .leftJoin(ledgerPostings, postingOf)
+            .where(eq(paymentLinks.businessId, businessId))
+            .groupBy(paymentLinks.id, ledgers.slug)
+            .orderBy(desc(paymentLinks.createdAt), desc(paymentLinks.id))
+            .limit(linkListLimit),
+        )
 
-    const totals = yield* database.use((db) =>
-      db
-        .select({
-          linkCount: sql`count(distinct ${paymentLinks.id})`.mapWith(Number),
-          activeLinkCount: sql`count(distinct ${paymentLinks.id}) filter (where ${paymentLinks.deactivatedAt} is null)`.mapWith(Number),
-          ...statsColumns,
-        })
-        .from(paymentLinks)
-        .leftJoin(payments, eq(payments.linkId, paymentLinks.id))
-        .where(eq(paymentLinks.businessId, businessId)),
+        const totals = yield* database.use((db) =>
+          db
+            .select({
+              linkCount: sql`count(distinct ${paymentLinks.id})`.mapWith(Number),
+              activeLinkCount: sql`count(distinct ${paymentLinks.id}) filter (where ${paymentLinks.deactivatedAt} is null)`.mapWith(Number),
+              ...statsColumns,
+            })
+            .from(paymentLinks)
+            .leftJoin(payments, eq(payments.linkId, paymentLinks.id))
+            .leftJoin(ledgerPostings, postingOf)
+            .where(eq(paymentLinks.businessId, businessId)),
+        )
+
+        return { listed, totals }
+      }),
+      snapshot,
     )
 
     const row = totals[0]
@@ -869,24 +1056,24 @@ const make = Effect.gen(function* () {
     const where = and(
       eq(payments.businessId, businessId),
       linkId === null ? undefined : eq(payments.linkId, linkId),
-      filter.status === null ? undefined : statusCondition(filter.status),
+      filter.state === null ? undefined : inState(filter.state),
     )
 
-    // One transaction gives rows and totals the same clock for effective expiry.
+    // One snapshot gives rows and totals the same clock for effective expiry,
+    // and the same postings while the relay settles them.
     return yield* database.transaction(
       Effect.gen(function* () {
         const listed = yield* database.use((db) =>
           db
             .select({
-              ...paymentColumns,
-              status: effectiveStatus,
-              title: paymentLinks.title,
+              ...summaryColumns,
               // Stable across DateStyle settings, with every microsecond retained.
               at: sql<string>`to_char(${payments.createdAt} at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') || '+00'`,
             })
             .from(payments)
             .innerJoin(ledgers, eq(ledgers.slug, payments.ledger))
             .innerJoin(paymentLinks, eq(paymentLinks.id, payments.linkId))
+            .leftJoin(ledgerPostings, postingOf)
             .where(
               and(
                 where,
@@ -900,7 +1087,7 @@ const make = Effect.gen(function* () {
         )
 
         const totals = yield* database.use((db) =>
-          db.select(statsColumns).from(payments).where(where),
+          db.select(statsColumns).from(payments).leftJoin(ledgerPostings, postingOf).where(where),
         )
 
         const total = totals[0]
@@ -923,22 +1110,56 @@ const make = Effect.gen(function* () {
         }
 
         return new PaymentPage({
-          payments: page.map(
-            ({ payment, currency, scale, status, title }) =>
-              new PaymentSummary({
-                ...paymentFields({ payment, currency, scale }),
-                status,
-                source: { kind: "link", id: ID.make(payment.linkId), title },
-              }),
-          ),
+          payments: page.map(summaryOf),
           stats: statsOf(total),
           next,
         })
       }),
+      snapshot,
     )
   })
 
-  return Service.of({ createLink, findLink, startPayment, simulate, listLinks, listPayments })
+  const getPayment = Effect.fn("Payments.getPayment")(function* (businessId: Business.ID, id: string) {
+    const found = yield* database.use((db) =>
+      db
+        .select({
+          ...summaryColumns,
+          errorCode: ledgerPostings.errorCode,
+          lastAttemptAt: ledgerPostings.lastAttemptAt,
+        })
+        .from(payments)
+        .innerJoin(ledgers, eq(ledgers.slug, payments.ledger))
+        .innerJoin(paymentLinks, eq(paymentLinks.id, payments.linkId))
+        .leftJoin(ledgerPostings, postingOf)
+        .where(and(eq(payments.id, id), eq(payments.businessId, businessId))),
+    )
+
+    const row = found[0]
+
+    if (row === undefined) {
+      return yield* new PaymentNotFoundError({ linkId: null, id })
+    }
+
+    const { errorCode, lastAttemptAt, ...summary } = row
+    const { payment, postingState, journalRef, recordedAt } = summary
+    const timeline: Array<Event> = []
+
+    if (payment.status === "succeeded" && payment.completedAt !== null) {
+      timeline.push(new Paid({ at: payment.completedAt }))
+    }
+
+    if (postingState === "posted" && recordedAt !== null && journalRef !== null) {
+      timeline.push(new Settled({ at: recordedAt, journalRef }))
+    }
+
+    if (postingState === "refused" && lastAttemptAt !== null && errorCode !== null) {
+      timeline.push(new Refused({ at: lastAttemptAt, errorCode }))
+    }
+
+    return new PaymentDetail({ payment: summaryOf(summary), timeline })
+  })
+
+  return Service.of({ createLink, findLink, startPayment, simulate, listLinks, listPayments, getPayment })
 })
 
 export const layer = Layer.effect(Service)(make)

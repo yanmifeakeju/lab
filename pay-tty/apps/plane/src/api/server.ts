@@ -8,6 +8,7 @@ import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder"
 import * as HttpApiScalar from "effect/unstable/httpapi/HttpApiScalar"
 
+import { Relay } from "../relay/relay.ts"
 import { api } from "./api.ts"
 import { BusinessLive } from "./business/handlers.ts"
 import { HealthLive } from "./health/handlers.ts"
@@ -32,6 +33,7 @@ const ServerLive = NodeHttpServer.layerConfig(createServer, {
   port: Config.Port("PORT").pipe(Config.withDefault(3000)),
 })
 
+// The relay runs as long as the server does.
 export const Plane = HttpRouter.serve(
   Layer.mergeAll(ApiLive, UnknownErrorResponse),
-).pipe(Layer.provide(ServerLive))
+).pipe(Layer.provide(ServerLive), Layer.provide(Relay.layer))

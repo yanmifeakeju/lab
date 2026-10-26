@@ -2,16 +2,23 @@ import { sql } from "drizzle-orm"
 import {
   boolean,
   check,
+  foreignKey,
+  index,
+  integer,
+  jsonb,
   pgEnum,
   pgTable,
   primaryKey,
   smallint,
   text,
+  timestamp,
   unique,
   uniqueIndex,
 } from "drizzle-orm/pg-core"
 
+import { businesses } from "../business/sql.ts"
 import { createdAt, timestamps } from "../database/columns.ts"
+import { payments } from "../payments/sql.ts"
 
 // The ledgers the platform operates, mirrored from the ledger service with the
 // currency and scale it fixes for every amount. Rows, not a type: ledgers come
@@ -61,4 +68,78 @@ export const platformAccounts = pgTable(
     ...timestamps,
   },
   (table) => [primaryKey({ columns: [table.ledger, table.label] })],
+)
+
+export const postingStates = ["created", "pending", "posted", "voided", "expired", "refused"] as const
+
+export const postingState = pgEnum("ledger_posting_state", postingStates)
+
+/** One line of a posting, as stored: the amount is minor units as text. */
+export interface PostingLine {
+  readonly debit_account_ref: string
+  readonly credit_account_ref: string
+  readonly amount: string
+  readonly purpose: string
+}
+
+const at = (name: string) => timestamp(name, { withTimezone: true, mode: "date" })
+
+// One movement of a merchant's money that plane asks the ledger to make,
+// written with its cause. The payload is fixed at creation, so every retry
+// sends the same entry. Rows are never deleted.
+export const ledgerPostings = pgTable(
+  "ledger_postings",
+  {
+    // Also the ledger's Idempotency-Key.
+    id: text("id").primaryKey(),
+    businessId: text("business_id")
+      .notNull()
+      .references(() => businesses.id, { onDelete: "restrict" }),
+    ledger: text("ledger")
+      .notNull()
+      .references(() => ledgers.slug, { onUpdate: "cascade" }),
+    // The cause. Exactly one is set; refunds and payouts join later.
+    paymentId: text("payment_id").references(() => payments.id, { onDelete: "restrict" }),
+    kind: text("kind").notNull(),
+    // Immutable IDs only, so it never goes stale.
+    description: text("description").notNull(),
+    effectiveAt: at("effective_at").notNull(),
+    lines: jsonb("lines").$type<ReadonlyArray<PostingLine>>().notNull(),
+    state: postingState("state").default("created").notNull(),
+    // The first entry: posted, or the pending authorization.
+    journalRef: text("journal_ref"),
+    // The capture, void or expiry entry, when it went through pending.
+    resolutionRef: text("resolution_ref"),
+    errorCode: text("error_code"),
+    attempts: integer("attempts").default(0).notNull(),
+    lastAttemptAt: at("last_attempt_at"),
+    ...createdAt,
+    // When the ledger accepted the first entry.
+    recordedAt: at("recorded_at"),
+  },
+  (table) => [
+    check("ledger_postings_one_cause", sql`num_nonnulls(${table.paymentId}) = 1`),
+    // A payment's posting is always in the payment's own ledger.
+    foreignKey({
+      name: "ledger_postings_payment_ledger_fk",
+      columns: [table.paymentId, table.ledger],
+      foreignColumns: [payments.id, payments.ledger],
+    }).onUpdate("cascade"),
+    check(
+      "ledger_postings_state_shape",
+      sql`(${table.state} = 'created'
+          and ${table.journalRef} is null and ${table.resolutionRef} is null and ${table.errorCode} is null)
+        or (${table.state} = 'pending'
+          and ${table.journalRef} is not null and ${table.resolutionRef} is null and ${table.errorCode} is null)
+        or (${table.state} = 'posted'
+          and ${table.journalRef} is not null and ${table.errorCode} is null)
+        or (${table.state} in ('voided', 'expired')
+          and ${table.journalRef} is not null and ${table.resolutionRef} is not null and ${table.errorCode} is null)
+        or (${table.state} = 'refused'
+          and ${table.errorCode} is not null and ${table.resolutionRef} is null)`,
+    ),
+    check("ledger_postings_recorded_with_journal", sql`(${table.journalRef} is null) = (${table.recordedAt} is null)`),
+    uniqueIndex("ledger_postings_payment_unique").on(table.paymentId).where(sql`${table.paymentId} is not null`),
+    index("ledger_postings_created_idx").on(table.createdAt).where(sql`${table.state} = 'created'`),
+  ],
 )

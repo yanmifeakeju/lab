@@ -2,6 +2,7 @@ import { Payments } from "@pay-tty/core/payments"
 import { Effect, Match } from "effect"
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder"
 
+import { Relay } from "../../relay/relay.ts"
 import { api } from "../api.ts"
 import { Conflict, InvalidRequestError, NotFound, ValidationError, ValidationErrorDetail } from "../errors.ts"
 import { payableLink, payment } from "./routes.ts"
@@ -81,6 +82,8 @@ export const PayLive = HttpApiBuilder.group(api, "pay", (handlers) =>
       Effect.gen(function* () {
         const payments = yield* Payments.Service
 
+        const relay = yield* Relay.Service
+
         const ended = yield* payments.simulate(params.share_token, params.payment_id, payload.outcome).pipe(
           Effect.catchTags({
             "Payments.LinkNotFoundError": () => Effect.fail(linkNotFound()),
@@ -89,6 +92,11 @@ export const PayLive = HttpApiBuilder.group(api, "pay", (handlers) =>
             "Payments.PaymentClosedError": (error) => Effect.fail(closed(error)),
           }),
         )
+
+        // Its posting committed with it; the customer doesn't wait on the ledger.
+        if (ended.status === "succeeded") {
+          yield* relay.nudge
+        }
 
         return payment(ended)
       }),

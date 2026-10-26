@@ -1,5 +1,5 @@
 import { LedgerClient } from "@pay-tty/core/ledger"
-import { CreatePayableAccountRequestJson } from "@pay-tty/ledger-client"
+import { CreatePayableAccountRequestJson, PostJournalEntryRequestJson } from "@pay-tty/ledger-client"
 import { ConfigProvider, Effect, Layer, Schema } from "effect"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientError from "effect/unstable/http/HttpClientError"
@@ -79,29 +79,79 @@ export const invalid: Reply = {
   },
 }
 
+/** A journal entry posted under its idempotency key. */
+export interface Entry {
+  readonly key: string
+  readonly payload: PostJournalEntryRequestJson
+}
+
+// Like the ledger: a repeat of a key gets the entry it first posted, with 200.
+export const posting = () => {
+  const posted = new Map<string, { readonly body: object }>()
+
+  return ({ key, payload }: Entry): Reply => {
+    const first = posted.get(key)
+
+    if (first !== undefined) {
+      return { status: 200, body: first.body }
+    }
+
+    const body = {
+      journal_ref: `jrn_${ulid()}`,
+      ledger_slug: payload.ledger,
+      kind: payload.kind,
+      state: "posted",
+      description: payload.description,
+      effective_at: payload.effective_at ?? "2026-01-01T00:00:00Z",
+      created_at: "2026-01-01T00:00:00Z",
+    }
+
+    posted.set(key, { body })
+
+    return { status: 201, body }
+  }
+}
+
 export interface FakeLedger {
+  // Payable account creations, and what the ledger answered each.
   readonly requests: ReadonlyArray<Payload>
   readonly replies: ReadonlyArray<Reply>
+  readonly entries: ReadonlyArray<Entry>
   readonly layer: Layer.Layer<LedgerClient.Service>
 }
 
-export const fakeLedger = (reply: (payload: Payload) => Reply = remembering()): FakeLedger => {
+export const fakeLedger = (
+  reply: (payload: Payload) => Reply = remembering(),
+  post: (entry: Entry) => Reply = posting(),
+): FakeLedger => {
   const requests: Array<Payload> = []
   const replies: Array<Reply> = []
+  const entries: Array<Entry> = []
 
   const http = HttpClient.make((request) =>
     Effect.gen(function* () {
       const web = yield* Effect.orDie(HttpClientRequest.toWeb(request))
+      const body = yield* Effect.promise(() => web.json())
+      let answer: Reply
 
-      const payload = yield* Effect.orDie(
-        Schema.decodeUnknownEffect(CreatePayableAccountRequestJson)(yield* Effect.promise(() => web.json())),
-      )
+      if (new URL(web.url).pathname === "/entries") {
+        const entry = {
+          key: web.headers.get("idempotency-key") ?? "",
+          payload: yield* Effect.orDie(Schema.decodeUnknownEffect(PostJournalEntryRequestJson)(body)),
+        }
 
-      const answer = reply(payload)
+        answer = post(entry)
 
-      requests.push(payload)
+        entries.push(entry)
+      } else {
+        const payload = yield* Effect.orDie(Schema.decodeUnknownEffect(CreatePayableAccountRequestJson)(body))
 
-      replies.push(answer)
+        answer = reply(payload)
+
+        requests.push(payload)
+
+        replies.push(answer)
+      }
 
       if (answer === "unreachable") {
         return yield* new HttpClientError.HttpClientError({
@@ -121,6 +171,7 @@ export const fakeLedger = (reply: (payload: Payload) => Reply = remembering()): 
   return {
     requests,
     replies,
+    entries,
     // Configured here, so the tests need no LEDGER_BASE_URL.
     layer: LedgerClient.layer.pipe(
       Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),

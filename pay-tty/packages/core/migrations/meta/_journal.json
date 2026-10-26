@@ -50,6 +50,20 @@
       "when": 1792915371201,
       "tag": "0006_ledger-currency-scale-immutable",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1792991590332,
+      "tag": "0007_ledger-postings",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792991600616,
+      "tag": "0008_post-earlier-payments",
+      "breakpoints": true
     }
   ]
 }

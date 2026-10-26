@@ -21,7 +21,11 @@ const createBusiness = Effect.gen(function* () {
 
   const principal = yield* principals.ensure({ issuer: "payments-test", subject: ulid() })
 
-  return yield* businesses.create(principal.id, new Business.Details({ name: "Acme Ltd", countryCode: "NG" }))
+  const business = yield* businesses.create(principal.id, new Business.Details({ name: "Acme Ltd", countryCode: "NG" }))
+
+  yield* Testing.openAccount(business.id)
+
+  return business
 })
 
 const key = () => Payments.IdempotencyKey.make(`key_${ulid()}`)
@@ -252,6 +256,7 @@ void test("a ledger keeps its currency and scale, but a new slug reaches its lin
             primaryLedger: slug,
           }),
         )
+        yield* Testing.openAccount(businessId)
 
         const { link } = yield* create(businessId, key(), fixed())
         const { payment } = yield* service.startPayment(link.shareToken, key(), null)
@@ -301,6 +306,23 @@ void test("an unknown business is not found, and nothing is saved", () =>
 
         assert.ok(Predicate.isTagged(error, "Business.NotFoundError"))
         assert.equal((yield* rows(missing)).length, 0)
+      }),
+    ),
+  ))
+
+void test("a business whose account isn't open yet gets no link, and nothing is saved", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const principals = yield* Principal.Service
+        const businesses = yield* Business.Service
+        const principal = yield* principals.ensure({ issuer: "payments-test", subject: ulid() })
+        const business = yield* businesses.create(principal.id, new Business.Details({ name: "Acme Ltd", countryCode: "NG" }))
+
+        const error = yield* Effect.flip(create(business.id, key(), fixed()))
+
+        assert.ok(Predicate.isTagged(error, "Payments.InactiveBusinessError"))
+        assert.equal((yield* rows(business.id)).length, 0)
       }),
     ),
   ))
@@ -493,7 +515,7 @@ void test("payments page newest first without losing equal or microsecond timest
     let before: Payments.Cursor | null = null
 
     do {
-      const page: Payments.PaymentPage = yield* service.listPayments(business.id, { linkId: link.id, status: null, before })
+      const page: Payments.PaymentPage = yield* service.listPayments(business.id, { linkId: link.id, state: null, before })
 
       assert.equal(page.stats.pending, 107, "totals ignore the cursor")
       assert.ok(page.payments.every((payment) => payment.source.title === link.title))
@@ -511,12 +533,12 @@ void test("payments page newest first without losing equal or microsecond timest
     assert.equal(ours.length, seen.length)
     assert.deepEqual(seen, ordered.map((row) => row.id))
 
-    const all = yield* service.listPayments(business.id, { linkId: null, status: null, before: null })
+    const all = yield* service.listPayments(business.id, { linkId: null, state: null, before: null })
 
     assert.equal(all.stats.pending, 108)
     assert.ok(all.payments.every((payment) => payment.businessId === business.id))
     assert.ok(Predicate.isTagged(yield* Effect.flip(service.listPayments(business.id, {
-      linkId: foreign.id, status: null, before: null,
+      linkId: foreign.id, state: null, before: null,
     })), "Payments.LinkNotFoundError"))
   }))))
 
@@ -536,27 +558,28 @@ void test("effective expiry agrees across rows, filters and totals, and malforme
       expiresAt: sql`now() - interval '1 minute'`,
     }).where(eq(paymentRows.id, expired.id)))
 
-    for (const status of [null, "pending", "expired", "succeeded", "failed", "cancelled"] as const) {
-      const page = yield* service.listPayments(business.id, { linkId: null, status, before: null })
+    for (const state of [null, "pending", "expired", "settling", "failed", "cancelled"] as const) {
+      const page = yield* service.listPayments(business.id, { linkId: null, state, before: null })
 
       assert.equal(page.next, null)
-      assert.equal(page.stats.pending, page.payments.filter((payment) => payment.status === "pending").length)
-      assert.equal(page.stats.expired, page.payments.filter((payment) => payment.status === "expired").length)
-      assert.equal(page.stats.succeeded, page.payments.filter((payment) => payment.status === "succeeded").length)
-      assert.equal(page.stats.collected, status === null || status === "succeeded" ? paid.amount : 0n)
+      assert.equal(page.stats.pending, page.payments.filter((payment) => payment.state === "pending").length)
+      assert.equal(page.stats.expired, page.payments.filter((payment) => payment.state === "expired").length)
+      assert.equal(page.stats.settling, page.payments.filter((payment) => payment.state === "settling").length)
+      assert.equal(page.stats.settlingAmount, state === null || state === "settling" ? paid.amount : 0n)
+      assert.equal(page.stats.collected, 0n)
 
-      if (status === "pending") {
+      if (state === "pending") {
         assert.deepEqual(page.payments.map((payment) => payment.id), [pending.id])
       }
 
-      if (status === "expired") {
-        assert.deepEqual(page.payments.map((payment) => payment.id), [expired.id])
+      if (state === "expired") {
+        assert.deepEqual(page.payments.map((payment) => [payment.id, payment.status]), [[expired.id, "expired"]])
       }
     }
 
     for (const before of ["!", Encoding.encodeBase64Url("{}"), Encoding.encodeBase64Url('{"at":"2026-02-30 12:00:00+00","id":"pay_bad"}')]) {
       assert.ok(Predicate.isTagged(yield* Effect.flip(service.listPayments(business.id, {
-        linkId: null, status: null, before: Payments.Cursor.make(before),
+        linkId: null, state: null, before: Payments.Cursor.make(before),
       })), "Payments.CursorError"))
     }
   }))))
@@ -595,7 +618,7 @@ void test("expired filters isolate both the business and the link, including ove
         for (const linkId of [null, link.id]) {
           const page = yield* service.listPayments(business.id, {
             linkId,
-            status: "expired",
+            state: "expired",
             before: null,
           })
 

@@ -1,6 +1,8 @@
 import { and, eq, sql } from "drizzle-orm"
 import { Data, Effect, Exit } from "effect"
+import { ulid } from "ulid"
 
+import { businesses } from "../business/sql.ts"
 import { Database } from "../database/client.ts"
 import { ledgers } from "../ledger/sql.ts"
 import { paymentLinks, payments } from "../payments/sql.ts"
@@ -95,6 +97,25 @@ export const clearCountryDefault = (countryCode: string) =>
         .set({ isCountryDefault: false })
         .where(and(eq(ledgers.countryCode, countryCode), eq(ledgers.isCountryDefault, true))),
     )
+  })
+
+/**
+ * Gives the business a payable account and activates it, as opening one in
+ * the ledger does, without asking the ledger. Returns the account's ref.
+ */
+export const openAccount = (businessId: string) =>
+  Effect.gen(function* () {
+    const database = yield* Database
+    const accountRef = `acct_${ulid()}`
+
+    yield* database.use((db) =>
+      db
+        .update(businesses)
+        .set({ primaryPayableAccountRef: accountRef, ledgerHolderRef: `hld_${ulid()}`, status: "active" })
+        .where(eq(businesses.id, businessId)),
+    )
+
+    return accountRef
   })
 
 /** Deactivates the link, as a merchant will once that exists. */

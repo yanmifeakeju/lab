@@ -19,7 +19,7 @@ import {
   totalsLine,
   withMode,
 } from "./payment-link.ts"
-import { filterLabel, filters, type Page, paymentRows, paymentTiming, type Status } from "./payments.ts"
+import { filterLine, filters, type Page, paymentRows, paymentTiming, type State as PaymentState, timelineLines } from "./payments.ts"
 import { formatMoney } from "./money.ts"
 import { type Business, type Popup, type State, View } from "./session.ts"
 
@@ -30,7 +30,7 @@ export interface Actions {
   readonly managePayments: () => void
   readonly linkPayments: (id: string) => void
   readonly refreshPayments: () => void
-  readonly filterPayments: (status: Status | null) => void
+  readonly filterPayments: (state: PaymentState | null) => void
   readonly morePayments: () => void
   readonly openPayment: (id: string) => void
   readonly manageLinks: () => void
@@ -407,7 +407,7 @@ const LinkList = (props: {
 const PaymentList = (props: {
   readonly business: Business
   readonly page: Page
-  readonly status: Status | null
+  readonly state: PaymentState | null
   readonly title: string | undefined
   readonly selected: number
   readonly pending: boolean
@@ -430,17 +430,17 @@ const PaymentList = (props: {
         {totalsLine(props.page.stats, props.business.ledger?.scale ?? 0, props.business.currency_code, rowWidth() < narrowRow)}
       </text>
       <text flexShrink={0} fg={muted}>
-        {rowWidth() < narrowRow ? "← " + filterLabel(props.status) + " →"
-          : "← " + filters.map((status) => status === props.status ? "[" + filterLabel(status) + "]" : filterLabel(status)).join(" · ") + " →"}
+        {filterLine(props.state, rowWidth())}
       </text>
       <Show when={props.page.payments.length > 0} fallback={
         <text flexShrink={0} fg={muted}>
-          {props.status === null ? "No payments yet." : "No " + props.status + " payments."}
+          {props.state === null ? "No payments yet." : "No " + props.state + " payments."}
         </text>
       }>
         <scrollbox ref={(box) => (rows = box)} flexGrow={1} flexShrink={1} scrollY contentOptions={gutter}>
           <For each={props.page.payments}>{(payment, index) => (
-            <text id={"payment-row-" + payment.id} flexShrink={0} fg={index() === props.selected ? bright : muted}>
+            <text id={"payment-row-" + payment.id} flexShrink={0}
+              fg={payment.state === "attention" ? error : index() === props.selected ? bright : muted}>
               {index() === props.selected ? "› " : "  "}
               {formattedRows()[index()]}
             </text>
@@ -579,7 +579,7 @@ export const App = (props: {
     const shown = paymentDetail()
 
     return shown?.list.origin._tag === "LinkDetail" &&
-      shown.list.origin.overview.links.some((link) => link.id === shown.payment.source.id)
+      shown.list.origin.overview.links.some((link) => link.id === shown.detail.payment.source.id)
   }
 
   const [section, setSection] = createSignal(0)
@@ -679,7 +679,7 @@ export const App = (props: {
       }
 
       if (key.name === "l" && paymentLinkAvailable()) {
-        props.actions.openLink(payment.payment.source.id)
+        props.actions.openLink(payment.detail.payment.source.id)
       }
 
       return
@@ -698,7 +698,7 @@ export const App = (props: {
       }
 
       if (key.name === "left" || key.name === "right") {
-        const index = filters.indexOf(paymentList.filter.status)
+        const index = filters.indexOf(paymentList.filter.state)
         setPaymentSelected(0)
         props.actions.filterPayments(filters[(index + (key.name === "left" ? -1 : 1) + filters.length) % filters.length] ?? null)
       }
@@ -889,7 +889,7 @@ export const App = (props: {
           {(shown) => <PaymentList
             business={shown().business}
             page={shown().page}
-            status={shown().filter.status}
+            state={shown().filter.state}
             title={paymentTitle()}
             selected={paymentSelection()}
             pending={props.state().pending}
@@ -900,12 +900,20 @@ export const App = (props: {
             <LinkScreen heading="Payment" copied={null}
               hint={paymentLinkAvailable() ? "[Esc] Back · ↑/↓ · l link" : "[Esc] Back · ↑/↓"}
               onScroll={(scroll) => (scrollDetails = scroll)}>
-              <text flexShrink={0}>{formatMoney(BigInt(shown().payment.amount), shown().payment.scale, shown().payment.currency_code)}</text>
-              <text flexShrink={0}>Status: {shown().payment.status}</text>
-              <text flexShrink={0}>Link: {shown().payment.source.title}</text>
-              <text flexShrink={0}>Created: {formatTime(shown().payment.created_at)}</text>
-              <text flexShrink={0}>{paymentTiming(shown().payment)}</text>
-              <text flexShrink={0} fg={muted}>Payment ID: {shown().payment.id}</text>
+              <text flexShrink={0}>{formatMoney(BigInt(shown().detail.payment.amount), shown().detail.payment.scale, shown().detail.payment.currency_code)}</text>
+              <Show when={shown().detail.payment.state === "attention"}
+                fallback={<text flexShrink={0}>Status: {shown().detail.payment.state}</text>}>
+                <text flexShrink={0} fg={error}>Status: attention</text>
+              </Show>
+              <text flexShrink={0}>Link: {shown().detail.payment.source.title}</text>
+              <text flexShrink={0}>Created: {formatTime(shown().detail.payment.created_at)}</text>
+              <text flexShrink={0}>{paymentTiming(shown().detail.payment)}</text>
+              <For each={timelineLines(shown().detail)}>{(line, index) => (
+                <Show when={shown().detail.timeline[index()]?.kind === "refused"} fallback={<text flexShrink={0}>{line}</text>}>
+                  <text flexShrink={0} fg={error}>{line}</text>
+                </Show>
+              )}</For>
+              <text flexShrink={0} fg={muted}>Payment ID: {shown().detail.payment.id}</text>
             </LinkScreen>
           )}
         </Match>

@@ -1,7 +1,7 @@
 import { NodeRuntime } from "@effect/platform-node";
 import { Business } from "@pay-tty/core/business";
 import { layer as DatabaseLayer } from "@pay-tty/core/database";
-import { Catalog, LedgerClient, PayableAccounts } from "@pay-tty/core/ledger";
+import { Catalog, LedgerClient, LedgerPostings, PayableAccounts } from "@pay-tty/core/ledger";
 import { Payments } from "@pay-tty/core/payments";
 import { Principal } from "@pay-tty/core/principal";
 import { Effect, Layer } from "effect";
@@ -20,7 +20,7 @@ const LedgerClientLive = LedgerClient.layer.pipe(Layer.provide(FetchHttpClient.l
 
 const RuntimeLive = Layer.mergeAll(
   AuthenticationLive,
-  PayableAccounts.layer.pipe(Layer.provide(LedgerClientLive)),
+  Layer.mergeAll(PayableAccounts.layer, LedgerPostings.layer).pipe(Layer.provide(LedgerClientLive)),
 ).pipe(
   Layer.provideMerge(Token.layer),
   Layer.provideMerge(DomainLive),

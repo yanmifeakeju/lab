@@ -1,6 +1,4 @@
-import type { ApiErrorResponse } from "@pay-tty/ledger-client"
 import { Context, Effect, Layer, Result, Schema } from "effect"
-import * as HttpClientError from "effect/unstable/http/HttpClientError"
 
 import { LedgerClient } from "./client.ts"
 import { Ledger } from "./slug.ts"
@@ -47,39 +45,16 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("PayableAccounts") {}
 
-type LedgerFailure =
-  | ApiErrorResponse
-  | HttpClientError.HttpClientError
-  | Schema.SchemaError
-
-// Transport failures and the ledger's own 500s are worth retrying as-is. An
-// answer that isn't the JSON promised is ours to chase, and anything else is
-// the ledger refusing this holder. A 400 means we sent what the ledger won't
-// take, such as a catalog ledger it doesn't have: a defect, since the caller
-// can do nothing about it.
-const classify = (failure: LedgerFailure): Effect.Effect<never, Error> => {
-  if (HttpClientError.isHttpClientError(failure)) {
-    // The client reports an unparsable or missing body as an HTTP error too,
-    // but the ledger did answer.
-    return failure.reason instanceof HttpClientError.DecodeError ||
-        failure.reason instanceof HttpClientError.EmptyBodyError
-      ? Effect.fail(new BadResponseError({ reason: failure.reason.message }))
-      : Effect.fail(new UnavailableError())
-  }
-
-  if (Schema.isSchemaError(failure)) {
-    return Effect.fail(new BadResponseError({ reason: failure.message }))
-  }
-
-  switch (failure.error.code) {
-    case "internal_server_error":
-      return Effect.fail(new UnavailableError())
-    case "validation_error":
-      return Effect.die(failure)
-    default:
-      return Effect.fail(new RejectedError({ reason: failure.error.code }))
-  }
-}
+// A 400 here is a catalog ledger the ledger service doesn't have.
+const classify = (failure: LedgerClient.Failure): Effect.Effect<never, Error> =>
+  Effect.flatMap(LedgerClient.classify(failure), (verdict) =>
+    LedgerClient.Verdict.$match(verdict, {
+      Unavailable: () => Effect.fail(new UnavailableError()),
+      BadResponse: ({ reason }) => Effect.fail(new BadResponseError({ reason })),
+      Rejected: ({ code }) => Effect.fail(new RejectedError({ reason: code })),
+      Invalid: ({ response }) => Effect.die(response),
+    }),
+  )
 
 const make = Effect.gen(function* () {
   const client = yield* LedgerClient.Service

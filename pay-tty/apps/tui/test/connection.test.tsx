@@ -20,6 +20,7 @@ import {
   inTurn,
   listed,
   merchantPayment,
+  paymentDetail,
   paymentPage,
   me,
   overview,
@@ -1170,7 +1171,9 @@ void test("business menu arrows and p/l open the sections; link p preserves the 
 
     const detail = yield* tui.showing("Payment ID: pay_one")
 
-    assert.match(detail, /Status: succeeded/)
+    assert.match(detail, /Status: settled/)
+    assert.match(detail, /Paid ₦25,000\.00 · 14:03/)
+    assert.match(detail, /Settled · 14:03 · jrn_one/)
     assert.match(detail, /Link: Logo design/)
     assert.ok(!detail.includes("c copy"))
     assert.ok(!detail.includes("l link"))
@@ -1233,9 +1236,9 @@ void test("payments load more, cycle filters, refresh and show empty states", sc
     assert.equal(plane.calls.at(-1)?.query.get("before"), "next")
 
     tui.keys.pressArrow("right")
-    yield* tui.showing("No succeeded payments.")
+    yield* tui.showing("No settled payments.")
     tui.keys.pressKey("r")
-    yield* tui.showing("No succeeded payments.")
+    yield* tui.showing("No settled payments.")
 
     assert.equal(plane.calls.at(-1)?.query.get("before"), null)
 
@@ -1289,12 +1292,12 @@ void test("the business menu fits at 32×10 and payment detail offers l for a li
 
 void test("wide payments show filter arrows and unswept expiry has an expired-at detail", scenario(
   Effect.gen(function* () {
+    const expired = merchantPayment({ status: "expired", completed_at: null })
+
     const plane = fakePlane({
       me: me(active),
-      listPayments: () => ({
-        status: 200,
-        body: paymentPage([merchantPayment({ status: "expired", completed_at: null })]),
-      }),
+      listPayments: () => ({ status: 200, body: paymentPage([expired]) }),
+      getPayment: () => ({ status: 200, body: paymentDetail(expired) }),
     })
 
     const tui = yield* screen(plane, { width: 100, height: 20 })
@@ -1302,7 +1305,7 @@ void test("wide payments show filter arrows and unswept expiry has an expired-at
     yield* tui.showing("› Payments")
     tui.keys.pressKey("p")
 
-    const list = yield* tui.showing("Expired →")
+    const list = yield* tui.showing("Attention →")
 
     assert.match(list, /← \[All\]/)
 

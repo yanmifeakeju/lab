@@ -5,6 +5,7 @@ import {
   type PayableLinkEncoded,
   type PaymentEncoded,
   type PaymentPageEncoded,
+  type PaymentDetailEncoded,
   type PaymentSummaryEncoded,
   type PaymentLinkEncoded,
   type PaymentLinkListEncoded,
@@ -42,6 +43,7 @@ export interface Routes {
   /** An empty list unless given. */
   readonly listPaymentLinks?: (call: Call) => Reply
   readonly listPayments?: (call: Call) => Reply
+  readonly getPayment?: (call: Call) => Reply
   readonly payableLink?: (call: Call) => Reply
   readonly startPayment?: (call: Call) => Reply
   readonly simulatePayment?: (call: Call) => Reply
@@ -108,6 +110,8 @@ export const fakePlane = (routes: Routes) => {
 
       const route = Match.value(call.path).pipe(
         Match.when("/payments", () => routes.listPayments ?? (() => ({ status: 200, body: paymentPage() }))),
+        Match.when((path) => path.startsWith("/payments/"), () =>
+          routes.getPayment ?? ((call: Call) => ({ status: 200, body: paymentDetail(merchantPayment({ id: call.path.slice(10) })) }))),
         Match.when("/session", () => session),
         Match.when("/me", () => routes.me),
         Match.when("/business", () => routes.createBusiness),
@@ -266,7 +270,11 @@ export const noStats: PaymentStatsEncoded = {
   cancelled: 0,
   expired: 0,
   pending: 0,
+  settling: 0,
+  settled: 0,
+  attention: 0,
   collected: "0",
+  settling_amount: "0",
   last_paid_at: null,
 }
 
@@ -292,7 +300,11 @@ export const overview = (
     cancelled: links.reduce((sum, link) => sum + link.stats.cancelled, 0),
     expired: links.reduce((sum, link) => sum + link.stats.expired, 0),
     pending: links.reduce((sum, link) => sum + link.stats.pending, 0),
+    settling: links.reduce((sum, link) => sum + link.stats.settling, 0),
+    settled: links.reduce((sum, link) => sum + link.stats.settled, 0),
+    attention: links.reduce((sum, link) => sum + link.stats.attention, 0),
     collected: links.reduce((sum, link) => sum + BigInt(link.stats.collected), 0n).toString(),
+    settling_amount: links.reduce((sum, link) => sum + BigInt(link.stats.settling_amount), 0n).toString(),
     last_paid_at: null,
   },
   ...fields,
@@ -313,7 +325,11 @@ export const paid = summary({
     cancelled: 0,
     expired: 3,
     pending: 1,
+    settling: 0,
+    settled: 2,
+    attention: 0,
     collected: "5000000",
+    settling_amount: "0",
     last_paid_at: "2026-10-19T14:02:31.000Z",
   },
 })
@@ -326,20 +342,40 @@ export const tips = summary({
 })
 
 
-export const merchantPayment = (fields: Partial<PaymentSummaryEncoded> = {}): PaymentSummaryEncoded => ({
-  id: "pay_one",
-  link_id: paid.id,
-  business_id: active.id,
-  amount: "2500000",
-  currency_code: "NGN",
-  scale: 2,
-  status: "succeeded",
-  created_at: "2026-10-22T14:02:00.000Z",
-  expires_at: "2026-10-22T14:32:00.000Z",
-  completed_at: "2026-10-22T14:03:00.000Z",
-  source: { kind: "link", id: paid.id, title: paid.title },
-  ...fields,
-})
+// A settled payment, or in the state its status gives when it didn't succeed.
+export const merchantPayment = (fields: Partial<PaymentSummaryEncoded> = {}): PaymentSummaryEncoded => {
+  const status = fields.status ?? "succeeded"
+  const settled = status === "succeeded"
+
+  return {
+    id: "pay_one",
+    link_id: paid.id,
+    business_id: active.id,
+    amount: "2500000",
+    currency_code: "NGN",
+    scale: 2,
+    status,
+    state: settled ? "settled" : status,
+    created_at: "2026-10-22T14:02:00.000Z",
+    expires_at: "2026-10-22T14:32:00.000Z",
+    completed_at: "2026-10-22T14:03:00.000Z",
+    settled_at: settled ? "2026-10-22T14:03:05.000Z" : null,
+    journal_ref: settled ? "jrn_one" : null,
+    source: { kind: "link", id: paid.id, title: paid.title },
+    ...fields,
+  }
+}
+
+// What GET /payments/{id} returns: a settled payment's timeline unless told otherwise.
+export const paymentDetail = (
+  payment: PaymentSummaryEncoded,
+  timeline: PaymentDetailEncoded["timeline"] = payment.state === "settled"
+    ? [
+        { kind: "paid", at: payment.completed_at ?? "" },
+        { kind: "settled", at: payment.settled_at ?? "", journal_ref: payment.journal_ref ?? "" },
+      ]
+    : [],
+): PaymentDetailEncoded => ({ payment, timeline })
 
 export const paymentPage = (
   payments: ReadonlyArray<PaymentSummaryEncoded> = [],

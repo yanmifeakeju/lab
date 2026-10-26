@@ -158,6 +158,15 @@ export const createClient = (httpClient: HttpClient.HttpClient, options: ClientO
               PaymentsListPayments409: ({ cause }) => Effect.fail(cause),
             }),
           ),
+        getPayment: <Config extends OperationConfig>(paymentId: string, request?: { readonly config?: Config }) =>
+          client.paymentsGetPayment(paymentId, request).pipe(
+            Effect.catchTags({
+              PaymentsGetPayment400: ({ cause }) => Effect.fail(cause),
+              PaymentsGetPayment401: ({ cause }) => Effect.fail(cause),
+              PaymentsGetPayment404: ({ cause }) => Effect.fail(cause),
+              PaymentsGetPayment409: ({ cause }) => Effect.fail(cause),
+            }),
+          ),
         listPaymentLinks: <Config extends OperationConfig>(request: { readonly config?: Config } | undefined) =>
           client.paymentLinksListPaymentLinks(request).pipe(
             Effect.catchTags({

@@ -19,7 +19,7 @@ import {
 import * as HttpClientError from "effect/unstable/http/HttpClientError";
 
 import { type Form, type Link, type Overview, type Request, type Summary, toRequest } from "./payment-link.ts";
-import type { Filter, Page, Payment, Status } from "./payments.ts";
+import type { Detail, Filter, Page, State as PaymentState } from "./payments.ts";
 import { Plane } from "./plane.ts";
 
 export type Business = BusinessInfoEncoded;
@@ -43,8 +43,8 @@ export type View = Data.TaggedEnum<{
   HasBusiness: { readonly business: Business };
   /** The business's payments, optionally filtered to one link. */
   Payments: PaymentsView;
-  /** A payment from the loaded list, retained for Back. */
-  PaymentDetail: { readonly list: PaymentsView; readonly payment: Payment };
+  /** A payment from the loaded list with its timeline; the list is kept for Back. */
+  PaymentDetail: { readonly list: PaymentsView; readonly detail: Detail };
   /** The business's payment links, for one whose account is open. */
   Links: { readonly business: Business; readonly overview: Overview };
   /** One link of the list, as the list loaded it. */
@@ -78,6 +78,7 @@ export type Operation = Data.TaggedEnum<{
     readonly before: string | null;
     readonly previous: Page | null;
   };
+  OpenPayment: { readonly list: PaymentsView; readonly id: string };
   // The key goes with the request, so Retry can't create a second link.
   CreatePaymentLink: {
     readonly business: Business;
@@ -141,11 +142,11 @@ export interface Interface {
   readonly linkPayments: (linkId: string) => Effect.Effect<void>;
   /** Reloads the first page; ignored unless payments are showing and idle. */
   readonly refreshPayments: Effect.Effect<void>;
-  /** Changes the status and resets paging; ignored unless payments are showing and idle. */
-  readonly filterPayments: (status: Status | null) => Effect.Effect<void>;
+  /** Changes the state and resets paging; ignored unless payments are showing and idle. */
+  readonly filterPayments: (state: PaymentState | null) => Effect.Effect<void>;
   /** Appends the next page; ignored unless payments are showing, idle and have more. */
   readonly morePayments: Effect.Effect<void>;
-  /** Opens a listed payment; ignored unless payments are showing and idle. */
+  /** Loads a listed payment's detail; ignored unless payments are showing and idle. */
   readonly openPayment: (id: string) => Effect.Effect<void>;
   /** Loads the links; ignored unless an active business is showing and idle. */
   readonly manageLinks: Effect.Effect<void>;
@@ -235,6 +236,17 @@ const popupFor = (operation: Operation, failure: Failure): Popup => {
         message: "Couldn't load your payments.", retry: operation, close: "dismiss" as const,
       })),
     ),
+    OpenPayment: (): Popup => Match.value(code).pipe(
+      Match.when("not_found", () => ({
+        message: "This payment is no longer available.", retry: null, close: "dismiss" as const,
+      })),
+      Match.when("business_required", () => ({
+        message: "Create a business first.", retry: null, close: "refresh" as const,
+      })),
+      Match.orElse(() => ({
+        message: "Couldn't load the payment.", retry: operation, close: "dismiss" as const,
+      })),
+    ),
     ListLinks: () =>
       Match.value(code).pipe(
         Match.when("business_required", () => ({
@@ -268,6 +280,12 @@ const popupFor = (operation: Operation, failure: Failure): Popup => {
           retry: null,
           close: "refresh" as const,
         })),
+        // Close reloads the business, which shows its account opening.
+        Match.when("business_inactive", () => ({
+          message: "Your account isn't open yet, so no link was created.",
+          retry: null,
+          close: "refresh" as const,
+        })),
         Match.orElse(() => ({
           message: "Couldn't create the payment link.",
           retry: operation,
@@ -281,7 +299,8 @@ const popupFor = (operation: Operation, failure: Failure): Popup => {
 const settles = (failure: Failure) => {
   const code = codeOf(failure);
 
-  return code === "validation_error" || code === "conflict" || code === "business_required";
+  return code === "validation_error" || code === "conflict" || code === "business_required" ||
+    code === "business_inactive";
 };
 
 const sameRequest = Schema.toEquivalence(CreatePaymentLinkRequestEncoded);
@@ -402,7 +421,7 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
               authorized((client) => {
                 const params: PaymentsListPaymentsParams = {
                   ...(filter.linkId === null ? undefined : { link_id: filter.linkId }),
-                  ...(filter.status === null ? undefined : { status: filter.status }),
+                  ...(filter.state === null ? undefined : { state: filter.state }),
                   ...(before === null ? undefined : { before }),
                 };
 
@@ -417,6 +436,11 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
                     ? page
                     : { ...page, payments: [...previous.payments, ...page.payments] },
                 }),
+            ),
+          OpenPayment: ({ list, id }) =>
+            Effect.map(
+              authorized((client) => client.getPayment(id)),
+              (detail) => View.PaymentDetail({ list, detail }),
             ),
           ListLinks: ({ business }) =>
             Effect.map(
@@ -548,7 +572,7 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
       ? {
           business: view.business,
           origin: view,
-          filter: { linkId: null, status: null },
+          filter: { linkId: null, state: null },
           before: null,
           previous: null,
         }
@@ -561,7 +585,7 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
         ? {
             business: view.business,
             origin: view,
-            filter: { linkId, status: null },
+            filter: { linkId, state: null },
             before: null,
             previous: null,
           }
@@ -574,10 +598,10 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
       : undefined,
   );
 
-  const filterPayments = (status: Status | null) =>
+  const filterPayments = (state: PaymentState | null) =>
     requestPayments((view) =>
       View.$is("Payments")(view)
-        ? { ...view, filter: { ...view.filter, status }, before: null, previous: null }
+        ? { ...view, filter: { ...view.filter, state }, before: null, previous: null }
         : undefined,
     );
 
@@ -588,25 +612,20 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
   );
 
   const openPayment = (id: string) =>
-    Effect.asVoid(
-      begin(
-        (current) =>
-          View.$is("Payments")(current.view) &&
-          current.popup === null &&
-          current.view.page.payments.some((payment) => payment.id === id),
-        (current) => {
-          if (!View.$is("Payments")(current.view)) {
-            return current;
-          }
+    Effect.gen(function* () {
+      const list = yield* SubscriptionRef.modify(state, (current) =>
+        View.$is("Payments")(current.view) &&
+        current.popup === null &&
+        !current.pending &&
+        current.view.page.payments.some((payment) => payment.id === id)
+          ? ([current.view, { ...current, pending: true }] as const)
+          : ([undefined, current] as const),
+      );
 
-          const payment = current.view.page.payments.find((payment) => payment.id === id);
-
-          return payment === undefined
-            ? current
-            : { ...current, view: View.PaymentDetail({ list: current.view, payment }) };
-        },
-      ),
-    );
+      if (list !== undefined) {
+        yield* perform(Operation.OpenPayment({ list, id }));
+      }
+    });
 
   const refreshLinks = Effect.gen(function* () {
     const business = yield* SubscriptionRef.modify(

@@ -145,7 +145,7 @@ export const pricingLines = (link: Link): ReadonlyArray<string> => {
   ]
 }
 
-/** What succeeded payments came to, at the scale and in the currency given. */
+/** What settled payments came to, at the scale and in the currency given. */
 export const collected = (stats: Stats, scale: number, currency: string) =>
   formatMoney(BigInt(stats.collected), scale, currency)
 
@@ -159,13 +159,23 @@ export const listHeading = (overview: Overview) => {
 }
 
 /**
- * The totals over every link, e.g. `Collected ₦75,000.00 · 3 paid · 1 pending`.
- * Narrow, the pending count goes, so the line still fits on one row.
+ * The totals over every link, e.g. `Collected ₦75,000.00 · ₦2,500.00 settling
+ * · 3 paid · 1 pending`; collected counts settled money only. Narrow, all but
+ * what was collected and paid goes, so the line still fits on one row.
  */
 export const totalsLine = (stats: Stats, scale: number, currency: string, narrow = false) => {
-  const line = `Collected ${collected(stats, scale, currency)} · ${stats.succeeded} paid`
+  const total = `Collected ${collected(stats, scale, currency)}`
+  const paid = `${stats.succeeded} paid`
 
-  return narrow ? line : `${line} · ${stats.pending} pending`
+  if (narrow) {
+    return `${total} · ${paid}`
+  }
+
+  const settling = stats.settling_amount === "0"
+    ? ""
+    : ` · ${formatMoney(BigInt(stats.settling_amount), scale, currency)} settling`
+
+  return `${total}${settling} · ${paid} · ${stats.pending} pending`
 }
 
 /** Every status a link's payments ended in, paid first. */

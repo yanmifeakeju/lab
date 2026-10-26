@@ -393,6 +393,11 @@ void test(
           { message: "Plane refused the link's details. Check them and try again.", retry: null, close: "dismiss" },
         ],
         ["no business", failure(409, "business_required"), { message: "Create a business first.", retry: null, close: "refresh" }],
+        [
+          "account not open",
+          failure(409, "business_inactive"),
+          { message: "Your account isn't open yet, so no link was created.", retry: null, close: "refresh" },
+        ],
       ]
 
       for (const [name, reply, popup] of cases) {
@@ -484,6 +489,11 @@ void test("the list's rows, heading, and totals read from plane's figures", () =
   assert.equal(listHeading(list), "Payment links · 2 links · 1 active")
   assert.equal(listHeading(overview([paid])), "Payment links · 1 link")
   assert.equal(totalsLine(list.totals, 2, "NGN"), "Collected ₦50,000.00 · 2 paid · 1 pending")
+  assert.equal(
+    totalsLine({ ...list.totals, settling_amount: "250000" }, 2, "NGN"),
+    "Collected ₦50,000.00 · ₦2,500.00 settling · 2 paid · 1 pending",
+  )
+  assert.equal(totalsLine({ ...list.totals, settling_amount: "250000" }, 2, "NGN", true), "Collected ₦50,000.00 · 2 paid")
   assert.equal(statusLine(paid.stats), "2 paid · 1 failed · 0 cancelled · 3 expired · 1 pending")
   assert.equal(formatTime("2026-10-19T14:02:31.000Z"), "2026-10-19 14:02 UTC")
 

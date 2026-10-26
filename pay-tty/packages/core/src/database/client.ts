@@ -1,5 +1,5 @@
 import { drizzle, type NodePgQueryResultHKT } from "drizzle-orm/node-postgres"
-import type { PgDatabase } from "drizzle-orm/pg-core"
+import type { PgDatabase, PgTransactionConfig } from "drizzle-orm/pg-core"
 import { Config, Context, Effect, Exit, Layer, Redacted } from "effect"
 import pg from "pg"
 
@@ -10,10 +10,14 @@ export interface Interface {
   /** Runs a query in the current transaction, or on the pool outside one. */
   readonly use: <A>(query: (db: Executor) => PromiseLike<A>) => Effect.Effect<A>
   /**
-   * Runs the effect in a transaction that a nested call joins. Failure, a
-   * defect, or interruption rolls it back and surfaces unchanged.
+   * Runs the effect in a transaction that a nested call joins, under the
+   * outer call's config. Failure, a defect, or interruption rolls it back and
+   * surfaces unchanged.
    */
-  readonly transaction: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
+  readonly transaction: <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+    config?: PgTransactionConfig,
+  ) => Effect.Effect<A, E, R>
 }
 
 export class Database extends Context.Service<Database, Interface>()(
@@ -61,7 +65,7 @@ const make = Effect.gen(function* () {
       return yield* Effect.promise(() => query(tx ?? db))
     })
 
-  const transaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  const transaction = <A, E, R>(effect: Effect.Effect<A, E, R>, config?: PgTransactionConfig) =>
     Effect.gen(function* () {
       if ((yield* CurrentTransaction) !== undefined) {
         return yield* effect
@@ -86,6 +90,7 @@ const make = Effect.gen(function* () {
 
               return exit
             }),
+            config,
           )
           .catch((cause: unknown) => {
             if (cause instanceof Rollback) {

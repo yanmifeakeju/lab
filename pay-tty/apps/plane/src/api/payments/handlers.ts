@@ -5,7 +5,7 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder"
 import { api } from "../api.ts"
 import { InvalidRequestError, NotFound } from "../errors.ts"
 import { CurrentBusiness } from "../middleware/business.ts"
-import { paymentPage } from "./routes.ts"
+import { paymentDetail, paymentPage } from "./routes.ts"
 
 export const PaymentsLive = HttpApiBuilder.group(api, "payments", (handlers) =>
   handlers.handle("listPayments", ({ query }) => Effect.gen(function* () {
@@ -19,7 +19,7 @@ export const PaymentsLive = HttpApiBuilder.group(api, "payments", (handlers) =>
     const page = yield* payments.listPayments(business.id, {
       // Unknown IDs are looked up in this business and answered with 404.
       linkId: query.link_id === undefined ? null : Payments.ID.make(query.link_id),
-      status: query.status ?? null,
+      state: query.state ?? null,
       before: query.before ?? null,
     }).pipe(Effect.catchTags({
       "Payments.LinkNotFoundError": () => new NotFound({
@@ -34,5 +34,17 @@ export const PaymentsLive = HttpApiBuilder.group(api, "payments", (handlers) =>
     }))
 
     return paymentPage(page)
-  })),
+  }))
+    .handle("getPayment", ({ params }) => Effect.gen(function* () {
+      const business = yield* CurrentBusiness
+      const payments = yield* Payments.Service
+
+      // Another business's payment is as unknown as one that doesn't exist.
+      const detail = yield* payments.getPayment(business.id, params.payment_id).pipe(
+        Effect.catchTag("Payments.PaymentNotFoundError", () =>
+          new NotFound({ message: "Payment not found.", error: { code: "not_found" } })),
+      )
+
+      return paymentDetail(detail)
+    })),
 )

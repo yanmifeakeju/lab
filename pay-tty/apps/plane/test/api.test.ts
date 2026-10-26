@@ -4,7 +4,7 @@ import { test } from "node:test"
 import { NodeHttpServer } from "@effect/platform-node"
 import { Business } from "@pay-tty/core/business"
 import { Database, layer as DatabaseLayer } from "@pay-tty/core/database"
-import { Catalog, Currency, Ledger, PayableAccounts } from "@pay-tty/core/ledger"
+import { Catalog, Currency, Ledger, LedgerPostings, PayableAccounts } from "@pay-tty/core/ledger"
 import { Payments } from "@pay-tty/core/payments"
 import { Principal } from "@pay-tty/core/principal"
 import { Testing } from "@pay-tty/core/testing"
@@ -16,15 +16,16 @@ import { ulid } from "ulid"
 import { BusinessInfo, BusinessLedger } from "../src/api/business/routes.ts"
 import { MeResponse } from "../src/api/me/routes.ts"
 import { CustomerChoosesPricing, FixedPricing, PaymentLink, PaymentLinkList } from "../src/api/payment_links/routes.ts"
-import { PaymentPage } from "../src/api/payments/routes.ts"
+import { PaymentDetail, PaymentPage, RefusedEvent, SettledEvent } from "../src/api/payments/routes.ts"
 import { PaymentStats } from "../src/api/payment-stats.ts"
 import { PayableLink, Payment as PayPayment } from "../src/api/pay/routes.ts"
 import { SessionResponse } from "../src/api/session/routes.ts"
 import { ApiLive } from "../src/api/server.ts"
 import { AuthenticationLive } from "../src/api/middleware/authentication.ts"
 import { UnknownErrorResponse } from "../src/api/middleware/defect.ts"
+import { Relay } from "../src/relay/relay.ts"
 import { Token } from "../src/token/token.ts"
-import { created as accountCreated, current, failing, fakeLedger, invalid, keys, previous, secret, type FakeLedger, type Payload, type Reply } from "./support.ts"
+import { created as accountCreated, current, failing, fakeLedger, invalid, keys, posting, previous, secret, type FakeLedger, type Payload, type Reply } from "./support.ts"
 
 
 // The core services over the test database, for preparing businesses and
@@ -54,8 +55,12 @@ const server = (options: ServerOptions = {}) =>
         ledger,
         app: HttpRouter.toWebHandler(
           Layer.mergeAll(ApiLive, UnknownErrorResponse).pipe(
+            Layer.provideMerge(Relay.layer),
             Layer.provideMerge(
-              Layer.mergeAll(AuthenticationLive, PayableAccounts.layer.pipe(Layer.provide(ledger.layer))),
+              Layer.mergeAll(
+                AuthenticationLive,
+                Layer.mergeAll(PayableAccounts.layer, LedgerPostings.layer).pipe(Layer.provide(ledger.layer)),
+              ),
             ),
             Layer.provideMerge(Token.layerFrom(keys)),
             Layer.provideMerge(
@@ -281,6 +286,7 @@ void test("publishes exactly /health, /session, /me, /business, /business/accoun
         "/pay/payment_links/{share_token}/payments/{payment_id}/simulate",
         "/payment_links",
         "/payments",
+        "/payments/{payment_id}",
         "/session",
       ])
       assert.deepEqual(Object.keys(paths["/me"] ?? {}), ["get"])
@@ -1338,18 +1344,20 @@ void test("a link takes its currency and scale from the business, whatever the r
     }),
   ))
 
-void test("a business whose account isn't open yet still gets links in its saved currency, and stays created", () =>
+void test("a business whose account isn't open yet gets no link, and asks the ledger nothing", () =>
   run(
     Effect.gen(function* () {
       const plane = yield* server()
-      const { sub, authorization } = yield* withBusiness(plane)
+      const { authorization } = yield* withBusiness(plane)
 
-      const { status, body } = yield* createdLink(plane, authorization, fixedLink, ulid())
-
-      assert.equal(status, 201)
-      assert.equal(body.currency_code, "NGN")
-      assert.equal(body.scale, 2)
-      assert.equal((yield* stored(sub)).business?.status, "created")
+      assert.deepEqual(yield* createLink(plane, authorization, fixedLink, ulid()), {
+        status: 409,
+        json: {
+          message: "Open the business's account before creating payment links.",
+          error: { code: "business_inactive" },
+        },
+      })
+      assert.deepEqual((yield* listed(plane, authorization)).links, [])
       assert.equal(plane.ledger.requests.length, 0)
     }),
   ))
@@ -1749,7 +1757,7 @@ void test("a payment past its window is refused as expired", () =>
     }),
   ))
 
-void test("paying asks the ledger nothing and needs no merchant token", () =>
+void test("paying opens no ledger account and needs no merchant token", () =>
   run(
     Effect.gen(function* () {
       const plane = yield* server()
@@ -1766,6 +1774,139 @@ void test("paying asks the ledger nothing and needs no merchant token", () =>
       const withToken = yield* send(plane, { method: "GET", path: `/pay/payment_links/${token}`, authorization })
 
       assert.deepEqual(withToken, yield* payable(plane, token))
+    }),
+  ))
+
+const getPayment = (server: Server, authorization: string | undefined, id: string) =>
+  send(server, { method: "GET", path: `/payments/${id}`, authorization })
+
+// A payment's detail, decoded strictly.
+const detailOf = Effect.fnUntraced(function* (server: Server, authorization: string, id: string) {
+  const { status, json } = yield* getPayment(server, authorization, id)
+
+  assert.equal(status, 200)
+
+  return yield* Schema.decodeUnknownEffect(PaymentDetail)(json, strict)
+})
+
+// The relay posts in the background; this waits for it to be done with the
+// payment, whatever the outcome.
+const relayed = Effect.fnUntraced(function* (server: Server, authorization: string, id: string) {
+  for (let tries = 0; tries < 250; tries++) {
+    const detail = yield* detailOf(server, authorization, id)
+
+    if (detail.payment.state !== "settling") {
+      return detail
+    }
+
+    yield* Effect.sleep("20 millis")
+  }
+
+  return assert.fail(`payment ${id} is still settling`)
+})
+
+void test("the relay posts a succeeded payment to the ledger, and the merchant sees it settled", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { authorization, link, token } = yield* linkToPay(plane)
+      const account = (yield* me(plane, authorization)).body.business?.ledger?.payable_account_ref
+
+      const { body: payment } = yield* started(plane, token)
+      const ended = yield* simulatePayment(plane, token, payment.id, "succeeded")
+
+      assert.equal(ended.status, 200)
+
+      const detail = yield* relayed(plane, authorization, payment.id)
+      const entry = plane.ledger.entries.find((sent) => sent.payload.description.includes(payment.id))
+
+      assert.ok(entry !== undefined && account !== undefined)
+      assert.match(entry.key, /^lpost_[0-9A-HJKMNP-TV-Z]{26}$/)
+      assert.deepEqual(entry.payload, {
+        ledger: "ngn_ng",
+        kind: "payment",
+        description: `Payment ${payment.id} via link ${link.id}`,
+        effective_at: entry.payload.effective_at,
+        lines: [{
+          debit_account_ref: "acct_test_cash",
+          credit_account_ref: account,
+          amount: 250_000,
+          purpose: "payment",
+        }],
+      })
+      assert.equal(Date.parse(entry.payload.effective_at ?? ""), Date.parse(detail.payment.completed_at ?? ""))
+
+      assert.equal(detail.payment.state, "settled")
+      assert.equal(detail.payment.status, "succeeded")
+      assert.ok(detail.payment.journal_ref !== null && detail.payment.settled_at !== null)
+      assert.deepEqual(detail.timeline.map((event) => event.kind), ["paid", "settled"])
+      assert.deepEqual(detail.timeline[1], new SettledEvent({
+        kind: "settled",
+        at: detail.payment.settled_at,
+        journal_ref: detail.payment.journal_ref,
+      }))
+
+      const page = yield* Schema.decodeUnknownEffect(PaymentPage)(
+        (yield* send(plane, { method: "GET", path: "/payments?state=settled", authorization })).json,
+        strict,
+      )
+
+      assert.deepEqual(page.payments, [detail.payment])
+    }),
+  ))
+
+void test("a ledger that's down or refuses doesn't change what the customer is told", () =>
+  run(
+    Effect.gen(function* () {
+      const down = yield* server({ ledger: fakeLedger(undefined, () => "unreachable") })
+      const ours = yield* linkToPay(down)
+      const { body: payment } = yield* started(down, ours.token)
+
+      const { status, json } = yield* simulatePayment(down, ours.token, payment.id, "succeeded")
+
+      assert.equal(status, 200)
+      assert.equal((yield* Schema.decodeUnknownEffect(PayPayment)(json, strict)).status, "succeeded")
+
+      const waiting = yield* detailOf(down, ours.authorization, payment.id)
+
+      assert.equal(waiting.payment.state, "settling")
+      assert.equal(waiting.payment.journal_ref, null)
+      assert.deepEqual(waiting.timeline.map((event) => event.kind), ["paid"])
+
+      // Another plane against a ledger that refuses this payment's posting.
+      const refusing = yield* server({
+        ledger: fakeLedger(undefined, (entry) =>
+          entry.payload.description.includes(payment.id) ? failing(409, "account_closed") : posting()(entry)),
+      })
+
+      const detail = yield* relayed(refusing, ours.authorization, payment.id)
+
+      assert.equal(detail.payment.state, "attention")
+      assert.deepEqual(detail.timeline.map((event) => event.kind), ["paid", "refused"])
+      assert.deepEqual(
+        detail.timeline[1],
+        new RefusedEvent({ kind: "refused", at: detail.timeline[1]?.at ?? "", error_code: "account_closed" }),
+      )
+    }),
+  ))
+
+void test("GET /payments/{id} shows only the caller's business's payments, and needs a token", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const ours = yield* linkToPay(plane)
+      const theirs = yield* linkToPay(plane)
+      const { body: payment } = yield* started(plane, ours.token)
+
+      const detail = yield* detailOf(plane, ours.authorization, payment.id)
+
+      assert.equal(detail.payment.id, payment.id)
+      assert.equal(detail.payment.state, "pending")
+      assert.deepEqual(detail.timeline, [])
+
+      assert.equal(yield* errorCode(yield* getPayment(plane, theirs.authorization, payment.id)), "404 not_found")
+      assert.equal(yield* errorCode(yield* getPayment(plane, ours.authorization, `pay_${ulid()}`)), "404 not_found")
+      assert.deepEqual(yield* getPayment(plane, undefined, payment.id), { status: 401, json: unauthorized })
     }),
   ))
 
@@ -1792,6 +1933,7 @@ void test("GET /payment_links lists the caller's links newest first, with each o
       const paid = yield* started(plane, token)
 
       yield* simulatePayment(plane, token, paid.body.id, "succeeded")
+      yield* relayed(plane, authorization, paid.body.id)
       yield* started(plane, token)
       yield* started(plane, tips.body.share_token, { amount: 1_000 })
 
@@ -1813,7 +1955,11 @@ void test("GET /payment_links lists the caller's links newest first, with each o
           cancelled: 0,
           expired: 0,
           pending: 1,
+          settling: 0,
+          settled: 1,
+          attention: 0,
           collected: "250000",
+          settling_amount: "0",
           last_paid_at: logoSummary.stats.last_paid_at,
         }),
       )
@@ -1870,6 +2016,7 @@ void test("GET /payments requires auth, pages and filters within the caller's bu
 
       if (index === 0) {
         yield* simulatePayment(plane, ours.token, payment.body.id, "succeeded")
+        yield* relayed(plane, ours.authorization, payment.body.id)
       }
     }
 
@@ -1895,16 +2042,18 @@ void test("GET /payments requires auth, pages and filters within the caller's bu
     assert.equal(last.next, null)
     assert.deepEqual(new Set([...page.payments, ...last.payments].map((payment) => payment.id)), new Set(ids))
 
-    const paid = yield* Schema.decodeUnknownEffect(PaymentPage)((yield* get("?status=succeeded")).json, strict)
+    const paid = yield* Schema.decodeUnknownEffect(PaymentPage)((yield* get("?state=settled")).json, strict)
 
     assert.equal(paid.payments.length, 1)
     assert.equal(paid.stats.succeeded, 1)
+    assert.equal(paid.stats.settled, 1)
+    assert.equal(paid.stats.collected, "250000")
     assert.equal(paid.stats.pending, 0)
 
     assert.equal((yield* send(plane, { method: "GET", path: "/payments" })).status, 401)
     assert.equal(yield* errorCode(yield* get("?link_id=" + other.link.id)), "404 not_found")
     assert.equal(yield* errorCode(yield* get("?link_id=unknown")), "404 not_found")
-    assert.equal((yield* get("?status=refunded")).status, 400)
+    assert.equal((yield* get("?state=refunded")).status, 400)
     assert.equal((yield* get("?before=bad-cursor")).status, 400)
   })))
 
@@ -1927,7 +2076,7 @@ void test("GET /payments expired filters exclude overdue payments from other bus
       for (const linkId of [null, ours.link.id]) {
         const response = yield* send(plane, {
           method: "GET",
-          path: "/payments?status=expired" + (linkId === null ? "" : "&link_id=" + linkId),
+          path: "/payments?state=expired" + (linkId === null ? "" : "&link_id=" + linkId),
           authorization: ours.authorization,
         })
 

@@ -524,12 +524,12 @@ void test("payments retain their origin; retry repeats the exact page, more appe
 
       assert.deepEqual((yield* current(session)).view, loaded)
 
-      yield* session.filterPayments("succeeded")
+      yield* session.filterPayments("settled")
 
       const filtered = (yield* current(session)).view
 
       assert.ok(View.$is("Payments")(filtered))
-      assert.equal(filtered.filter.status, "succeeded")
+      assert.equal(filtered.filter.state, "settled")
       assert.equal(filtered.page.payments.length, 1)
 
       yield* session.refreshPayments
@@ -537,10 +537,15 @@ void test("payments retain their origin; retry repeats the exact page, more appe
 
       assert.deepEqual((yield* current(session)).view, origin)
 
+      assert.deepEqual(
+        plane.calls.filter((call) => call.path.startsWith("/payments/")).map((call) => call.path),
+        ["/payments/" + second.id],
+      )
+
       const requests = plane.calls.filter((call) => call.path === "/payments")
 
       assert.deepEqual(requests.map((call) => call.query.get("before")), [null, "cursor_one", "cursor_one", null, null])
-      assert.deepEqual(requests.map((call) => call.query.get("status")), [null, null, null, "succeeded", "succeeded"])
+      assert.deepEqual(requests.map((call) => call.query.get("state")), [null, null, null, "settled", "settled"])
       assert.ok(requests.every((call) => call.query.get("link_id") === paid.id))
     }))
   }),

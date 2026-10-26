@@ -443,16 +443,18 @@
             "required": false
           },
           {
-            "name": "status",
+            "name": "state",
             "in": "query",
             "schema": {
               "type": "string",
               "enum": [
                 "pending",
-                "succeeded",
+                "expired",
                 "failed",
                 "cancelled",
-                "expired"
+                "settling",
+                "settled",
+                "attention"
               ]
             },
             "required": false
@@ -478,6 +480,81 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PaymentPageEncoded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationErrorResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponseEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedResponseEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NotFoundResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundResponseEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictResponseEncoded"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payments/{payment_id}": {
+      "get": {
+        "tags": [
+          "payments"
+        ],
+        "operationId": "payments.getPayment",
+        "parameters": [
+          {
+            "name": "payment_id",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "PaymentDetail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentDetailEncoded"
                 }
               }
             }
@@ -1106,6 +1183,7 @@
                   "conflict",
                   "ledger_rejected",
                   "business_required",
+                  "business_inactive",
                   "link_inactive",
                   "payment_expired",
                   "not_pending"
@@ -1510,7 +1588,21 @@
           "pending": {
             "type": "integer"
           },
+          "settling": {
+            "type": "integer"
+          },
+          "settled": {
+            "type": "integer"
+          },
+          "attention": {
+            "type": "integer"
+          },
           "collected": {
+            "type": "string",
+            "pattern": "^\\d+$",
+            "description": "In minor units of the links' currency."
+          },
+          "settling_amount": {
             "type": "string",
             "pattern": "^\\d+$",
             "description": "In minor units of the links' currency."
@@ -1532,7 +1624,11 @@
           "cancelled",
           "expired",
           "pending",
+          "settling",
+          "settled",
+          "attention",
           "collected",
+          "settling_amount",
           "last_paid_at"
         ],
         "additionalProperties": false
@@ -1662,6 +1758,18 @@
               "expired"
             ]
           },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "expired",
+              "failed",
+              "cancelled",
+              "settling",
+              "settled",
+              "attention"
+            ]
+          },
           "created_at": {
             "type": "string"
           },
@@ -1669,6 +1777,26 @@
             "type": "string"
           },
           "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "settled_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "journal_ref": {
             "anyOf": [
               {
                 "type": "string"
@@ -1714,9 +1842,12 @@
           "currency_code",
           "scale",
           "status",
+          "state",
           "created_at",
           "expires_at",
           "completed_at",
+          "settled_at",
+          "journal_ref",
           "source"
         ],
         "additionalProperties": false
@@ -1777,6 +1908,100 @@
         "required": [
           "message",
           "error"
+        ],
+        "additionalProperties": false
+      },
+      "PaidEventEncoded": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "paid"
+            ]
+          },
+          "at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "at"
+        ],
+        "additionalProperties": false
+      },
+      "SettledEventEncoded": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "settled"
+            ]
+          },
+          "at": {
+            "type": "string"
+          },
+          "journal_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "at",
+          "journal_ref"
+        ],
+        "additionalProperties": false
+      },
+      "RefusedEventEncoded": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "refused"
+            ]
+          },
+          "at": {
+            "type": "string"
+          },
+          "error_code": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "at",
+          "error_code"
+        ],
+        "additionalProperties": false
+      },
+      "PaymentDetailEncoded": {
+        "type": "object",
+        "properties": {
+          "payment": {
+            "$ref": "#/components/schemas/PaymentSummaryEncoded"
+          },
+          "timeline": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/PaidEventEncoded"
+                },
+                {
+                  "$ref": "#/components/schemas/SettledEventEncoded"
+                },
+                {
+                  "$ref": "#/components/schemas/RefusedEventEncoded"
+                }
+              ]
+            }
+          }
+        },
+        "required": [
+          "payment",
+          "timeline"
         ],
         "additionalProperties": false
       },

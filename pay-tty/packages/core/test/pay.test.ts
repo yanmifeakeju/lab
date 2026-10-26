@@ -20,7 +20,11 @@ const createBusiness = (name = "Adaeze Studio") =>
 
     const principal = yield* principals.ensure({ issuer: "pay-test", subject: ulid() })
 
-    return yield* businesses.create(principal.id, new Business.Details({ name, countryCode: "NG" }))
+    const business = yield* businesses.create(principal.id, new Business.Details({ name, countryCode: "NG" }))
+
+    yield* Testing.openAccount(business.id)
+
+    return business
   })
 
 const key = () => Payments.IdempotencyKey.make(`key_${ulid()}`)
@@ -433,11 +437,15 @@ const noStats = new Payments.Stats({
   cancelled: 0,
   expired: 0,
   pending: 0,
+  settling: 0,
+  settled: 0,
+  attention: 0,
   collected: 0n,
+  settlingAmount: 0n,
   lastPaidAt: null,
 })
 
-void test("a listing counts each link's payments by status and sums only what succeeded", () =>
+void test("a listing counts each link's payments by status; succeeded ones are settling until posted", () =>
   runtime.runPromise(
     Testing.rolledBack(
       Effect.gen(function* () {
@@ -480,12 +488,16 @@ void test("a listing counts each link's payments by status and sums only what su
             cancelled: 1,
             expired: 0,
             pending: 1,
-            collected: 5_000n,
+            settling: 2,
+            settled: 0,
+            attention: 0,
+            collected: 0n,
+            settlingAmount: 5_000n,
             lastPaidAt: latest.completedAt,
           }),
         )
         assert.deepEqual(
-          [logoStats?.succeeded, logoStats?.expired, logoStats?.pending, logoStats?.collected],
+          [logoStats?.succeeded, logoStats?.expired, logoStats?.pending, logoStats?.settlingAmount],
           [1, 1, 0, 2_500_000n],
         )
         assert.equal((yield* stored(logo.id)).find((row) => row.id === lapsed.payment.id)?.status, "pending")
@@ -500,7 +512,11 @@ void test("a listing counts each link's payments by status and sums only what su
             cancelled: 1,
             expired: 1,
             pending: 1,
-            collected: 2_505_000n,
+            settling: 3,
+            settled: 0,
+            attention: 0,
+            collected: 0n,
+            settlingAmount: 2_505_000n,
             lastPaidAt: overview.totals.lastPaidAt,
           }),
         )
@@ -551,7 +567,7 @@ void test("a listing returns the newest links up to its limit, with counts and t
         assert.equal(overview.linkCount, Payments.linkListLimit + 1)
         assert.equal(overview.activeLinkCount, Payments.linkListLimit)
         assert.equal(overview.totals.succeeded, 1)
-        assert.equal(overview.totals.collected, 2_500_000n)
+        assert.equal(overview.totals.settlingAmount, 2_500_000n)
       }),
     ),
   ))

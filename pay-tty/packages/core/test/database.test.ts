@@ -115,6 +115,46 @@ void test("a nested transaction joins the outer one", () =>
     }),
   ))
 
+// What a separate connection commits mid-transaction shows up in the next
+// query at read committed, and never at repeatable read.
+void test("repeatable read gives every query in the transaction one snapshot", () =>
+  runtime.runPromise(
+    Effect.gen(function* () {
+      const database = yield* Database
+
+      const seen = (isolationLevel: "read committed" | "repeatable read") =>
+        Effect.gen(function* () {
+          const id = createId("prn")
+          const read = yield* Deferred.make<void>()
+          const written = yield* Deferred.make<void>()
+
+          const reader = yield* Effect.forkChild(
+            database.transaction(
+              Effect.gen(function* () {
+                const level = yield* database.use((db) => db.execute(sql`show transaction_isolation`))
+                const before = yield* committed(id)
+
+                yield* Deferred.succeed(read, undefined)
+                yield* Deferred.await(written)
+
+                return [level.rows[0]?.["transaction_isolation"], before, yield* committed(id)]
+              }),
+              { isolationLevel },
+            ),
+          )
+
+          yield* Deferred.await(read)
+          yield* insert(id)
+          yield* Deferred.succeed(written, undefined)
+
+          return yield* Fiber.join(reader)
+        })
+
+      assert.deepEqual(yield* seen("read committed"), ["read committed", false, true])
+      assert.deepEqual(yield* seen("repeatable read"), ["repeatable read", false, false])
+    }),
+  ))
+
 void test("interruption waits for the body's finalizers and the rollback", () =>
   runtime.runPromise(
     Effect.gen(function* () {

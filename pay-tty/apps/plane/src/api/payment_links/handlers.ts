@@ -63,6 +63,11 @@ export const PaymentLinksLive = HttpApiBuilder.group(api, "paymentLinks", (handl
           Effect.catchTags({
             // The middleware found it, and a business is never deleted.
             "Business.NotFoundError": Effect.die,
+            "Payments.InactiveBusinessError": () =>
+              new Conflict({
+                message: "Open the business's account before creating payment links.",
+                error: { code: "business_inactive" },
+              }),
             "Payments.DetailsError": (error) => Effect.fail(invalidDetails(error)),
             "Payments.ConflictError": () =>
               new Conflict({
