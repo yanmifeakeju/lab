@@ -112,29 +112,90 @@ export const posting = () => {
   }
 }
 
+const respond = (request: HttpClientRequest.HttpClientRequest, answer: Reply) =>
+  answer === "unreachable"
+    ? Effect.fail(
+      new HttpClientError.HttpClientError({
+        reason: new HttpClientError.TransportError({ request, description: "connection refused" }),
+      }),
+    )
+    : Effect.succeed(HttpClientResponse.fromWeb(
+      request,
+      "raw" in answer
+        ? new Response(answer.raw, { status: answer.status, headers: { "content-type": "application/json" } })
+        : Response.json(answer.body, { status: answer.status }),
+    ))
+
+const isAccount = Schema.is(Schema.Struct({ reference: Schema.String }))
+
 export interface FakeLedger {
   // Payable account creations, and what the ledger answered each.
   readonly requests: ReadonlyArray<Payload>
   readonly replies: ReadonlyArray<Reply>
   readonly entries: ReadonlyArray<Entry>
+  // The account refs read, in order.
+  readonly reads: ReadonlyArray<string>
   readonly layer: Layer.Layer<LedgerClient.Service>
 }
 
 export const fakeLedger = (
   reply: (payload: Payload) => Reply = remembering(),
   post: (entry: Entry) => Reply = posting(),
+  // Left out, an account read answers with the account as created, its
+  // posted credits and debits summed from the entries the ledger took.
+  read?: (accountRef: string) => Reply,
 ): FakeLedger => {
   const requests: Array<Payload> = []
   const replies: Array<Reply> = []
   const entries: Array<Entry> = []
+  const taken: Array<Entry> = []
+  const reads: Array<string> = []
+
+  // Accounts the ledger created, by ref, as it answered.
+  const opened = new Map<string, object>()
+
+  const held = (accountRef: string): Reply => {
+    const account = opened.get(accountRef)
+
+    if (account === undefined) {
+      return failing(404, "account_not_found")
+    }
+
+    const lines = taken.flatMap((entry) => entry.payload.lines)
+
+    const sum = (side: "debit_account_ref" | "credit_account_ref") =>
+      lines.filter((line) => line[side] === accountRef).reduce((total, line) => total + line.amount, 0)
+
+    const credits = sum("credit_account_ref")
+    const debits = sum("debit_account_ref")
+
+    return {
+      status: 200,
+      body: {
+        ...account,
+        available: credits - debits,
+        balances: { debits_pending: 0, credits_pending: 0, debits_posted: debits, credits_posted: credits },
+      },
+    }
+  }
 
   const http = HttpClient.make((request) =>
     Effect.gen(function* () {
       const web = yield* Effect.orDie(HttpClientRequest.toWeb(request))
+      const path = new URL(web.url).pathname
+
+      if (web.method === "GET" && path.startsWith("/accounts/")) {
+        const accountRef = decodeURIComponent(path.slice("/accounts/".length))
+
+        reads.push(accountRef)
+
+        return yield* respond(request, (read ?? held)(accountRef))
+      }
+
       const body = yield* Effect.promise(() => web.json())
       let answer: Reply
 
-      if (new URL(web.url).pathname === "/entries") {
+      if (path === "/entries") {
         const entry = {
           key: web.headers.get("idempotency-key") ?? "",
           payload: yield* Effect.orDie(Schema.decodeUnknownEffect(PostJournalEntryRequestJson)(body)),
@@ -143,6 +204,10 @@ export const fakeLedger = (
         answer = post(entry)
 
         entries.push(entry)
+
+        if (answer !== "unreachable" && answer.status === 201) {
+          taken.push(entry)
+        }
       } else {
         const payload = yield* Effect.orDie(Schema.decodeUnknownEffect(CreatePayableAccountRequestJson)(body))
 
@@ -151,20 +216,13 @@ export const fakeLedger = (
         requests.push(payload)
 
         replies.push(answer)
+
+        if (answer !== "unreachable" && "body" in answer && isAccount(answer.body)) {
+          opened.set(answer.body.reference, answer.body)
+        }
       }
 
-      if (answer === "unreachable") {
-        return yield* new HttpClientError.HttpClientError({
-          reason: new HttpClientError.TransportError({ request, description: "connection refused" }),
-        })
-      }
-
-      return HttpClientResponse.fromWeb(
-        request,
-        "raw" in answer
-          ? new Response(answer.raw, { status: answer.status, headers: { "content-type": "application/json" } })
-          : Response.json(answer.body, { status: answer.status }),
-      )
+      return yield* respond(request, answer)
     }),
   )
 
@@ -172,6 +230,7 @@ export const fakeLedger = (
     requests,
     replies,
     entries,
+    reads,
     // Configured here, so the tests need no LEDGER_BASE_URL.
     layer: LedgerClient.layer.pipe(
       Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),

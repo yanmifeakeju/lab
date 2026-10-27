@@ -81,6 +81,7 @@ export class Conflict extends Schema.Error<Conflict>("ConflictResponse")(
       "ledger_rejected",
       "business_required",
       "business_inactive",
+      "account_not_opened",
       "link_inactive",
       "payment_expired",
       "not_pending",

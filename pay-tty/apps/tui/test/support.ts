@@ -1,4 +1,5 @@
 import {
+  type BusinessBalanceEncoded,
   type BusinessInfoEncoded,
   createClient,
   CreatePaymentLinkRequestEncoded,
@@ -14,13 +15,14 @@ import {
   SimulatePaymentRequestEncoded,
   StartPaymentRequestEncoded,
 } from "@pay-tty/plane-client"
-import { DateTime, Effect, Layer, Match, Schema } from "effect"
+import { DateTime, Deferred, Effect, Layer, Match, Option, Predicate, Schema, type Scope, Stream, SubscriptionRef } from "effect"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientError from "effect/unstable/http/HttpClientError"
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse"
 
 import { Plane } from "../src/plane.ts"
+import { Balance, type Session, type State, View } from "../src/session.ts"
 
 export interface Call {
   readonly method: string
@@ -31,14 +33,21 @@ export interface Call {
   readonly body: unknown
 }
 
-// "hang" never answers, so a test can see a disconnect cancel the request.
-export type Reply = { readonly status: number; readonly body: object } | "unreachable" | "hang"
+// "hang" never answers, so a test can see a disconnect cancel the request;
+// `held` answers once the test completes it.
+export type Reply =
+  | { readonly status: number; readonly body: object }
+  | "unreachable"
+  | "hang"
+  | { readonly held: Deferred.Deferred<Reply> }
 
 export interface Routes {
   readonly session?: (call: Call) => Reply
   readonly me?: (call: Call) => Reply
   readonly createBusiness?: (call: Call) => Reply
   readonly openAccount?: (call: Call) => Reply
+  /** `figures()` unless given. */
+  readonly balance?: (call: Call) => Reply
   readonly createPaymentLink?: (call: Call) => Reply
   /** An empty list unless given. */
   readonly listPaymentLinks?: (call: Call) => Reply
@@ -115,6 +124,7 @@ export const fakePlane = (routes: Routes) => {
         Match.when("/session", () => session),
         Match.when("/me", () => routes.me),
         Match.when("/business", () => routes.createBusiness),
+        Match.when("/business/balance", () => routes.balance ?? (() => ({ status: 200, body: figures() }))),
         Match.when("/payment_links", () =>
           call.method === "GET" ? (routes.listPaymentLinks ?? (() => ({ status: 200, body: overview() }))) : routes.createPaymentLink),
         Match.when((path) => path.endsWith("/simulate"), () => routes.simulatePayment),
@@ -123,10 +133,15 @@ export const fakePlane = (routes: Routes) => {
         Match.orElse(() => routes.openAccount),
       )
 
-      const reply = route?.(call) ?? { status: 404, body: {} }
+      const routed = route?.(call) ?? { status: 404, body: {} }
+      const reply = Predicate.hasProperty(routed, "held") ? yield* Deferred.await(routed.held) : routed
 
       if (reply === "hang") {
         return yield* Effect.never
+      }
+
+      if (Predicate.hasProperty(reply, "held")) {
+        return yield* Effect.die(new Error("a held reply answers with another held reply"))
       }
 
       if (reply === "unreachable") {
@@ -146,8 +161,36 @@ export const fakePlane = (routes: Routes) => {
 }
 
 
-// Runs a test body; node:test wants a promise.
-export const scenario = <A>(body: Effect.Effect<A>) => () => Effect.runPromise(body)
+// Runs a test body in a scope a session can fork into; node:test wants a promise.
+export const scenario = <A>(body: Effect.Effect<A, never, Scope.Scope>) => () => Effect.runPromise(Effect.scoped(body))
+
+/** What GET /business/balance returns: ₦184,500.00 available unless told otherwise. */
+export const figures = (fields: Partial<BusinessBalanceEncoded> = {}): BusinessBalanceEncoded => ({
+  ledger: "ngn_ng",
+  currency: "NGN",
+  scale: 2,
+  available: "18450000",
+  pending: "0",
+  ...fields,
+})
+
+/** Home as shown once its balance loaded under `request`; none without an account. */
+export const home = (shown: BusinessInfoEncoded, request = 0) =>
+  View.HasBusiness({
+    business: shown,
+    balance: shown.ledger === null ? null : Balance.Loaded({ request, figures: figures() }),
+  })
+
+const balancing = (state: State) =>
+  View.$is("HasBusiness")(state.view) && state.view.balance !== null && Balance.$is("Loading")(state.view.balance)
+
+/** The session's state once home's balance, if loading, has answered. */
+export const settled = (session: Session.Interface) =>
+  SubscriptionRef.changes(session.state).pipe(
+    Stream.filter((state) => !balancing(state)),
+    Stream.runHead,
+    Effect.map(Option.getOrThrow),
+  )
 
 export const me = (shown: BusinessInfoEncoded | null) => (): Reply => ({
   status: 200,

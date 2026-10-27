@@ -25,6 +25,7 @@ import {
   createdLink,
   failure,
   fakePlane,
+  home,
   first,
   inTurn,
   linkFor,
@@ -36,13 +37,15 @@ import {
   tips,
   type Reply,
   scenario,
+  settled,
   unauthorized,
 } from "./support.ts"
 
-const run = <A>(plane: ReturnType<typeof fakePlane>, body: (session: Session.Interface) => Effect.Effect<A>) =>
+const run = <A, R>(plane: ReturnType<typeof fakePlane>, body: (session: Session.Interface) => Effect.Effect<A, never, R>) =>
   Effect.flatMap(Session.make("SHA256:key").pipe(Effect.provide(plane.layer)), body)
 
-const current = (session: Session.Interface) => SubscriptionRef.get(session.state)
+// Once any balance home is loading has answered.
+const current = settled
 
 const idle = (view: View, popup: Popup | null = null): State => ({ view, pending: false, popup })
 
@@ -252,7 +255,7 @@ void test(
 
       const shown = yield* run(unopened, onForm((session) => current(session)))
 
-      assert.deepEqual(shown, idle(View.HasBusiness({ business: business() })))
+      assert.deepEqual(shown, idle(home(business())))
 
       const plane = fakePlane({ me: me(active), createPaymentLink: createdLink() })
 
@@ -416,7 +419,7 @@ void test(
             const after = yield* current(session)
 
             if (popup.close === "refresh") {
-              assert.deepEqual(after, idle(View.HasBusiness({ business: active })), name)
+              assert.deepEqual(after, idle(home(active, 5)), name)
               yield* startLink(session)
             } else {
               assert.deepEqual(after, idle(View.CreatingLink({ business: active, overview: noLinks })), name)
@@ -573,7 +576,7 @@ void test(
 
           yield* session.back
 
-          assert.deepEqual(yield* current(session), idle(View.HasBusiness({ business: active })))
+          assert.deepEqual(yield* current(session), idle(home(active, 4)))
         })
       )
 
@@ -592,7 +595,7 @@ void test(
       const state = yield* run(plane, (session) =>
         Effect.andThen(Effect.andThen(session.load, startLink(session)), current(session)))
 
-      assert.deepEqual(state, idle(View.HasBusiness({ business: business() })))
+      assert.deepEqual(state, idle(home(business())))
       assert.equal(listings(plane).length, 0)
     }),
   ),
@@ -655,7 +658,7 @@ void test(
 
           assert.deepEqual(
             yield* current(session),
-            idle(View.HasBusiness({ business: active }), {
+            idle(home(active, 1), {
               message: "Create a business first.",
               retry: null,
               close: "refresh",
@@ -664,7 +667,7 @@ void test(
 
           yield* session.close
 
-          assert.deepEqual(yield* current(session), idle(View.HasBusiness({ business: active })))
+          assert.deepEqual(yield* current(session), idle(home(active, 4)))
         })
       )
 

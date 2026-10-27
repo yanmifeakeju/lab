@@ -6,7 +6,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 
 import { createTestRenderer } from "@opentui/core/testing"
-import { Effect, Fiber } from "effect"
+import { Deferred, Effect, Fiber } from "effect"
 import stringWidth from "string-width"
 
 import { connect } from "../src/connection.tsx"
@@ -16,6 +16,7 @@ import {
   createdLink,
   failure,
   fakePlane,
+  figures,
   first,
   inTurn,
   listed,
@@ -116,7 +117,7 @@ void test(
 
       tui.keys.pressKey("o")
 
-      const frame = yield* tui.showing("Account acct_01K33YV8M82N9MXP4E7J6B1QWK in ngn_ng")
+      const frame = yield* tui.showing("Available     ₦184,500.00")
 
       assert.match(frame, /Nigeria · NGN/)
       assert.doesNotMatch(frame, /Press o/)
@@ -198,8 +199,8 @@ void test(
       const frame = yield* tui.frame
 
       assert.doesNotMatch(frame, /Create your business|Error/)
-      assert.match(frame, /Account acct_1 in ngn_ng/)
-      assert.deepEqual(paths(plane), ["POST /session", "GET /me", "GET /me"])
+      assert.match(frame, /Available     ₦184,500\.00/)
+      assert.deepEqual(paths(plane), ["POST /session", "GET /me", "GET /me", "GET /business/balance"])
 
       tui.close()
       yield* Fiber.join(tui.fiber)
@@ -228,7 +229,7 @@ void test(
 
       tui.keys.pressEnter()
 
-      const frame = yield* tui.showing("Account acct_01K33YV8M82N9MXP4E7J6B1QWK")
+      const frame = yield* tui.showing("Available     ₦184,500.00")
 
       assert.doesNotMatch(frame, /Error/)
 
@@ -1319,3 +1320,107 @@ void test("wide payments show filter arrows and unswept expiry has an expired-at
     yield* Fiber.join(tui.fiber)
   }),
 ))
+
+void test(
+  "home opens with the ledger balance, amounts aligned in one column, and no account line",
+  scenario(
+    Effect.gen(function* () {
+      const plane = fakePlane({ me: me(opened) })
+      const tui = yield* screen(plane)
+
+      const frame = yield* tui.showing("Available")
+      const lines = frame.split("\n").map((line) => line.replace(/^│ /, "").replace(/ *│$/, ""))
+
+      // Right edges line up, whatever each amount's width.
+      assert.ok(lines.includes("Balance"))
+      assert.ok(lines.includes("  Available     ₦184,500.00"))
+      assert.ok(lines.includes("  Pending             ₦0.00"))
+      assert.doesNotMatch(frame, /acct_01K33YV8M82N9MXP4E7J6B1QWK|Account /)
+      assert.match(frame, /Payments {8}p/)
+
+      tui.close()
+      yield* Fiber.join(tui.fiber)
+    }),
+  ),
+)
+
+void test(
+  "an unavailable balance shows inline, the menu still works, and r or coming back fetches it again",
+  scenario(
+    Effect.gen(function* () {
+      const plane = fakePlane({
+        me: me(opened),
+        balance: inTurn(failure(503, "ledger_unavailable"), "unreachable", { status: 200, body: figures() }),
+      })
+
+      const tui = yield* screen(plane)
+
+      const frame = yield* tui.showing("Balance unavailable · r to retry")
+
+      assert.doesNotMatch(frame, /Error|Retry\]/)
+
+      tui.keys.pressKey("p")
+      yield* tui.showing("No payments yet.")
+      tui.keys.pressEscape()
+      yield* tui.showing("Balance unavailable · r to retry")
+
+      tui.keys.pressKey("r")
+      yield* tui.showing("Available     ₦184,500.00")
+
+      assert.equal(plane.calls.filter(({ path }) => path === "/business/balance").length, 3)
+
+      tui.close()
+      yield* Fiber.join(tui.fiber)
+    }),
+  ),
+)
+
+void test(
+  "p and l open their screens while the balance is still loading",
+  scenario(
+    Effect.gen(function* () {
+      const held = yield* Deferred.make<Reply>()
+      const plane = fakePlane({ me: me(opened), balance: first({ held })(() => ({ status: 200, body: figures() })) })
+      const tui = yield* screen(plane)
+
+      yield* tui.matching((frame) => frame.includes("Balance") && frame.includes("Loading…"))
+
+      tui.keys.pressKey("p")
+      yield* tui.showing("No payments yet.")
+      tui.keys.pressEscape()
+      yield* tui.showing("Available     ₦184,500.00")
+
+      // The first request, still out, gets no say once it answers.
+      yield* Deferred.succeed(held, { status: 200, body: figures({ available: "100" }) })
+      tui.keys.pressKey("l")
+      yield* tui.showing("Payment links ·")
+      tui.keys.pressEscape()
+
+      const frame = yield* tui.showing("Available")
+
+      assert.doesNotMatch(frame, /₦1\.00/)
+
+      tui.close()
+      yield* Fiber.join(tui.fiber)
+    }),
+  ),
+)
+
+void test(
+  "a short terminal drops the gaps and still shows the balance and the menu whole",
+  scenario(
+    Effect.gen(function* () {
+      const plane = fakePlane({ me: me(opened) })
+      const tui = yield* screen(plane, { width: 40, height: 12 })
+
+      const frame = yield* tui.showing("Pending")
+
+      for (const text of ["Acme Ltd", "Balance", "Available     ₦184,500.00", "Payments        p", "Payment links   l", "Ctrl+C to quit"]) {
+        assert.ok(frame.includes(text), text)
+      }
+
+      tui.close()
+      yield* Fiber.join(tui.fiber)
+    }),
+  ),
+)

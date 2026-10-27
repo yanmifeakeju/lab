@@ -1,4 +1,5 @@
 import type { ScrollBoxRenderable } from "@opentui/core"
+import type { BusinessBalanceEncoded } from "@pay-tty/plane-client"
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { type Accessor, createEffect, createMemo, createSignal, For, type JSX, Match, on, onCleanup, Show, Switch } from "solid-js"
 
@@ -21,12 +22,13 @@ import {
 } from "./payment-link.ts"
 import { filterLine, filters, type Page, paymentRows, paymentTiming, type State as PaymentState, timelineLines } from "./payments.ts"
 import { formatMoney } from "./money.ts"
-import { type Business, type Popup, type State, View } from "./session.ts"
+import { Balance, type Business, type Popup, type State, View } from "./session.ts"
 
 /** What the screens can ask of the connection; each returns at once. */
 export interface Actions {
   readonly createBusiness: (name: string) => void
   readonly openAccount: () => void
+  readonly refreshBalance: () => void
   readonly managePayments: () => void
   readonly linkPayments: (id: string) => void
   readonly refreshPayments: () => void
@@ -80,21 +82,57 @@ const CreateBusiness = (props: {
   </box>
 )
 
-const ShowBusiness = (props: { readonly business: Business; readonly pending: boolean; readonly selected: number; readonly short: boolean }) => (
+// Labels padded to one width and amounts right-aligned in one column.
+const balanceRows = (figures: BusinessBalanceEncoded) => {
+  const amounts = [figures.available, figures.pending].map((minor) =>
+    formatMoney(BigInt(minor), figures.scale, figures.currency))
+
+  const width = Math.max(...amounts.map((amount) => amount.length))
+
+  return ["Available", "Pending"].map((label, index) =>
+    `  ${label.padEnd(14)}${(amounts[index] ?? "").padStart(width)}`)
+}
+
+const ShowBalance = (props: { readonly balance: Balance }) => (
+  <Switch>
+    <Match when={Balance.$is("Unavailable")(props.balance)}>
+      <text fg={muted}>Balance unavailable · r to retry</text>
+    </Match>
+    <Match when={Balance.$is("Loaded")(props.balance) ? props.balance : undefined}>
+      {(loaded) => (
+        <box flexDirection="column">
+          <text>Balance</text>
+          <For each={balanceRows(loaded().figures)}>{(row) => <text>{row}</text>}</For>
+        </box>
+      )}
+    </Match>
+    <Match when={true}>
+      <box flexDirection="column">
+        <text>Balance</text>
+        <text fg={muted}>  Loading…</text>
+      </box>
+    </Match>
+  </Switch>
+)
+
+const ShowBusiness = (props: {
+  readonly business: Business
+  readonly balance: Balance | null
+  readonly pending: boolean
+  readonly selected: number
+  readonly short: boolean
+}) => (
   <box flexDirection="column" gap={props.short ? 0 : 1}>
-    <text>{props.business.name}</text>
     <box flexDirection="column">
+      <text>{props.business.name}</text>
       <text fg={muted}>
         {countries[props.business.country_code]} · {props.business.currency_code}
       </text>
-      <Show when={props.business.ledger} fallback={<text fg={muted}>No account yet</text>}>
-        {(ledger) => (
-          <text fg={muted}>
-            Account {ledger().payable_account_ref} in {ledger().slug}
-          </text>
-        )}
+      <Show when={props.business.ledger === null}>
+        <text fg={muted}>No account yet</text>
       </Show>
     </box>
+    <Show when={props.balance}>{(balance) => <ShowBalance balance={balance()} />}</Show>
     <Switch>
       <Match when={props.pending}>
         <text>{props.business.status === "created" ? "Opening your account…" : "Loading…"}</text>
@@ -527,11 +565,13 @@ export const App = (props: {
   const view = () => props.state().view
   const popup = () => props.state().popup
 
-  const business = () => {
+  const home = () => {
     const current = view()
 
-    return View.$is("HasBusiness")(current) ? current.business : undefined
+    return View.$is("HasBusiness")(current) ? current : undefined
   }
+
+  const business = () => home()?.business
 
   const creating = () => {
     const current = view()
@@ -827,6 +867,10 @@ export const App = (props: {
         setSelected(0)
         props.actions.manageLinks()
       }
+
+      if (key.name === "r") {
+        props.actions.refreshBalance()
+      }
     }
   })
 
@@ -854,8 +898,16 @@ export const App = (props: {
             onSubmit={() => props.actions.createBusiness(draft())}
           />
         </Match>
-        <Match when={business()}>
-          {(shown) => <ShowBusiness business={shown()} pending={props.state().pending} selected={section()} short={short()} />}
+        <Match when={home()}>
+          {(shown) => (
+            <ShowBusiness
+              business={shown().business}
+              balance={shown().balance}
+              pending={props.state().pending}
+              selected={section()}
+              short={short()}
+            />
+          )}
         </Match>
         <Match when={linkScreen() && !roomy()}>
           <text fg={muted}>

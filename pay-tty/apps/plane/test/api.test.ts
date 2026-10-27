@@ -13,7 +13,7 @@ import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import { decodeJwt, type JWTHeaderParameters, type JWTPayload, SignJWT } from "jose"
 import { ulid } from "ulid"
 
-import { BusinessInfo, BusinessLedger } from "../src/api/business/routes.ts"
+import { BusinessBalance, BusinessInfo, BusinessLedger } from "../src/api/business/routes.ts"
 import { MeResponse } from "../src/api/me/routes.ts"
 import { CustomerChoosesPricing, FixedPricing, PaymentLink, PaymentLinkList } from "../src/api/payment_links/routes.ts"
 import { PaymentDetail, PaymentPage, RefusedEvent, SettledEvent } from "../src/api/payments/routes.ts"
@@ -244,7 +244,7 @@ void test("serves health without a token", () =>
     }),
   ))
 
-void test("publishes exactly /health, /session, /me, /business, /business/account, /payment_links, /payments, and the /pay routes", () =>
+void test("publishes exactly /health, /session, /me, /business, /business/account, /business/balance, /payment_links, /payments, and the /pay routes", () =>
   run(
     Effect.gen(function* () {
       const plane = yield* server()
@@ -279,6 +279,7 @@ void test("publishes exactly /health, /session, /me, /business, /business/accoun
       assert.deepEqual(Object.keys(paths).sort(), [
         "/business",
         "/business/account",
+        "/business/balance",
         "/health",
         "/me",
         "/pay/payment_links/{share_token}",
@@ -2089,5 +2090,130 @@ void test("GET /payments expired filters exclude overdue payments from other bus
         assert.equal(page.stats.pending, 0)
         assert.ok(page.payments.every((payment) => payment.status === "expired"))
       }
+    }),
+  ))
+
+const getBalance = (server: Server, authorization: string | undefined, path = "/business/balance") =>
+  send(server, { method: "GET", path, authorization })
+
+// A balance read that succeeded, decoded strictly.
+const balanceOf = Effect.fnUntraced(function* (server: Server, authorization: string) {
+  const { status, json } = yield* getBalance(server, authorization)
+
+  assert.equal(status, 200)
+
+  return yield* Schema.decodeUnknownEffect(BusinessBalance)(json, strict)
+})
+
+const accountRefOf = Effect.fnUntraced(function* (server: Server, authorization: string) {
+  const ref = (yield* me(server, authorization)).body.business?.ledger?.payable_account_ref
+
+  assert.ok(ref !== undefined)
+
+  return ref
+})
+
+void test("GET /business/balance reads the caller's account from the ledger, and a relayed payment adds to it", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { authorization, token } = yield* linkToPay(plane)
+      const account = yield* accountRefOf(plane, authorization)
+
+      assert.deepEqual(yield* balanceOf(plane, authorization), new BusinessBalance({
+        ledger: "ngn_ng",
+        currency: "NGN",
+        scale: 2,
+        available: "0",
+        pending: "0",
+      }))
+      assert.deepEqual(plane.ledger.reads, [account])
+
+      const { body: payment } = yield* started(plane, token)
+
+      yield* simulatePayment(plane, token, payment.id, "succeeded")
+      yield* relayed(plane, authorization, payment.id)
+
+      const after = yield* balanceOf(plane, authorization)
+
+      assert.equal(after.available, "250000")
+      assert.equal(after.pending, "0")
+    }),
+  ))
+
+void test("GET /business/balance needs a token and an opened account, and maps a ledger failure", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+
+      assert.deepEqual(yield* getBalance(plane, undefined), { status: 401, json: unauthorized })
+
+      const { authorization } = yield* exchange(plane, fingerprint())
+
+      assert.equal(yield* errorCode(yield* getBalance(plane, authorization)), "409 business_required")
+
+      const { authorization: created } = yield* withBusiness(plane)
+
+      assert.equal(yield* errorCode(yield* getBalance(plane, created)), "409 account_not_opened")
+      assert.deepEqual(plane.ledger.reads, [])
+
+      // The account as the ledger reads it back, with some fields reported differently.
+      const misreported = (fields: Readonly<Record<string, string>>) => (accountRef: string): Reply => {
+        const reply = accountCreated({ ledger: "ngn_ng", external_id: "biz_test", name: "Acme Ltd" })
+
+        return reply !== "unreachable" && "body" in reply
+          ? { status: 200, body: { ...reply.body, reference: accountRef, ...fields } }
+          : reply
+      }
+
+      const cases: ReadonlyArray<readonly [string, (accountRef: string) => Reply, string]> = [
+        ["unreachable", () => "unreachable", "503 ledger_unavailable"],
+        ["ledger 500", () => failing(500, "internal_server_error"), "503 ledger_unavailable"],
+        ["account not found", () => failing(404, "account_not_found"), "502 ledger_bad_response"],
+        ["not JSON", () => ({ status: 200, raw: "not JSON" }), "502 ledger_bad_response"],
+        ["another account", misreported({ reference: `acct_${ulid()}` }), "502 ledger_bad_response"],
+        ["another ledger", misreported({ ledger_slug: "usd_us" }), "502 ledger_bad_response"],
+      ]
+
+      for (const [reason, read, expected] of cases) {
+        // Opened against a working ledger, then read through a failing one.
+        const { authorization: active } = yield* withActiveBusiness(plane)
+        const failingPlane = yield* server({ ledger: fakeLedger(undefined, undefined, read) })
+
+        assert.equal(yield* errorCode(yield* getBalance(failingPlane, active)), expected, reason)
+      }
+
+      // The ledger's answer is checked, not trusted: the same fields for the
+      // right account succeed.
+      const { authorization: active } = yield* withActiveBusiness(plane)
+      const echoing = yield* server({ ledger: fakeLedger(undefined, undefined, misreported({})) })
+
+      assert.equal((yield* balanceOf(echoing, active)).available, "0")
+    }),
+  ))
+
+void test("GET /business/balance reads only the caller's account, whatever the request names", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const ours = yield* withActiveBusiness(plane)
+      const theirs = yield* withActiveBusiness(plane)
+      const ourAccount = yield* accountRefOf(plane, ours.authorization)
+      const theirAccount = yield* accountRefOf(plane, theirs.authorization)
+
+      yield* balanceOf(plane, ours.authorization)
+      yield* getBalance(plane, ours.authorization, `/business/balance?account_ref=${theirAccount}&business_id=${theirs.id}`)
+      yield* send(plane, {
+        method: "GET",
+        path: "/business/balance",
+        authorization: ours.authorization,
+        headers: { "x-business-id": theirs.id },
+      })
+
+      assert.deepEqual(plane.ledger.reads, [ourAccount, ourAccount, ourAccount])
+
+      yield* balanceOf(plane, theirs.authorization)
+
+      assert.deepEqual(plane.ledger.reads.slice(3), [theirAccount])
     }),
   ))

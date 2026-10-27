@@ -23,12 +23,14 @@ export type UnauthorizedResponseEncoded = { readonly "message": string, readonly
 export const UnauthorizedResponseEncoded = Schema.Struct({ "message": Schema.String.check(Schema.isMinLength(1).annotate({ "expected": "a value with a length of at least 1" })), "error": Schema.Struct({ "code": Schema.Literal("unauthorized") }) }).annotate({ "identifier": "UnauthorizedResponseEncoded" })
 export type CreateBusinessRequestEncoded = { readonly "name": string, readonly "country_code"?: "NG" | "US" }
 export const CreateBusinessRequestEncoded = Schema.Struct({ "name": Schema.String.check(Schema.isPattern(new RegExp(".*\\S.*")).annotate({ "expected": "a string matching the RegExp .*\\S.*" })), "country_code": Schema.optionalKey(Schema.Literals(["NG", "US"]).annotate({ "default": "NG" })) }).annotate({ "identifier": "CreateBusinessRequestEncoded" })
-export type ConflictResponseEncoded = { readonly "message": string, readonly "error": { readonly "code": "conflict" | "ledger_rejected" | "business_required" | "business_inactive" | "link_inactive" | "payment_expired" | "not_pending" } }
-export const ConflictResponseEncoded = Schema.Struct({ "message": Schema.String.check(Schema.isMinLength(1).annotate({ "expected": "a value with a length of at least 1" })), "error": Schema.Struct({ "code": Schema.Literals(["conflict", "ledger_rejected", "business_required", "business_inactive", "link_inactive", "payment_expired", "not_pending"]) }) }).annotate({ "identifier": "ConflictResponseEncoded" })
+export type ConflictResponseEncoded = { readonly "message": string, readonly "error": { readonly "code": "conflict" | "ledger_rejected" | "business_required" | "business_inactive" | "account_not_opened" | "link_inactive" | "payment_expired" | "not_pending" } }
+export const ConflictResponseEncoded = Schema.Struct({ "message": Schema.String.check(Schema.isMinLength(1).annotate({ "expected": "a value with a length of at least 1" })), "error": Schema.Struct({ "code": Schema.Literals(["conflict", "ledger_rejected", "business_required", "business_inactive", "account_not_opened", "link_inactive", "payment_expired", "not_pending"]) }) }).annotate({ "identifier": "ConflictResponseEncoded" })
 export type ServiceUnavailableResponseEncoded = { readonly "message": string, readonly "error": { readonly "code": "ledger_unavailable" | "country_unavailable" } }
 export const ServiceUnavailableResponseEncoded = Schema.Struct({ "message": Schema.String.check(Schema.isMinLength(1).annotate({ "expected": "a value with a length of at least 1" })), "error": Schema.Struct({ "code": Schema.Literals(["ledger_unavailable", "country_unavailable"]) }) }).annotate({ "identifier": "ServiceUnavailableResponseEncoded" })
 export type BadGatewayResponseEncoded = { readonly "message": string, readonly "error": { readonly "code": "ledger_bad_response" } }
 export const BadGatewayResponseEncoded = Schema.Struct({ "message": Schema.String.check(Schema.isMinLength(1).annotate({ "expected": "a value with a length of at least 1" })), "error": Schema.Struct({ "code": Schema.Literal("ledger_bad_response") }) }).annotate({ "identifier": "BadGatewayResponseEncoded" })
+export type BusinessBalanceEncoded = { readonly "ledger": string, readonly "currency": string, readonly "scale": number, readonly "available": string, readonly "pending": string }
+export const BusinessBalanceEncoded = Schema.Struct({ "ledger": Schema.String, "currency": Schema.String, "scale": Schema.Number.check(Schema.isInt().annotate({ "expected": "an integer" })), "available": Schema.String.annotate({ "description": "In minor units of the ledger's currency." }), "pending": Schema.String.annotate({ "description": "In minor units of the ledger's currency." }) }).annotate({ "identifier": "BusinessBalanceEncoded" })
 export type FixedPricingEncoded = { readonly "mode": "fixed", readonly "amount": number }
 export const FixedPricingEncoded = Schema.Struct({ "mode": Schema.Literal("fixed"), "amount": Schema.Number.annotate({ "description": "In minor units of the link's currency." }).check(Schema.isInt().annotate({ "expected": "an integer" })) }).annotate({ "identifier": "FixedPricingEncoded" })
 export type CustomerChoosesPricingEncoded = { readonly "mode": "customer_chooses", readonly "suggested_amount": number | null, readonly "minimum_amount": number | null, readonly "maximum_amount": number | null }
@@ -124,6 +126,18 @@ export type BusinessCreateAccount502 = BadGatewayResponseEncoded
 export const BusinessCreateAccount502 = BadGatewayResponseEncoded
 export type BusinessCreateAccount503 = ServiceUnavailableResponseEncoded
 export const BusinessCreateAccount503 = ServiceUnavailableResponseEncoded
+export type BusinessGetBalance200 = BusinessBalanceEncoded
+export const BusinessGetBalance200 = BusinessBalanceEncoded
+export type BusinessGetBalance400 = ValidationErrorResponseEncoded
+export const BusinessGetBalance400 = ValidationErrorResponseEncoded
+export type BusinessGetBalance401 = UnauthorizedResponseEncoded
+export const BusinessGetBalance401 = UnauthorizedResponseEncoded
+export type BusinessGetBalance409 = ConflictResponseEncoded
+export const BusinessGetBalance409 = ConflictResponseEncoded
+export type BusinessGetBalance502 = BadGatewayResponseEncoded
+export const BusinessGetBalance502 = BadGatewayResponseEncoded
+export type BusinessGetBalance503 = ServiceUnavailableResponseEncoded
+export const BusinessGetBalance503 = ServiceUnavailableResponseEncoded
 export type PaymentLinksListPaymentLinks200 = PaymentLinkListEncoded
 export const PaymentLinksListPaymentLinks200 = PaymentLinkListEncoded
 export type PaymentLinksListPaymentLinks400 = ValidationErrorResponseEncoded
@@ -345,6 +359,17 @@ export const make = (
       orElse: unexpectedStatus
     }))
     ),
+    "businessGetBalance": (options) => HttpClientRequest.get("/business/balance").pipe(
+      withResponse(options?.config)(HttpClientResponse.matchStatus({
+      "2xx": decodeSuccess(BusinessGetBalance200),
+      "400": decodeError("BusinessGetBalance400", BusinessGetBalance400),
+      "401": decodeError("BusinessGetBalance401", BusinessGetBalance401),
+      "409": decodeError("BusinessGetBalance409", BusinessGetBalance409),
+      "502": decodeError("BusinessGetBalance502", BusinessGetBalance502),
+      "503": decodeError("BusinessGetBalance503", BusinessGetBalance503),
+      orElse: unexpectedStatus
+    }))
+    ),
     "paymentLinksListPaymentLinks": (options) => HttpClientRequest.get("/payment_links").pipe(
       withResponse(options?.config)(HttpClientResponse.matchStatus({
       "2xx": decodeSuccess(PaymentLinksListPaymentLinks200),
@@ -435,6 +460,7 @@ export interface PlaneClient {
   readonly "meMe": <Config extends OperationConfig>(options: { readonly config?: Config | undefined } | undefined) => Effect.Effect<WithOptionalResponse<typeof MeMe200.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"MeMe400", typeof MeMe400.Type> | PlaneClientError<"MeMe401", typeof MeMe401.Type>>
   readonly "businessCreateBusiness": <Config extends OperationConfig>(options: { readonly payload: typeof BusinessCreateBusinessRequestJson.Encoded; readonly config?: Config | undefined }) => Effect.Effect<WithOptionalResponse<typeof BusinessCreateBusiness200.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"BusinessCreateBusiness400", typeof BusinessCreateBusiness400.Type> | PlaneClientError<"BusinessCreateBusiness401", typeof BusinessCreateBusiness401.Type> | PlaneClientError<"BusinessCreateBusiness409", typeof BusinessCreateBusiness409.Type> | PlaneClientError<"BusinessCreateBusiness503", typeof BusinessCreateBusiness503.Type>>
   readonly "businessCreateAccount": <Config extends OperationConfig>(options: { readonly config?: Config | undefined } | undefined) => Effect.Effect<WithOptionalResponse<typeof BusinessCreateAccount200.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"BusinessCreateAccount400", typeof BusinessCreateAccount400.Type> | PlaneClientError<"BusinessCreateAccount401", typeof BusinessCreateAccount401.Type> | PlaneClientError<"BusinessCreateAccount409", typeof BusinessCreateAccount409.Type> | PlaneClientError<"BusinessCreateAccount502", typeof BusinessCreateAccount502.Type> | PlaneClientError<"BusinessCreateAccount503", typeof BusinessCreateAccount503.Type>>
+  readonly "businessGetBalance": <Config extends OperationConfig>(options: { readonly config?: Config | undefined } | undefined) => Effect.Effect<WithOptionalResponse<typeof BusinessGetBalance200.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"BusinessGetBalance400", typeof BusinessGetBalance400.Type> | PlaneClientError<"BusinessGetBalance401", typeof BusinessGetBalance401.Type> | PlaneClientError<"BusinessGetBalance409", typeof BusinessGetBalance409.Type> | PlaneClientError<"BusinessGetBalance502", typeof BusinessGetBalance502.Type> | PlaneClientError<"BusinessGetBalance503", typeof BusinessGetBalance503.Type>>
   readonly "paymentLinksListPaymentLinks": <Config extends OperationConfig>(options: { readonly config?: Config | undefined } | undefined) => Effect.Effect<WithOptionalResponse<typeof PaymentLinksListPaymentLinks200.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"PaymentLinksListPaymentLinks400", typeof PaymentLinksListPaymentLinks400.Type> | PlaneClientError<"PaymentLinksListPaymentLinks401", typeof PaymentLinksListPaymentLinks401.Type> | PlaneClientError<"PaymentLinksListPaymentLinks409", typeof PaymentLinksListPaymentLinks409.Type>>
   readonly "paymentLinksCreatePaymentLink": <Config extends OperationConfig>(options: { readonly params: typeof PaymentLinksCreatePaymentLinkParams.Encoded; readonly payload: typeof PaymentLinksCreatePaymentLinkRequestJson.Encoded; readonly config?: Config | undefined }) => Effect.Effect<WithOptionalResponse<typeof PaymentLinksCreatePaymentLink200.Type | typeof PaymentLinksCreatePaymentLink201.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"PaymentLinksCreatePaymentLink400", typeof PaymentLinksCreatePaymentLink400.Type> | PlaneClientError<"PaymentLinksCreatePaymentLink401", typeof PaymentLinksCreatePaymentLink401.Type> | PlaneClientError<"PaymentLinksCreatePaymentLink409", typeof PaymentLinksCreatePaymentLink409.Type>>
   readonly "paymentsListPayments": <Config extends OperationConfig>(options: { readonly params?: typeof PaymentsListPaymentsParams.Encoded | undefined; readonly config?: Config | undefined } | undefined) => Effect.Effect<WithOptionalResponse<typeof PaymentsListPayments200.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"PaymentsListPayments400", typeof PaymentsListPayments400.Type> | PlaneClientError<"PaymentsListPayments401", typeof PaymentsListPayments401.Type> | PlaneClientError<"PaymentsListPayments404", typeof PaymentsListPayments404.Type> | PlaneClientError<"PaymentsListPayments409", typeof PaymentsListPayments409.Type>>

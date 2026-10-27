@@ -1,5 +1,6 @@
 import {
   type AuthorizedClient,
+  type BusinessBalanceEncoded,
   type BusinessInfoEncoded,
   CreatePaymentLinkRequestEncoded,
   type PaymentsListPaymentsParams,
@@ -9,6 +10,7 @@ import {
   Data,
   Effect,
   Encoding,
+  FiberSet,
   Match,
   Predicate,
   Ref,
@@ -24,8 +26,25 @@ import { Plane } from "./plane.ts";
 
 export type Business = BusinessInfoEncoded;
 
+// The home screen's balance, loaded beside the screen rather than as an
+// Operation: a slow ledger must hold up nothing. `request` names the fetch
+// that wrote it, so an answer meant for an earlier one is dropped.
+export type Balance = Data.TaggedEnum<{
+  Loading: { readonly request: number };
+  Loaded: { readonly request: number; readonly figures: BusinessBalanceEncoded };
+  Unavailable: { readonly request: number };
+}>;
+
+export const Balance = Data.taggedEnum<Balance>();
+
+export interface Home {
+  readonly business: Business;
+  /** Null while the business has no open account, so no balance. */
+  readonly balance: Balance | null;
+}
+
 export type PaymentOrigin =
-  | { readonly _tag: "HasBusiness"; readonly business: Business }
+  | ({ readonly _tag: "HasBusiness" } & Home)
   | { readonly _tag: "LinkDetail"; readonly business: Business; readonly overview: Overview; readonly link: Summary };
 
 export interface PaymentsView {
@@ -40,7 +59,7 @@ export interface PaymentsView {
 export type View = Data.TaggedEnum<{
   Unknown: {};
   NoBusiness: {};
-  HasBusiness: { readonly business: Business };
+  HasBusiness: Home;
   /** The business's payments, optionally filtered to one link. */
   Payments: PaymentsView;
   /** A payment from the loaded list with its timeline; the list is kept for Back. */
@@ -136,6 +155,8 @@ export interface Interface {
   readonly createBusiness: (name: string) => Effect.Effect<void>;
   /** Ignored unless a created business is showing and idle. */
   readonly openAccount: Effect.Effect<void>;
+  /** Fetches the balance again; ignored unless home shows one that isn't loading. */
+  readonly refreshBalance: Effect.Effect<void>;
   /** Loads payments; ignored unless an active business is showing and idle. */
   readonly managePayments: Effect.Effect<void>;
   /** Loads one link's payments; ignored unless that link is showing and idle. */
@@ -332,6 +353,14 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
     { readonly value: string; readonly expiresAt: number } | undefined
   >(undefined);
 
+  // Balance fetches run here, apart from the operation that showed home, so
+  // they end with the connection and nothing waits on them.
+  const balances = yield* FiberSet.make();
+
+  const requests = yield* Ref.make(0);
+
+  const nextRequest = Ref.updateAndGet(requests, (count) => count + 1);
+
   // The last link submission whose outcome is unknown, kept for this
   // connection only.
   const unresolved = yield* Ref.make<Submission | undefined>(undefined);
@@ -386,10 +415,61 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
   const succeed = (view: View) =>
     SubscriptionRef.set(state, { view, pending: false, popup: null });
 
+  // Home for the business; its balance loads under `request` once shown.
+  const home = (business: Business, request: number) =>
+    View.HasBusiness({
+      business,
+      balance: business.status === "active" && business.ledger !== null ? Balance.Loading({ request }) : null,
+    });
+
+  // The answer lands only if home still waits on this very request.
+  const fetchBalance = (business: Business, request: number) =>
+    Effect.gen(function* () {
+      const outcome = yield* Effect.result(authorized((client) => client.getBalance(undefined)));
+
+      if (Result.isFailure(outcome)) {
+        yield* Effect.logWarning("balance failed", outcome.failure);
+      }
+
+      yield* SubscriptionRef.update(state, (current) =>
+        View.$is("HasBusiness")(current.view) &&
+        current.view.business.id === business.id &&
+        current.view.balance !== null &&
+        Balance.$is("Loading")(current.view.balance) &&
+        current.view.balance.request === request
+          ? {
+              ...current,
+              view: View.HasBusiness({
+                business: current.view.business,
+                balance: Result.isSuccess(outcome)
+                  ? Balance.Loaded({ request, figures: outcome.success })
+                  : Balance.Unavailable({ request }),
+              }),
+            }
+          : current);
+    });
+
+  // Starts the fetch if what's showing is home, loading under `request`.
+  const startBalance = (request: number) =>
+    Effect.gen(function* () {
+      const { view } = yield* SubscriptionRef.get(state);
+
+      if (
+        View.$is("HasBusiness")(view) &&
+        view.balance !== null &&
+        Balance.$is("Loading")(view.balance) &&
+        view.balance.request === request
+      ) {
+        yield* FiberSet.run(balances, fetchBalance(view.business, request));
+      }
+    });
+
   // Runs an operation already marked pending. Its failure keeps the screen
   // behind as it was, except a failed load, which leaves the business unknown.
   const perform = (operation: Operation): Effect.Effect<void> =>
     Effect.gen(function* () {
+      const request = yield* nextRequest;
+
       const outcome = yield* Effect.result(
         Operation.$match(operation, {
           Load: () =>
@@ -398,7 +478,7 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
               ({ business }) =>
                 business === null
                   ? View.NoBusiness()
-                  : View.HasBusiness({ business }),
+                  : home(business, request),
             ),
           // Nigeria is the only country with a ledger; see TASK-004.
           CreateBusiness: ({ name }) =>
@@ -406,7 +486,7 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
               authorized((client) =>
                 client.createBusiness({ payload: { name, country_code: "NG" } })
               ),
-              (business) => View.HasBusiness({ business }),
+              (business) => home(business, request),
             ),
           // The business stays created whatever failed, so repeating this is safe.
           OpenAccount: () =>
@@ -414,7 +494,7 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
               authorized((client) =>
                 client.createAccount(undefined)
               ),
-              (opened) => View.HasBusiness({ business: opened }),
+              (opened) => home(opened, request),
             ),
           ListPayments: ({ business, origin, filter, before, previous }) =>
             Effect.map(
@@ -465,7 +545,9 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
       }
 
       if (Result.isSuccess(outcome)) {
-        return yield* succeed(outcome.success);
+        yield* succeed(outcome.success);
+
+        return yield* startBalance(request);
       }
 
       yield* Effect.logWarning(`${operation._tag} failed`, outcome.failure);
@@ -531,6 +613,21 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
     if (yield* begin(showing, (current) => ({ ...current, pending: true }))) {
       yield* perform(Operation.OpenAccount());
     }
+  });
+
+  // Never pending: home stays usable while the ledger answers.
+  const refreshBalance = Effect.gen(function* () {
+    const request = yield* nextRequest;
+
+    yield* SubscriptionRef.update(state, (current) =>
+      View.$is("HasBusiness")(current.view) &&
+      current.view.balance !== null &&
+      !Balance.$is("Loading")(current.view.balance) &&
+      current.popup === null
+        ? { ...current, view: home(current.view.business, request) }
+        : current);
+
+    yield* startBalance(request);
   });
 
   const manageLinks = Effect.gen(function* () {
@@ -727,6 +824,8 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
   // Leaving the form or a created link shows the list as it was while it
   // reloads, so a new link joins it.
   const back = Effect.gen(function* () {
+    const request = yield* nextRequest;
+
     const reload = yield* SubscriptionRef.modify(state, (current): readonly [Business | undefined, State] => {
       if (current.popup !== null || current.pending) {
         return [undefined, current];
@@ -738,12 +837,13 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
         [business, { ...current, view: View.Links({ business, overview }), pending: true }] as const;
 
       return View.$match(current.view, {
-        Payments: ({ origin }) => [undefined, { ...current, view: origin }] as const,
+        Payments: ({ origin }) =>
+          [undefined, { ...current, view: Predicate.isTagged(origin, "HasBusiness") ? home(origin.business, request) : origin }] as const,
         PaymentDetail: ({ list }) => [undefined, { ...current, view: View.Payments(list) }] as const,
         Unknown: () => stay,
         NoBusiness: () => stay,
         HasBusiness: () => stay,
-        Links: ({ business }) => [undefined, { ...current, view: View.HasBusiness({ business }) }] as const,
+        Links: ({ business }) => [undefined, { ...current, view: home(business, request) }] as const,
         LinkDetail: ({ business, overview }) =>
           [undefined, { ...current, view: View.Links({ business, overview }) }] as const,
         CreatingLink: reloading,
@@ -752,8 +852,10 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
     });
 
     if (reload !== undefined) {
-      yield* perform(Operation.ListLinks({ business: reload }));
+      return yield* perform(Operation.ListLinks({ business: reload }));
     }
+
+    yield* startBalance(request);
   });
 
   // The popup stays up while the retry runs; its answer replaces or clears it.
@@ -774,6 +876,8 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
   // A refresh never repeats the failed request. It also recovers one that
   // succeeded after its answer was lost, or a business made from another terminal.
   const close = Effect.gen(function* () {
+    const request = yield* nextRequest;
+
     const refresh = yield* SubscriptionRef.modify(state, (current) => {
       if (current.popup?.close == null || current.pending) {
         return [false, current] as const;
@@ -783,7 +887,8 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
         const origin = View.$is("Payments")(current.view) ? current.view.origin : current.view;
 
         const view = Predicate.isTagged(origin, "LinkDetail")
-          ? View.Links({ business: origin.business, overview: origin.overview }) : origin;
+          ? View.Links({ business: origin.business, overview: origin.overview })
+          : Predicate.isTagged(origin, "HasBusiness") ? home(origin.business, request) : origin;
 
         return [false, { ...current, view, popup: null }] as const;
       }
@@ -794,8 +899,10 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
     });
 
     if (refresh) {
-      yield* perform(Operation.Load());
+      return yield* perform(Operation.Load());
     }
+
+    yield* startBalance(request);
   });
 
   return {
@@ -803,6 +910,7 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
     load,
     createBusiness,
     openAccount,
+    refreshBalance,
     managePayments,
     linkPayments,
     refreshPayments,

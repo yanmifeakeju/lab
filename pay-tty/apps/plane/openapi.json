@@ -287,6 +287,82 @@
         }
       }
     },
+    "/business/balance": {
+      "get": {
+        "tags": [
+          "business"
+        ],
+        "operationId": "business.getBalance",
+        "parameters": [],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "BusinessBalance",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BusinessBalanceEncoded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationErrorResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponseEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedResponseEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictResponseEncoded"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "BadGatewayResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadGatewayResponseEncoded"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "ServiceUnavailableResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceUnavailableResponseEncoded"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/payment_links": {
       "post": {
         "tags": [
@@ -1184,6 +1260,7 @@
                   "ledger_rejected",
                   "business_required",
                   "business_inactive",
+                  "account_not_opened",
                   "link_inactive",
                   "payment_expired",
                   "not_pending"
@@ -1258,6 +1335,36 @@
         "required": [
           "message",
           "error"
+        ],
+        "additionalProperties": false
+      },
+      "BusinessBalanceEncoded": {
+        "type": "object",
+        "properties": {
+          "ledger": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "scale": {
+            "type": "integer"
+          },
+          "available": {
+            "type": "string",
+            "description": "In minor units of the ledger's currency."
+          },
+          "pending": {
+            "type": "string",
+            "description": "In minor units of the ledger's currency."
+          }
+        },
+        "required": [
+          "ledger",
+          "currency",
+          "scale",
+          "available",
+          "pending"
         ],
         "additionalProperties": false
       },

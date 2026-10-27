@@ -131,6 +131,16 @@ export const createClient = (httpClient: HttpClient.HttpClient, options: ClientO
               BusinessCreateAccount503: ({ cause }) => Effect.fail(cause),
             }),
           ),
+        getBalance: <Config extends OperationConfig>(request: { readonly config?: Config } | undefined) =>
+          client.businessGetBalance(request).pipe(
+            Effect.catchTags({
+              BusinessGetBalance400: ({ cause }) => Effect.fail(cause),
+              BusinessGetBalance401: ({ cause }) => Effect.fail(cause),
+              BusinessGetBalance409: ({ cause }) => Effect.fail(cause),
+              BusinessGetBalance502: ({ cause }) => Effect.fail(cause),
+              BusinessGetBalance503: ({ cause }) => Effect.fail(cause),
+            }),
+          ),
         /** A new link answers 201 and a repeat of its key 200, with the same body. */
         createPaymentLink: <Config extends OperationConfig>(
           request: {

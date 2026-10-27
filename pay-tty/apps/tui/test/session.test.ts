@@ -1,17 +1,18 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { Effect, SubscriptionRef } from "effect"
+import { Deferred, Effect, SubscriptionRef } from "effect"
 
-import { Operation, type Popup, Session, type State, View } from "../src/session.ts"
-import { merchantPayment, paymentPage, paid, tips, listed, active, business, failure, fakePlane, inTurn, me, type Reply, scenario, sessions, unauthorized } from "./support.ts"
+import { Balance, Operation, type Popup, Session, type State, View } from "../src/session.ts"
+import { merchantPayment, paymentPage, paid, tips, listed, active, business, failure, fakePlane, figures, first, home, inTurn, me, overview, type Reply, scenario, sessions, settled, unauthorized } from "./support.ts"
 
 // The session over the fake; its methods keep the client they were made
 // with, so they run without it.
-const run = <A>(plane: ReturnType<typeof fakePlane>, body: (session: Session.Interface) => Effect.Effect<A>) =>
+const run = <A, R>(plane: ReturnType<typeof fakePlane>, body: (session: Session.Interface) => Effect.Effect<A, never, R>) =>
   Effect.flatMap(Session.make("SHA256:key").pipe(Effect.provide(plane.layer)), body)
 
-const current = (session: Session.Interface) => SubscriptionRef.get(session.state)
+// Once any balance home is loading has answered.
+const current = settled
 
 const loadThen = <A>(next: (session: Session.Interface) => Effect.Effect<A>) => (session: Session.Interface) =>
   Effect.andThen(session.load, Effect.andThen(next(session), current(session)))
@@ -48,7 +49,7 @@ void test(
     Effect.gen(function* () {
       const state = yield* run(fakePlane({ me: me(active) }), loadThen(() => Effect.void))
 
-      assert.deepEqual(state, idle(View.HasBusiness({ business: active })))
+      assert.deepEqual(state, idle(home(active, 1)))
     }),
   ),
 )
@@ -158,7 +159,7 @@ void test(
 
       const state = yield* run(plane, loadThen((session) => session.createBusiness("  Acme Ltd \t")))
 
-      assert.deepEqual(state, idle(View.HasBusiness({ business: business() })))
+      assert.deepEqual(state, idle(home(business())))
       assert.deepEqual(plane.calls.at(-1)?.body, { name: "Acme Ltd", country_code: "NG" })
     }),
   ),
@@ -242,8 +243,8 @@ void test(
 
       const state = yield* run(plane, loadThen((session) => Effect.andThen(session.createBusiness("Acme Ltd"), session.close)))
 
-      assert.deepEqual(state, idle(View.HasBusiness({ business: active })))
-      assert.deepEqual(paths(plane), ["POST /session", "GET /me", "POST /business", "GET /me"])
+      assert.deepEqual(state, idle(home(active, 4)))
+      assert.deepEqual(paths(plane), ["POST /session", "GET /me", "POST /business", "GET /me", "GET /business/balance"])
     }),
   ),
 )
@@ -256,7 +257,7 @@ void test(
 
       const state = yield* run(plane, loadThen((session) => Effect.andThen(session.createBusiness("Acme Ltd"), session.close)))
 
-      assert.deepEqual(state, idle(View.HasBusiness({ business: business() })))
+      assert.deepEqual(state, idle(home(business())))
       assert.deepEqual(paths(plane), ["POST /session", "GET /me", "POST /business", "GET /me"])
     }),
   ),
@@ -289,7 +290,7 @@ void test(
         loadThen((session) => Effect.andThen(session.createBusiness(" Acme Ltd "), session.retry)),
       )
 
-      assert.deepEqual(state, idle(View.HasBusiness({ business: business() })))
+      assert.deepEqual(state, idle(home(business())))
       assert.deepEqual(
         plane.calls.filter(({ path }) => path === "/business").map(({ body }) => body),
         [
@@ -337,9 +338,9 @@ void test(
       const plane = fakePlane({ me: me(business()), openAccount: () => ({ status: 200, body: active }) })
 
       const state = yield* run(plane, loadThen((session) => session.openAccount))
-      const call = plane.calls.at(-1)
+      const call = plane.calls.find(({ path }) => path === "/business/account")
 
-      assert.deepEqual(state, idle(View.HasBusiness({ business: active })))
+      assert.deepEqual(state, idle(home(active, 2)))
       assert.deepEqual([call?.method, call?.path, call?.body], ["POST", "/business/account", null])
     }),
   ),
@@ -380,7 +381,7 @@ void test(
 
         const state = yield* run(plane, loadThen((session) => session.openAccount))
 
-        assert.deepEqual(state, idle(View.HasBusiness({ business: business() }), popup), name)
+        assert.deepEqual(state, idle(home(business()), popup), name)
       }
     }),
   ),
@@ -405,7 +406,7 @@ void test(
           ),
         )
 
-        assert.deepEqual(state, idle(View.HasBusiness({ business: business() })), code)
+        assert.deepEqual(state, idle(home(business())), code)
         assert.deepEqual(paths(plane), ["POST /session", "GET /me", "POST /business/account", "GET /me"], code)
       }
     }),
@@ -435,7 +436,7 @@ void test(
 
           yield* session.retry
 
-          assert.deepEqual(yield* current(session), idle(View.HasBusiness({ business: active })))
+          assert.deepEqual(yield* current(session), idle(home(active, 4)))
         }),
       )
     }),
@@ -563,7 +564,7 @@ void test("business payments return to the business; unavailable link filters cl
       yield* session.managePayments
       yield* session.back
 
-      assert.deepEqual((yield* current(session)).view, View.HasBusiness({ business: active }))
+      assert.deepEqual((yield* current(session)).view, home(active, 3))
 
       yield* session.manageLinks
       yield* session.openLink(paid.id)
@@ -575,5 +576,209 @@ void test("business payments return to the business; unavailable link filters cl
 
       assert.equal((yield* current(session)).view._tag, "Links")
     }))
+  }),
+))
+
+const balanceCalls = (plane: ReturnType<typeof fakePlane>) =>
+  plane.calls.filter(({ path }) => path === "/business/balance").length
+
+// The state as it is, without waiting on a balance.
+const now = (session: Session.Interface) => SubscriptionRef.get(session.state)
+
+// Long enough for an answer already released to land, if it is going to.
+const landed = Effect.sleep("20 millis")
+
+const loadingHome = (request: number) => View.HasBusiness({ business: active, balance: Balance.Loading({ request }) })
+
+void test("home loads its balance beside it, without marking anything pending", scenario(
+  Effect.gen(function* () {
+    const held = yield* Deferred.make<Reply>()
+    const plane = fakePlane({ me: me(active), balance: () => ({ held }) })
+
+    yield* run(plane, (session) => Effect.gen(function* () {
+      yield* session.load
+
+      assert.deepEqual(yield* now(session), idle(loadingHome(1)))
+
+      yield* Deferred.succeed(held, { status: 200, body: figures({ available: "250000", pending: "1500" }) })
+
+      assert.deepEqual(yield* current(session), idle(View.HasBusiness({
+        business: active,
+        balance: Balance.Loaded({ request: 1, figures: figures({ available: "250000", pending: "1500" }) }),
+      })))
+    }))
+
+    assert.deepEqual(paths(plane), ["POST /session", "GET /me", "GET /business/balance"])
+  }),
+))
+
+void test("a failed balance is unavailable inline, never a popup, and r fetches it again", scenario(
+  Effect.gen(function* () {
+    const replies: ReadonlyArray<readonly [string, Reply]> = [
+      ["unreachable", "unreachable"],
+      ["500", { status: 500, body: {} }],
+      ["ledger_unavailable", failure(503, "ledger_unavailable")],
+      ["ledger_bad_response", failure(502, "ledger_bad_response")],
+      ["account_not_opened", failure(409, "account_not_opened")],
+    ]
+
+    for (const [name, reply] of replies) {
+      const plane = fakePlane({ me: me(active), balance: inTurn(reply, { status: 200, body: figures() }) })
+
+      yield* run(plane, (session) => Effect.gen(function* () {
+        yield* session.load
+
+        assert.deepEqual(
+          yield* current(session),
+          idle(View.HasBusiness({ business: active, balance: Balance.Unavailable({ request: 1 }) })),
+          name,
+        )
+
+        yield* session.refreshBalance
+
+        assert.deepEqual(yield* current(session), idle(home(active, 2)), name)
+      }))
+    }
+  }),
+))
+
+void test("r while the balance loads does nothing, and nothing asks for one without an open account", scenario(
+  Effect.gen(function* () {
+    const held = yield* Deferred.make<Reply>()
+    const plane = fakePlane({ me: me(active), balance: () => ({ held }) })
+
+    yield* run(plane, (session) => Effect.gen(function* () {
+      yield* session.load
+      yield* landed
+      yield* session.refreshBalance
+      yield* landed
+
+      assert.deepEqual(yield* now(session), idle(loadingHome(1)))
+      assert.equal(balanceCalls(plane), 1)
+    }))
+
+    // Recorded but not yet activated counts as no account.
+    for (const shown of [business(), business({ ledger: active.ledger })]) {
+      const unopened = fakePlane({ me: me(shown) })
+
+      yield* run(unopened, (session) => Effect.andThen(session.load, session.refreshBalance))
+
+      assert.equal(balanceCalls(unopened), 0)
+    }
+  }),
+))
+
+void test("the menu works while the balance is outstanding or unavailable", scenario(
+  Effect.gen(function* () {
+    const held = yield* Deferred.make<Reply>()
+    const outstanding = fakePlane({ me: me(active), listPaymentLinks: listed(paid), balance: () => ({ held }) })
+
+    yield* run(outstanding, (session) => Effect.gen(function* () {
+      yield* session.load
+      yield* session.managePayments
+
+      assert.equal((yield* now(session)).view._tag, "Payments")
+
+      yield* session.back
+      yield* session.manageLinks
+
+      assert.deepEqual(yield* now(session), idle(View.Links({ business: active, overview: overview([paid]) })))
+    }))
+
+    const unavailable = fakePlane({ me: me(active), balance: () => failure(503, "ledger_unavailable") })
+
+    yield* run(unavailable, (session) => Effect.gen(function* () {
+      yield* session.load
+      yield* current(session)
+      yield* session.managePayments
+
+      assert.equal((yield* now(session)).view._tag, "Payments")
+    }))
+  }),
+))
+
+void test("returning home from payments or links fetches the balance again", scenario(
+  Effect.gen(function* () {
+    const plane = fakePlane({ me: me(active) })
+
+    yield* run(plane, (session) => Effect.gen(function* () {
+      yield* session.load
+      yield* current(session)
+      yield* session.managePayments
+      yield* session.back
+
+      assert.deepEqual(yield* current(session), idle(home(active, 3)))
+
+      yield* session.manageLinks
+      yield* session.back
+
+      assert.deepEqual(yield* current(session), idle(home(active, 5)))
+    }))
+
+    assert.equal(balanceCalls(plane), 3)
+  }),
+))
+
+void test("an answer for a home that's gone, or for an earlier visit, is dropped", scenario(
+  Effect.gen(function* () {
+    const earlier = yield* Deferred.make<Reply>()
+    const later = yield* Deferred.make<Reply>()
+    const plane = fakePlane({ me: me(active), balance: first({ held: earlier }, { held: later })(() => "hang") })
+
+    yield* run(plane, (session) => Effect.gen(function* () {
+      yield* session.load
+      yield* session.managePayments
+
+      const away = yield* now(session)
+
+      // Home is gone: the first answer changes nothing.
+      yield* Deferred.succeed(earlier, { status: 200, body: figures({ available: "100" }) })
+      yield* landed
+
+      assert.deepEqual(yield* now(session), away)
+
+      // Back home under a new request; the old answer has already been spent,
+      // and only the new one's figures show.
+      yield* session.back
+
+      assert.deepEqual(yield* now(session), idle(loadingHome(3)))
+
+      yield* Deferred.succeed(later, { status: 200, body: figures({ available: "200" }) })
+
+      assert.deepEqual(yield* current(session), idle(View.HasBusiness({
+        business: active,
+        balance: Balance.Loaded({ request: 3, figures: figures({ available: "200" }) }),
+      })))
+    }))
+  }),
+))
+
+void test("leaving and re-entering home, the first answer to land doesn't stand in for the second", scenario(
+  Effect.gen(function* () {
+    const earlier = yield* Deferred.make<Reply>()
+    const later = yield* Deferred.make<Reply>()
+    const plane = fakePlane({ me: me(active), balance: first({ held: earlier }, { held: later })(() => "hang") })
+
+    yield* run(plane, (session) => Effect.gen(function* () {
+      yield* session.load
+      yield* session.managePayments
+      yield* session.back
+
+      assert.deepEqual(yield* now(session), idle(loadingHome(3)))
+
+      yield* Deferred.succeed(earlier, { status: 200, body: figures({ available: "100" }) })
+      yield* landed
+
+      assert.deepEqual(yield* now(session), idle(loadingHome(3)))
+
+      yield* Deferred.succeed(later, { status: 200, body: figures({ available: "200" }) })
+
+      assert.deepEqual(yield* current(session), idle(View.HasBusiness({
+        business: active,
+        balance: Balance.Loaded({ request: 3, figures: figures({ available: "200" }) }),
+      })))
+    }))
+
+    assert.equal(balanceCalls(plane), 2)
   }),
 ))

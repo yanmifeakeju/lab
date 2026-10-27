@@ -6,8 +6,9 @@ import { BadGateway, Conflict, ServiceUnavailable } from "../errors.ts";
 import { CurrentBusiness } from "../middleware/business.ts";
 import { CurrentPrincipal } from "../principal.ts";
 import { api } from "../api.ts";
+import { businessBalance } from "./balance.ts";
 import { openAccount } from "./open-account.ts";
-import { businessInfo } from "./routes.ts";
+import { BusinessBalance, businessInfo } from "./routes.ts";
 
 // Fixed messages: the reasons carry account refs and upstream detail, so
 // they are logged, not sent.
@@ -19,6 +20,16 @@ const accountConflict = new Conflict({
 const accountRejected = new Conflict({
   message: "The ledger refused the account for this business.",
   error: { code: "ledger_rejected" },
+});
+
+const ledgerBadResponse = new BadGateway({
+  message: "The ledger returned a response that could not be used.",
+  error: { code: "ledger_bad_response" },
+});
+
+const ledgerUnavailable = new ServiceUnavailable({
+  message: "The ledger is unavailable. Try again.",
+  error: { code: "ledger_unavailable" },
 });
 
 export const BusinessLive = HttpApiBuilder.group(
@@ -74,19 +85,46 @@ export const BusinessLive = HttpApiBuilder.group(
             Effect.catchTags({
               "OpenAccount.ConflictError": () => accountConflict,
               "PayableAccounts.RejectedError": () => accountRejected,
-              "PayableAccounts.BadResponseError": () =>
-                new BadGateway({
-                  message: "The ledger returned a response that could not be used.",
-                  error: { code: "ledger_bad_response" },
-                }),
-              "PayableAccounts.UnavailableError": () =>
-                new ServiceUnavailable({
-                  message: "The ledger is unavailable. Try again.",
-                  error: { code: "ledger_unavailable" },
-                }),
+              "PayableAccounts.BadResponseError": () => ledgerBadResponse,
+              "PayableAccounts.UnavailableError": () => ledgerUnavailable,
             }),
           );
 
           return businessInfo(opened);
+        }))
+      .handle("getBalance", () =>
+        Effect.gen(function* () {
+          const business = yield* CurrentBusiness;
+
+          const balance = yield* businessBalance(business).pipe(
+            Effect.catchTags({
+              "BusinessBalance.NotOpenedError": () =>
+                new Conflict({
+                  message: "Open the business's account first.",
+                  error: { code: "account_not_opened" },
+                }),
+              // The account was recorded from the ledger's own answer, so
+              // refusing to show it is a defect on one side or the other.
+              "PayableAccounts.RejectedError": (error) =>
+                Effect.logError("ledger refused a recorded account", error).pipe(
+                  Effect.andThen(Effect.fail(ledgerBadResponse)),
+                ),
+              "PayableAccounts.BadResponseError": (error) =>
+                Effect.logWarning("business balance not read", error).pipe(
+                  Effect.andThen(Effect.fail(ledgerBadResponse)),
+                ),
+              "PayableAccounts.UnavailableError": () => ledgerUnavailable,
+            }),
+          );
+
+          const { slug, currency, scale } = business.primaryLedger;
+
+          return new BusinessBalance({
+            ledger: slug,
+            currency,
+            scale,
+            available: String(balance.available),
+            pending: String(balance.pending),
+          });
         })),
 );

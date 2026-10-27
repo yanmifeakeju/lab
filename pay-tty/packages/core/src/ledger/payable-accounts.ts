@@ -35,12 +35,28 @@ export class Account extends Schema.Class<Account>("PayableAccounts.Account")({
   accountRef: Schema.String,
 }) {}
 
+/** In the ledger's minor units, exact: the client refuses counters past 2^53−1. */
+export class Balance extends Schema.Class<Balance>("PayableAccounts.Balance")({
+  available: Schema.BigInt,
+  // Credits not yet posted.
+  pending: Schema.BigInt,
+}) {}
+
+/** Which account to read: the ledger checks it answered for this one. */
+export interface Target {
+  readonly accountRef: string
+  readonly ledger: Ledger.Slug
+}
+
 export interface Interface {
   /**
    * Opens the holder's payable account in the ledger, or returns the one it
    * already has: a repeat is safe. The account is open and is the one asked for.
    */
   readonly open: (holder: Holder) => Effect.Effect<Account, Error>
+
+  /** The account's balance as the ledger has it, closed or not. */
+  readonly balance: (target: Target) => Effect.Effect<Balance, Error>
 }
 
 export class Service extends Context.Service<Service, Interface>()("PayableAccounts") {}
@@ -89,7 +105,29 @@ const make = Effect.gen(function* () {
     return new Account({ holderRef: account.holder_reference, accountRef: account.reference })
   })
 
-  return Service.of({ open })
+  const balance = Effect.fn("PayableAccounts.balance")(function* (target: Target) {
+    const { accountRef, ledger } = target
+
+    const read = yield* Effect.result(client.getAccount(accountRef, undefined))
+
+    if (Result.isFailure(read)) {
+      yield* Effect.logWarning("ledger account read failed", read.failure).pipe(Effect.annotateLogs({ accountRef }))
+
+      return yield* classify(read.failure)
+    }
+
+    const account = read.success
+
+    if (account.reference !== accountRef || account.ledger_slug !== ledger) {
+      return yield* new BadResponseError({
+        reason: `ledger returned ${account.ledger_slug}/${account.reference} for ${ledger}/${accountRef}`,
+      })
+    }
+
+    return new Balance({ available: BigInt(account.available), pending: BigInt(account.balances.credits_pending) })
+  })
+
+  return Service.of({ open, balance })
 })
 
 export const layer = Layer.effect(Service)(make)

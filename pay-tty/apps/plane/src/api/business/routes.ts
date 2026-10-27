@@ -52,6 +52,19 @@ export const businessInfo = (business: Business.Info) =>
     updated_at: business.updatedAt.toISOString(),
   })
 
+const inLedgerMinorUnits = { description: "In minor units of the ledger's currency." }
+
+// The payable account's figures, in the primary ledger's currency and scale.
+export class BusinessBalance extends Schema.Class<BusinessBalance>("BusinessBalance")({
+  ledger: Schema.String,
+  currency: Schema.String,
+  scale: Schema.Int,
+  // What the business can pay out: posted credits less debits, pending ones included.
+  available: Schema.String.annotate(inLedgerMinorUnits),
+  // Credits not yet posted.
+  pending: Schema.String.annotate(inLedgerMinorUnits),
+}) {}
+
 export class CreateBusinessRequest extends Schema.Class<CreateBusinessRequest>("CreateBusinessRequest")({
   // Trimmed before the length checks, so surrounding whitespace neither counts
   // toward the limit nor reaches the ledger as part of the holder's name.
@@ -85,6 +98,13 @@ export const business = HttpApiGroup.make("business")
     // created. Only this route needs the caller to have a business already.
     HttpApiEndpoint.post("createAccount", "/business/account", {
       success: BusinessInfo,
+      error: [Conflict, BadGateway, ServiceUnavailable],
+    }).middleware(BusinessContext),
+  )
+  .add(
+    // The caller's business, read from the ledger on every request.
+    HttpApiEndpoint.get("getBalance", "/business/balance", {
+      success: BusinessBalance,
       error: [Conflict, BadGateway, ServiceUnavailable],
     }).middleware(BusinessContext),
   )

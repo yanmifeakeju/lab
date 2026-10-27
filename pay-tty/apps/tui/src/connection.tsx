@@ -35,6 +35,7 @@ export const connect = (
       const actions = {
         createBusiness: (name: string) => void run(session.createBusiness(name)),
         openAccount: () => void run(session.openAccount),
+        refreshBalance: () => void run(session.refreshBalance),
         managePayments: () => void run(session.managePayments),
         linkPayments: (id: string) => void run(session.linkPayments(id)),
         refreshPayments: () => void run(session.refreshPayments),
