@@ -6,8 +6,7 @@ import { BadGateway, Conflict, ServiceUnavailable } from "../errors.ts";
 import { CurrentBusiness } from "../middleware/business.ts";
 import { CurrentPrincipal } from "../principal.ts";
 import { api } from "../api.ts";
-import { businessBalance } from "./balance.ts";
-import { openAccount } from "./open-account.ts";
+import { Account } from "./account.ts";
 import { BusinessBalance, businessInfo } from "./routes.ts";
 
 // Fixed messages: the reasons carry account refs and upstream detail, so
@@ -78,12 +77,12 @@ export const BusinessLive = HttpApiBuilder.group(
         Effect.gen(function* () {
           const business = yield* CurrentBusiness;
 
-          const opened = yield* openAccount(business).pipe(
+          const opened = yield* Account.open(business).pipe(
             Effect.tapError((error) =>
               Effect.logWarning("business account not created", error)
             ),
             Effect.catchTags({
-              "OpenAccount.ConflictError": () => accountConflict,
+              "Account.ConflictError": () => accountConflict,
               "PayableAccounts.RejectedError": () => accountRejected,
               "PayableAccounts.BadResponseError": () => ledgerBadResponse,
               "PayableAccounts.UnavailableError": () => ledgerUnavailable,
@@ -96,9 +95,9 @@ export const BusinessLive = HttpApiBuilder.group(
         Effect.gen(function* () {
           const business = yield* CurrentBusiness;
 
-          const balance = yield* businessBalance(business).pipe(
+          const balance = yield* Account.balance(business).pipe(
             Effect.catchTags({
-              "BusinessBalance.NotOpenedError": () =>
+              "Account.NotOpenedError": () =>
                 new Conflict({
                   message: "Open the business's account first.",
                   error: { code: "account_not_opened" },

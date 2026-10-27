@@ -5,8 +5,14 @@ import { Effect, Schema } from "effect"
 
 /** The business's recorded state rules the request out. */
 export class ConflictError extends Schema.TaggedError<ConflictError>()(
-  "OpenAccount.ConflictError",
+  "Account.ConflictError",
   { reason: Schema.String },
+) {}
+
+/** The business has no payable account yet, so no balance to read. */
+export class NotOpenedError extends Schema.TaggedError<NotOpenedError>()(
+  "Account.NotOpenedError",
+  { id: Business.ID },
 ) {}
 
 /**
@@ -14,7 +20,7 @@ export class ConflictError extends Schema.TaggedError<ConflictError>()(
  * was created, records it, and activates the business. Repeating it returns
  * the business as it is; a failure leaves it created, with nothing recorded.
  */
-export const openAccount = Effect.fn("openAccount")(
+export const open = Effect.fn("Account.open")(
   function* (business: Business.Info) {
     const businesses = yield* Business.Service
 
@@ -59,3 +65,24 @@ export const openAccount = Effect.fn("openAccount")(
   // A business is never deleted, so a missing one is a bug.
   Effect.catchTag("Business.NotFoundError", Effect.die),
 )
+
+/**
+ * The balance of the business's payable account in its primary ledger, as
+ * the ledger has it. The only ledger served is the primary one, so callers
+ * name the business, not an account.
+ */
+export const balance = Effect.fn("Account.balance")(function* (business: Business.Info) {
+  const { slug, payableAccountRef } = business.primaryLedger
+
+  if (payableAccountRef === null) {
+    return yield* new NotOpenedError({ id: business.id })
+  }
+
+  const accounts = yield* PayableAccounts.Service
+
+  return yield* accounts.balance({ accountRef: payableAccountRef, ledger: slug }).pipe(
+    Effect.annotateLogs({ businessId: business.id }),
+  )
+})
+
+export * as Account from "./account.ts"
