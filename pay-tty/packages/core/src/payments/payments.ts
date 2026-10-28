@@ -40,7 +40,15 @@ export const Amount = Schema.BigInt.check(
   Schema.isLessThanOrEqualToBigInt(maxAmount),
 )
 
-export const Title = Schema.NonEmptyString.check(Schema.isTrimmed(), Schema.isMaxLength(255))
+/**
+ * No control characters or Unicode line and paragraph separators, so the text
+ * stays one line wherever it lands.
+ */
+export const isOneLine = Schema.isPattern(/^[^\p{Cc}\u2028\u2029]*$/u).annotate({
+  expected: "a single line without control characters",
+})
+
+export const Title = Schema.NonEmptyString.check(Schema.isTrimmed(), Schema.isMaxLength(255), isOneLine)
 
 export const Description = Schema.NonEmptyString.check(Schema.isTrimmed(), Schema.isMaxLength(500))
 
@@ -868,21 +876,29 @@ const make = Effect.gen(function* () {
   const post = Effect.fnUntraced(function* (payment: typeof payments.$inferSelect) {
     const found = yield* database.use((db) =>
       db
-        .select({ cash: platformAccounts.ledgerAccountRef, payable: businesses.primaryPayableAccountRef })
+        .select({
+          cash: platformAccounts.ledgerAccountRef,
+          payable: businesses.primaryPayableAccountRef,
+          title: paymentLinks.title,
+        })
         .from(businesses)
         .leftJoin(
           platformAccounts,
           and(eq(platformAccounts.ledger, payment.ledger), eq(platformAccounts.label, "cash")),
         )
+        .leftJoin(paymentLinks, eq(paymentLinks.id, payment.linkId))
         .where(eq(businesses.id, payment.businessId)),
     )
 
     const cash = found[0]?.cash ?? null
     const payable = found[0]?.payable ?? null
+    const title = found[0]?.title ?? null
     const completedAt = payment.completedAt
 
-    if (cash === null || payable === null) {
-      return yield* Effect.die(new Error(`no cash or payable account for payment ${payment.id} in ${payment.ledger}`))
+    if (cash === null || payable === null || title === null) {
+      return yield* Effect.die(
+        new Error(`no cash or payable account, or no link, for payment ${payment.id} in ${payment.ledger}`),
+      )
     }
 
     if (completedAt === null) {
@@ -896,7 +912,10 @@ const make = Effect.gen(function* () {
         ledger: payment.ledger,
         paymentId: payment.id,
         kind: "payment",
-        description: `Payment ${payment.id} via link ${payment.linkId}`,
+        // A Title is one line of at most 255 characters, so this is never blank
+        // and stays well inside the ledger's 500: a refused posting leaves the
+        // queue for good. Links can't be edited, so this is the title paid under.
+        description: `Payment received via ${title}`,
         // To the millisecond, as it is sent.
         effectiveAt: completedAt,
         lines: [

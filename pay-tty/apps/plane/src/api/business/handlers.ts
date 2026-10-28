@@ -2,12 +2,12 @@ import { Business } from "@pay-tty/core/business";
 import { Effect } from "effect";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
-import { BadGateway, Conflict, ServiceUnavailable } from "../errors.ts";
+import { BadGateway, Conflict, InvalidRequestError, ServiceUnavailable } from "../errors.ts";
 import { CurrentBusiness } from "../middleware/business.ts";
 import { CurrentPrincipal } from "../principal.ts";
 import { api } from "../api.ts";
 import { Account } from "./account.ts";
-import { BusinessBalance, businessInfo } from "./routes.ts";
+import { BusinessBalance, businessInfo, businessStatement } from "./routes.ts";
 
 // Fixed messages: the reasons carry account refs and upstream detail, so
 // they are logged, not sent.
@@ -19,6 +19,11 @@ const accountConflict = new Conflict({
 const accountRejected = new Conflict({
   message: "The ledger refused the account for this business.",
   error: { code: "ledger_rejected" },
+});
+
+const accountNotOpened = new Conflict({
+  message: "Open the business's account first.",
+  error: { code: "account_not_opened" },
 });
 
 const ledgerBadResponse = new BadGateway({
@@ -97,11 +102,7 @@ export const BusinessLive = HttpApiBuilder.group(
 
           const balance = yield* Account.balance(business).pipe(
             Effect.catchTags({
-              "Account.NotOpenedError": () =>
-                new Conflict({
-                  message: "Open the business's account first.",
-                  error: { code: "account_not_opened" },
-                }),
+              "Account.NotOpenedError": () => accountNotOpened,
               // The account was recorded from the ledger's own answer, so
               // refusing to show it is a defect on one side or the other.
               "PayableAccounts.RejectedError": (error) =>
@@ -125,5 +126,39 @@ export const BusinessLive = HttpApiBuilder.group(
             available: String(balance.available),
             pending: String(balance.pending),
           });
+        }))
+      .handle("getStatement", ({ query }) =>
+        Effect.gen(function* () {
+          const business = yield* CurrentBusiness;
+
+          const statement = yield* Account.statement(business, query).pipe(
+            Effect.catchTags({
+              "Account.NotOpenedError": () => accountNotOpened,
+              "PayableAccounts.CursorError": () =>
+                new InvalidRequestError({
+                  message: "Invalid statement cursor.",
+                  error: {
+                    code: "validation_error",
+                    details: [{
+                      location: "query",
+                      field: "cursor",
+                      code: "invalid_value",
+                      message: "Invalid statement cursor.",
+                    }],
+                  },
+                }),
+              "PayableAccounts.RejectedError": (error) =>
+                Effect.logError("ledger refused a recorded account's statement", error).pipe(
+                  Effect.andThen(Effect.fail(ledgerBadResponse)),
+                ),
+              "PayableAccounts.BadResponseError": (error) =>
+                Effect.logWarning("business statement not read", error).pipe(
+                  Effect.andThen(Effect.fail(ledgerBadResponse)),
+                ),
+              "PayableAccounts.UnavailableError": () => ledgerUnavailable,
+            }),
+          );
+
+          return businessStatement(business, statement);
         })),
 );

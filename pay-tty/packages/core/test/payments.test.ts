@@ -369,6 +369,10 @@ void test("details are validated before anything reaches the database", () => {
     ["blank title", () => fixed(1n, "")],
     ["untrimmed title", () => fixed(1n, " Consulting")],
     ["long title", () => fixed(1n, "x".repeat(256))],
+    ["title with a line feed", () => fixed(1n, "Logo\ndesign")],
+    ["title with a tab", () => fixed(1n, "Logo\tdesign")],
+    ["title with a bell", () => fixed(1n, "Logo\u0007design")],
+    ["title with a line separator", () => fixed(1n, "Logo\u2028design")],
     ["blank description", () => chooses({}, "")],
     ["untrimmed description", () => chooses({}, "Help ")],
     ["long description", () => chooses({}, "x".repeat(501))],
@@ -380,6 +384,8 @@ void test("details are validated before anything reaches the database", () => {
 
   assert.doesNotThrow(() => new Payments.Fixed({ amount: Payments.maxAmount }))
   assert.doesNotThrow(() => fixed(1n, "x".repeat(255)))
+  assert.doesNotThrow(() => fixed(1n, "Café ₦ 東京 🎉"))
+  assert.doesNotThrow(() => chooses({}, "Two lines\nare fine here"))
   assert.doesNotThrow(() => chooses({}, "x".repeat(500)))
 
   assert.deepEqual(
@@ -450,6 +456,8 @@ void test("the database enforces the pricing settings, bounds, and uniqueness it
           ["blank title", { title: "" }, "payment_links_title_valid"],
           ["untrimmed title", { title: "Direct " }, "payment_links_title_valid"],
           ["long title", { title: "x".repeat(256) }, "payment_links_title_valid"],
+          ...["\n", "\t", "\u0007", "\u0085", "\u2028", "\u2029"].map((character) =>
+            [`title with ${JSON.stringify(character)}`, { title: `Di${character}rect` }, "payment_links_title_valid"] as const),
           ["blank description", { description: "" }, "payment_links_description_valid"],
           ["untrimmed description", { description: " Direct" }, "payment_links_description_valid"],
           ["long description", { description: "x".repeat(501) }, "payment_links_description_valid"],
@@ -473,6 +481,8 @@ void test("the database enforces the pricing settings, bounds, and uniqueness it
           ["lone suggestion", { suggestedAmount: max }],
           ["suggestion at both bounds", { suggestedAmount: 2n, minimumAmount: 2n, maximumAmount: 2n }],
           ["lone maximum", { maximumAmount: 1n }],
+          ["title beyond ASCII", { title: "Café ₦ 東京 🎉" }],
+          ["description over two lines", { description: "Two lines\nare fine here" }],
         ]
 
         for (const [reason, row] of accepted) {

@@ -1,11 +1,13 @@
 import { Business } from "@pay-tty/core/business"
+import type { PayableAccounts } from "@pay-tty/core/ledger"
 import { Effect, Schema, SchemaTransformation } from "effect"
 import * as HttpApiEndpoint from "effect/unstable/httpapi/HttpApiEndpoint"
 import * as HttpApiGroup from "effect/unstable/httpapi/HttpApiGroup"
 
-import { BadGateway, Conflict, ServiceUnavailable } from "../errors.ts"
+import { BadGateway, Conflict, InvalidRequestError, ServiceUnavailable } from "../errors.ts"
 import { Authentication } from "../middleware/authentication.ts"
 import { BusinessContext } from "../middleware/business.ts"
+import { Account } from "./account.ts"
 
 // Snake case on the wire, timestamps as ISO 8601 strings; `businessInfo` maps
 // core's camelCase and dates explicitly. /me, /business, and /business/account share it.
@@ -65,6 +67,56 @@ export class BusinessBalance extends Schema.Class<BusinessBalance>("BusinessBala
   pending: Schema.String.annotate(inLedgerMinorUnits),
 }) {}
 
+export class StatementMovement extends Schema.Class<StatementMovement>("StatementMovement")({
+  // With line_number, names the row: one entry can touch the account on two lines.
+  journal_ref: Schema.String,
+  line_number: Schema.Int,
+  direction: Schema.Literals(["debit", "credit"]),
+  amount: Schema.String.annotate(inLedgerMinorUnits),
+  balance_after: Schema.String.annotate(inLedgerMinorUnits),
+  description: Schema.String,
+  recorded_at: Schema.String,
+}) {}
+
+// Posted movements only, so the figures are the ledger balance, not available.
+export class BusinessStatement extends Schema.Class<BusinessStatement>("BusinessStatement")({
+  ledger: Schema.String,
+  currency: Schema.String,
+  scale: Schema.Int,
+  // The ledger's bounds; `to` is exclusive, a minute or more before now.
+  period: Schema.Struct({ from: Schema.String, to: Schema.String }),
+  // Either side of the whole period, whatever the page.
+  opening: Schema.String.annotate(inLedgerMinorUnits),
+  closing: Schema.String.annotate(inLedgerMinorUnits),
+  // Newest first.
+  movements: Schema.Array(StatementMovement),
+  // Cursors to the newer and older pages, null at either end; pass one back as `cursor`.
+  previous: Schema.NullOr(Schema.String),
+  next: Schema.NullOr(Schema.String),
+}) {}
+
+export const businessStatement = (business: Business.Info, statement: PayableAccounts.Statement) =>
+  new BusinessStatement({
+    ledger: business.primaryLedger.slug,
+    currency: business.primaryLedger.currency,
+    scale: business.primaryLedger.scale,
+    period: { from: statement.period.from.toISOString(), to: statement.period.to.toISOString() },
+    opening: String(statement.opening),
+    closing: String(statement.closing),
+    movements: statement.movements.map((movement) =>
+      new StatementMovement({
+        journal_ref: movement.journalRef,
+        line_number: movement.lineNumber,
+        direction: movement.direction,
+        amount: String(movement.amount),
+        balance_after: String(movement.balanceAfter),
+        description: movement.description,
+        recorded_at: movement.recordedAt.toISOString(),
+      })),
+    previous: statement.previous,
+    next: statement.next,
+  })
+
 export class CreateBusinessRequest extends Schema.Class<CreateBusinessRequest>("CreateBusinessRequest")({
   // Trimmed before the length checks, so surrounding whitespace neither counts
   // toward the limit nor reaches the ledger as part of the holder's name.
@@ -106,6 +158,18 @@ export const business = HttpApiGroup.make("business")
     HttpApiEndpoint.get("getBalance", "/business/balance", {
       success: BusinessBalance,
       error: [Conflict, BadGateway, ServiceUnavailable],
+    }).middleware(BusinessContext),
+  )
+  .add(
+    // The caller's business, newest first. A cursor keeps its own period, so
+    // `period` is ignored beside one.
+    HttpApiEndpoint.get("getStatement", "/business/statement", {
+      query: {
+        period: Schema.optionalKey(Account.Period.annotate({ default: Account.defaultPeriod })),
+        cursor: Schema.optionalKey(Schema.String),
+      },
+      success: BusinessStatement,
+      error: [InvalidRequestError, Conflict, BadGateway, ServiceUnavailable],
     }).middleware(BusinessContext),
   )
   .middleware(Authentication)

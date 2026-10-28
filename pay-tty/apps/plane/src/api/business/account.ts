@@ -1,7 +1,7 @@
 import { Business } from "@pay-tty/core/business"
 import { Database } from "@pay-tty/core/database"
 import { PayableAccounts } from "@pay-tty/core/ledger"
-import { Effect, Schema } from "effect"
+import { DateTime, Effect, Schema } from "effect"
 
 /** The business's recorded state rules the request out. */
 export class ConflictError extends Schema.TaggedError<ConflictError>()(
@@ -83,6 +83,58 @@ export const balance = Effect.fn("Account.balance")(function* (business: Busines
   return yield* accounts.balance({ accountRef: payableAccountRef, ledger: slug }).pipe(
     Effect.annotateLogs({ businessId: business.id }),
   )
+})
+
+/** How far back a statement reaches: today since 00:00 UTC, or rolling days. */
+export const Period = Schema.Literals(["today", "7d", "30d", "90d"])
+
+export type Period = typeof Period.Type
+
+export const defaultPeriod: Period = "30d"
+
+const days: Readonly<Record<Exclude<Period, "today">, number>> = { "7d": 7, "30d": 30, "90d": 90 }
+
+// The ledger checks `from` against its own clock, which can drift from ours,
+// and a refused `from` is a defect. This keeps `from` clear of the end it sets
+// a minute before its now, and the 90 days within its cap.
+const drift = { minutes: 5 } as const
+
+/** Where the period starts, at `now` by plane's clock. */
+export const periodStart = (period: Period, now: DateTime.Utc) => {
+  const latest = DateTime.subtract(now, drift)
+
+  if (period === "today") {
+    return DateTime.min(DateTime.startOf(now, "day"), latest)
+  }
+
+  const rolled = DateTime.subtract(now, { days: days[period] })
+
+  return period === "90d" ? DateTime.add(rolled, drift) : rolled
+}
+
+/**
+ * A page of the business's statement, newest first. A cursor carries its
+ * own period, so `period` only places the first page.
+ */
+export const statement = Effect.fn("Account.statement")(function* (
+  business: Business.Info,
+  request: { readonly period?: Period; readonly cursor?: string },
+) {
+  const { slug, payableAccountRef } = business.primaryLedger
+
+  if (payableAccountRef === null) {
+    return yield* new NotOpenedError({ id: business.id })
+  }
+
+  const accounts = yield* PayableAccounts.Service
+  const target = { accountRef: payableAccountRef, ledger: slug }
+
+  // No `to`: the ledger ends the period a minute before its own now.
+  const window = request.cursor === undefined
+    ? { from: DateTime.toDateUtc(periodStart(request.period ?? defaultPeriod, yield* DateTime.now)) }
+    : { cursor: request.cursor }
+
+  return yield* accounts.statement(target, window).pipe(Effect.annotateLogs({ businessId: business.id }))
 })
 
 export * as Account from "./account.ts"

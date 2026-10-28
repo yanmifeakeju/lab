@@ -8,6 +8,7 @@ import { PaySession, type State as PayState } from "./pay-session.ts"
 import type { Form } from "./payment-link.ts"
 import type { State as PaymentState } from "./payments.ts"
 import { Session, type State } from "./session.ts"
+import type { Period } from "./statement.ts"
 
 /**
  * Runs one connection's screen until it closes. Everything it starts lives in
@@ -42,6 +43,10 @@ export const connect = (
         filterPayments: (state: PaymentState | null) => void run(session.filterPayments(state)),
         morePayments: () => void run(session.morePayments),
         openPayment: (id: string) => void run(session.openPayment(id)),
+        openStatement: () => void run(session.openStatement),
+        statementPeriod: (period: Period) => void run(session.statementPeriod(period)),
+        statementPage: (direction: "next" | "previous") => void run(session.statementPage(direction)),
+        refreshStatement: () => void run(session.refreshStatement),
         manageLinks: () => void run(session.manageLinks),
         refreshLinks: () => void run(session.refreshLinks),
         openLink: (id: string) => void run(session.openLink(id)),

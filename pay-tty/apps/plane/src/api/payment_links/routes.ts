@@ -78,7 +78,12 @@ export class CustomerChoosesPricingRequest extends Schema.Class<CustomerChoosesP
 export class CreatePaymentLinkRequest extends Schema.Class<CreatePaymentLinkRequest>("CreatePaymentLinkRequest")({
   title: Schema.String.check(
     Schema.isPattern(new RegExp(".*\\S.*")).annotate({ expected: "a string containing non-whitespace" }),
-  ).pipe(Schema.decodeTo(Schema.Trimmed.check(Schema.isMinLength(1), Schema.isMaxLength(255)), SchemaTransformation.trim())),
+  ).pipe(
+    Schema.decodeTo(
+      Schema.Trimmed.check(Schema.isMinLength(1), Schema.isMaxLength(255), Payments.isOneLine),
+      SchemaTransformation.trim(),
+    ),
+  ),
   // Omitted, null, and blank all mean no description.
   description: Schema.optionalKey(Schema.NullOr(trimmed(500))),
   pricing: Schema.Union([FixedPricingRequest, CustomerChoosesPricingRequest]),

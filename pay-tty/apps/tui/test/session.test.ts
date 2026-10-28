@@ -4,7 +4,7 @@ import { test } from "node:test"
 import { Deferred, Effect, SubscriptionRef } from "effect"
 
 import { Balance, Operation, type Popup, Session, type State, View } from "../src/session.ts"
-import { merchantPayment, paymentPage, paid, tips, listed, active, business, failure, fakePlane, figures, first, home, inTurn, me, overview, type Reply, scenario, sessions, settled, unauthorized } from "./support.ts"
+import { merchantPayment, paymentPage, paid, tips, listed, active, business, failure, fakePlane, figures, first, home, inTurn, me, meetup, movement, overview, type Reply, scenario, sessions, settled, statement, unauthorized } from "./support.ts"
 
 // The session over the fake; its methods keep the client they were made
 // with, so they run without it.
@@ -780,5 +780,161 @@ void test("leaving and re-entering home, the first answer to land doesn't stand 
     }))
 
     assert.equal(balanceCalls(plane), 2)
+  }),
+))
+
+const statementCalls = (plane: ReturnType<typeof fakePlane>) =>
+  plane.calls.filter(({ path }) => path === "/business/statement").map(({ query }) => Object.fromEntries(query))
+
+void test("the statement opens on 30 days, pages by cursor alone, and a period or refresh starts over", scenario(
+  Effect.gen(function* () {
+    const newest = statement([movement()], { next: "older" })
+    const middle = statement([meetup], { previous: "newer", next: "oldest" })
+
+    const plane = fakePlane({
+      me: me(active),
+      statement: inTurn(
+        { status: 200, body: newest },
+        { status: 200, body: middle },
+        { status: 200, body: newest },
+        { status: 200, body: statement([]) },
+      ),
+    })
+
+    yield* run(plane, (session) => Effect.gen(function* () {
+      yield* session.load
+      yield* session.openStatement
+
+      assert.deepEqual(yield* current(session), idle(View.Statement({ business: active, period: "30d", page: newest, landing: "first" })))
+
+      yield* session.statementPage("next")
+
+      assert.deepEqual(yield* current(session), idle(View.Statement({ business: active, period: "30d", page: middle, landing: "first" })))
+
+      yield* session.statementPage("previous")
+
+      assert.deepEqual(yield* current(session), idle(View.Statement({ business: active, period: "30d", page: newest, landing: "last" })))
+
+      // No newer page: nothing is asked.
+      yield* session.statementPage("previous")
+      yield* session.statementPeriod("7d")
+
+      assert.deepEqual(
+        yield* current(session),
+        idle(View.Statement({ business: active, period: "7d", page: statement([]), landing: "first" })),
+      )
+
+      yield* session.refreshStatement
+      yield* session.statementPeriod("today")
+    }))
+
+    assert.deepEqual(statementCalls(plane), [
+      { period: "30d" },
+      { cursor: "older" },
+      { cursor: "newer" },
+      { period: "7d" },
+      { period: "7d" },
+      { period: "today" },
+    ])
+  }),
+))
+
+void test("leaving the statement goes home and fetches the balance again", scenario(
+  Effect.gen(function* () {
+    const plane = fakePlane({ me: me(active) })
+
+    yield* run(plane, (session) => Effect.gen(function* () {
+      yield* session.load
+      yield* current(session)
+      yield* session.openStatement
+      yield* session.back
+
+      assert.deepEqual(yield* current(session), idle(home(active, 3)))
+    }))
+
+    assert.equal(balanceCalls(plane), 2)
+  }),
+))
+
+void test("the statement opens under a ledger even when the balance failed, and never without one", scenario(
+  Effect.gen(function* () {
+    const plane = fakePlane({ me: me(active), balance: () => failure(503, "ledger_unavailable") })
+
+    yield* run(plane, (session) => Effect.gen(function* () {
+      yield* session.load
+      yield* current(session)
+      yield* session.openStatement
+
+      assert.equal((yield* now(session)).view._tag, "Statement")
+    }))
+
+    for (const shown of [business(), null]) {
+      const unopened = fakePlane({ me: me(shown) })
+
+      yield* run(unopened, (session) => Effect.andThen(session.load, session.openStatement))
+
+      assert.deepEqual(statementCalls(unopened), [])
+    }
+  }),
+))
+
+void test("a failed statement offers Retry of the same page; a refused cursor offers r instead", scenario(
+  Effect.gen(function* () {
+    const older = statement([meetup], { previous: "newer" })
+
+    const plane = fakePlane({
+      me: me(active),
+      statement: inTurn(
+        { status: 200, body: statement([movement()], { next: "older" }) },
+        "unreachable",
+        { status: 200, body: older },
+        {
+          status: 400,
+          body: {
+            message: "Invalid statement cursor.",
+            error: {
+              code: "validation_error",
+              details: [{ location: "query", field: "cursor", code: "invalid_value", message: "Invalid statement cursor." }],
+            },
+          },
+        },
+      ),
+    })
+
+    yield* run(plane, (session) => Effect.gen(function* () {
+      yield* session.load
+      yield* session.openStatement
+
+      const shown = (yield* current(session)).view
+
+      yield* session.statementPage("next")
+
+      const failed = yield* current(session)
+
+      assert.deepEqual(failed.view, shown)
+      assert.deepEqual(failed.popup, {
+        message: "Couldn't load your statement.",
+        retry: Operation.ListStatement({ business: active, period: "30d", cursor: "older", landing: "first" }),
+        close: "dismiss",
+      })
+
+      yield* session.retry
+
+      assert.deepEqual(yield* current(session), idle(View.Statement({ business: active, period: "30d", page: older, landing: "first" })))
+
+      yield* session.statementPage("previous")
+
+      assert.deepEqual((yield* current(session)).popup, {
+        message: "That page is no longer available. Press r to reload the period.",
+        retry: null,
+        close: "dismiss",
+      })
+
+      yield* session.close
+
+      assert.deepEqual(yield* current(session), idle(View.Statement({ business: active, period: "30d", page: older, landing: "first" })))
+    }))
+
+    assert.deepEqual(statementCalls(plane), [{ period: "30d" }, { cursor: "older" }, { cursor: "older" }, { cursor: "newer" }])
   }),
 ))

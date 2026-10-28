@@ -22,7 +22,8 @@ import {
 } from "./payment-link.ts"
 import { filterLine, filters, type Page, paymentRows, paymentTiming, type State as PaymentState, timelineLines } from "./payments.ts"
 import { formatMoney } from "./money.ts"
-import { Balance, type Business, type Popup, type State, View } from "./session.ts"
+import { Balance, type Business, type Popup, type State, type StatementView, View } from "./session.ts"
+import { balanceLine, movementId, type Period, periodLine, periods, type Statement, statementHints, statementRows } from "./statement.ts"
 
 /** What the screens can ask of the connection; each returns at once. */
 export interface Actions {
@@ -35,6 +36,10 @@ export interface Actions {
   readonly filterPayments: (state: PaymentState | null) => void
   readonly morePayments: () => void
   readonly openPayment: (id: string) => void
+  readonly openStatement: () => void
+  readonly statementPeriod: (period: Period) => void
+  readonly statementPage: (direction: "next" | "previous") => void
+  readonly refreshStatement: () => void
   readonly manageLinks: () => void
   readonly refreshLinks: () => void
   readonly openLink: (id: string) => void
@@ -121,13 +126,17 @@ const ShowBusiness = (props: {
   readonly pending: boolean
   readonly selected: number
   readonly short: boolean
+  // Too few rows for every line: the country goes, its currency still shown in the amounts.
+  readonly cramped: boolean
 }) => (
   <box flexDirection="column" gap={props.short ? 0 : 1}>
     <box flexDirection="column">
       <text>{props.business.name}</text>
-      <text fg={muted}>
-        {countries[props.business.country_code]} · {props.business.currency_code}
-      </text>
+      <Show when={!props.cramped || props.balance === null}>
+        <text fg={muted}>
+          {countries[props.business.country_code]} · {props.business.currency_code}
+        </text>
+      </Show>
       <Show when={props.business.ledger === null}>
         <text fg={muted}>No account yet</text>
       </Show>
@@ -144,6 +153,7 @@ const ShowBusiness = (props: {
         <box flexDirection="column">
           <text fg={props.selected === 0 ? bright : muted}>{props.selected === 0 ? "› " : "  "}{"Payments        p"}</text>
           <text fg={props.selected === 1 ? bright : muted}>{props.selected === 1 ? "› " : "  "}{"Payment links   l"}</text>
+          <text fg={props.selected === 2 ? bright : muted}>{props.selected === 2 ? "› " : "  "}{"Statement       s"}</text>
         </box>
       </Match>
     </Switch>
@@ -497,6 +507,51 @@ const PaymentList = (props: {
   )
 }
 
+// The header and footer stay outside the scrolled rows, so the opening,
+// closing and keys are always on screen.
+const StatementScreen = (props: {
+  readonly view: StatementView
+  readonly selected: number
+  readonly pending: boolean
+}) => {
+  let rows: ScrollBoxRenderable | undefined
+  const terminal = useTerminalDimensions()
+  // Inside the border and its padding.
+  const lineWidth = () => terminal().width - 4
+  const formattedRows = createMemo(() => statementRows(props.view.page, terminal().width - rowChrome))
+
+  const selectedId = () => {
+    const movement = props.view.page.movements[props.selected]
+
+    return movement === undefined ? "" : movementId(movement)
+  }
+
+  useReveal(() => rows, selectedId, [selectedId, () => terminal().width, () => terminal().height])
+
+  return (
+    <box flexDirection="column" flexGrow={1} flexShrink={1}>
+      <text flexShrink={0}>{periodLine(props.view.period, lineWidth())}</text>
+      <text flexShrink={0} fg={muted}>{balanceLine(props.view.page, lineWidth())}</text>
+      <Show when={props.view.page.movements.length > 0} fallback={
+        <text flexShrink={0} fg={muted}>No movements in this period.</text>
+      }>
+        <scrollbox ref={(box) => (rows = box)} flexGrow={1} flexShrink={1} scrollY contentOptions={gutter}>
+          <For each={props.view.page.movements}>{(movement, index) => (
+            <text id={movementId(movement)} flexShrink={0} fg={index() === props.selected ? bright : muted}>
+              {index() === props.selected ? "› " : "  "}
+              {formattedRows()[index()]}
+            </text>
+          )}</For>
+        </scrollbox>
+      </Show>
+      <text flexShrink={0} fg={muted}>Up to a minute ago</text>
+      <text flexShrink={0} fg={muted}>
+        {props.pending ? "Loading…" : statementHints(props.view.page, terminal().width < 64)}
+      </text>
+    </box>
+  )
+}
+
 // What a link's payments came to, between its pricing and how to pay it.
 const LinkStats = (props: { readonly link: Summary }) => (
   <>
@@ -609,6 +664,12 @@ export const App = (props: {
     return View.$is("PaymentDetail")(current) ? current : undefined
   }
 
+  const statement = () => {
+    const current = view()
+
+    return View.$is("Statement")(current) ? current : undefined
+  }
+
   const paymentTitle = () => {
     const origin = payments()?.origin
 
@@ -628,8 +689,26 @@ export const App = (props: {
   const paymentSelection = () => Math.max(0, Math.min(paymentSelected(),
     (payments()?.page.payments.length ?? 0) - (payments()?.page.next === null ? 1 : 0)))
 
+  // The row picked on a page; a page not picked on yet starts where it landed.
+  const [statementPicked, setStatementPicked] = createSignal<{ readonly page: Statement; readonly index: number }>()
+
+  const statementSelection = () => {
+    const shown = statement()
+
+    if (shown === undefined) {
+      return 0
+    }
+
+    const picked = statementPicked()
+    const last = shown.page.movements.length - 1
+    const index = picked?.page === shown.page ? picked.index : shown.landing === "last" ? last : 0
+
+    return Math.max(0, Math.min(index, last))
+  }
+
   const linkScreen = () =>
-    creating() !== undefined || created() !== undefined || listing() !== undefined || detail() !== undefined || payments() !== undefined || paymentDetail() !== undefined
+    creating() !== undefined || created() !== undefined || listing() !== undefined || detail() !== undefined ||
+    payments() !== undefined || paymentDetail() !== undefined || statement() !== undefined
 
   // The list's selection, kept while a link is open and reset when the list opens.
   const [selected, setSelected] = createSignal(0)
@@ -761,6 +840,42 @@ export const App = (props: {
       return
     }
 
+    const shownStatement = statement()
+
+    if (shownStatement !== undefined) {
+      const { page } = shownStatement
+
+      if (key.name === "escape") {
+        props.actions.back()
+      }
+
+      if (key.name === "up" || key.name === "down") {
+        const index = statementSelection() + (key.name === "up" ? -1 : 1)
+
+        setStatementPicked({ page, index: Math.max(0, Math.min(index, page.movements.length - 1)) })
+      }
+
+      if (key.name === "left" || key.name === "right") {
+        const index = periods.indexOf(shownStatement.period) + (key.name === "left" ? -1 : 1)
+
+        props.actions.statementPeriod(periods[(index + periods.length) % periods.length] ?? shownStatement.period)
+      }
+
+      if (key.name === "n" && page.next !== null) {
+        props.actions.statementPage("next")
+      }
+
+      if (key.name === "p" && page.previous !== null) {
+        props.actions.statementPage("previous")
+      }
+
+      if (key.name === "r") {
+        props.actions.refreshStatement()
+      }
+
+      return
+    }
+
     if (creating() !== undefined) {
       if (key.name === "escape") {
         key.preventDefault()
@@ -855,7 +970,7 @@ export const App = (props: {
 
     if (business()?.ledger != null) {
       if (key.name === "up" || key.name === "down") {
-        setSection(key.name === "up" ? 0 : 1)
+        setSection(Math.max(0, Math.min(section() + (key.name === "up" ? -1 : 1), 2)))
       }
 
       if (key.name === "p" || ((key.name === "return" || key.name === "enter") && section() === 0)) {
@@ -866,6 +981,10 @@ export const App = (props: {
       if (key.name === "l" || ((key.name === "return" || key.name === "enter") && section() === 1)) {
         setSelected(0)
         props.actions.manageLinks()
+      }
+
+      if (key.name === "s" || ((key.name === "return" || key.name === "enter") && section() === 2)) {
+        props.actions.openStatement()
       }
 
       if (key.name === "r") {
@@ -906,6 +1025,7 @@ export const App = (props: {
               pending={props.state().pending}
               selected={section()}
               short={short()}
+              cramped={terminal().height < 11}
             />
           )}
         </Match>
@@ -946,6 +1066,11 @@ export const App = (props: {
             selected={paymentSelection()}
             pending={props.state().pending}
           />}
+        </Match>
+        <Match when={statement()}>
+          {(shown) => (
+            <StatementScreen view={shown()} selected={statementSelection()} pending={props.state().pending} />
+          )}
         </Match>
         <Match when={paymentDetail()}>
           {(shown) => (

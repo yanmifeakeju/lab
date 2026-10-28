@@ -101,7 +101,8 @@ export const ledgerPostings = pgTable(
     // The cause. Exactly one is set; refunds and payouts join later.
     paymentId: text("payment_id").references(() => payments.id, { onDelete: "restrict" }),
     kind: text("kind").notNull(),
-    // Immutable IDs only, so it never goes stale.
+    // Written for the merchant's statement: the link's title as it was when
+    // the payment was posted.
     description: text("description").notNull(),
     effectiveAt: at("effective_at").notNull(),
     lines: jsonb("lines").$type<ReadonlyArray<PostingLine>>().notNull(),

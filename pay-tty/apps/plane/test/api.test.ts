@@ -8,12 +8,13 @@ import { Catalog, Currency, Ledger, LedgerPostings, PayableAccounts } from "@pay
 import { Payments } from "@pay-tty/core/payments"
 import { Principal } from "@pay-tty/core/principal"
 import { Testing } from "@pay-tty/core/testing"
-import { Clock, Effect, Encoding, Layer, Schema, type Scope } from "effect"
+import { Clock, DateTime, Effect, Encoding, Layer, Schema, type Scope } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import { decodeJwt, type JWTHeaderParameters, type JWTPayload, SignJWT } from "jose"
 import { ulid } from "ulid"
 
-import { BusinessBalance, BusinessInfo, BusinessLedger } from "../src/api/business/routes.ts"
+import { Account } from "../src/api/business/account.ts"
+import { BusinessBalance, BusinessInfo, BusinessLedger, BusinessStatement, StatementMovement } from "../src/api/business/routes.ts"
 import { MeResponse } from "../src/api/me/routes.ts"
 import { CustomerChoosesPricing, FixedPricing, PaymentLink, PaymentLinkList } from "../src/api/payment_links/routes.ts"
 import { PaymentDetail, PaymentPage, RefusedEvent, SettledEvent } from "../src/api/payments/routes.ts"
@@ -25,7 +26,7 @@ import { AuthenticationLive } from "../src/api/middleware/authentication.ts"
 import { UnknownErrorResponse } from "../src/api/middleware/defect.ts"
 import { Relay } from "../src/relay/relay.ts"
 import { Token } from "../src/token/token.ts"
-import { created as accountCreated, current, failing, fakeLedger, invalid, keys, posting, previous, secret, type FakeLedger, type Payload, type Reply } from "./support.ts"
+import { created as accountCreated, current, failing, fakeLedger, invalid, keys, posting, previous, secret, statementOf, type FakeLedger, type Payload, type Reply, type StatementRead } from "./support.ts"
 
 
 // The core services over the test database, for preparing businesses and
@@ -244,7 +245,7 @@ void test("serves health without a token", () =>
     }),
   ))
 
-void test("publishes exactly /health, /session, /me, /business, /business/account, /business/balance, /payment_links, /payments, and the /pay routes", () =>
+void test("publishes exactly /health, /session, /me, /business, /business/account, /business/balance, /business/statement, /payment_links, /payments, and the /pay routes", () =>
   run(
     Effect.gen(function* () {
       const plane = yield* server()
@@ -280,6 +281,7 @@ void test("publishes exactly /health, /session, /me, /business, /business/accoun
         "/business",
         "/business/account",
         "/business/balance",
+        "/business/statement",
         "/health",
         "/me",
         "/pay/payment_links/{share_token}",
@@ -1377,6 +1379,10 @@ void test("invalid content or idempotency keys are a 400 naming each field, and 
         ["blank title", { ...fixedLink, title: "  " }, ["body:title"]],
         ["long title", { ...fixedLink, title: ` ${"x".repeat(256)} ` }, ["body:title"]],
         ["title not a string", { ...fixedLink, title: 5 }, ["body:title"]],
+        ["title over two lines", { ...fixedLink, title: "Logo\ndesign" }, ["body:title"]],
+        ["title with a tab", { ...fixedLink, title: "Logo\tdesign" }, ["body:title"]],
+        ["title with a bell", { ...fixedLink, title: "Logo\u0007design" }, ["body:title"]],
+        ["title with a line separator", { ...fixedLink, title: "Logo\u2028design" }, ["body:title"]],
         ["long description", { ...fixedLink, description: "x".repeat(501) }, ["body:description"]],
         ["no pricing", { title: "Consulting" }, ["body:pricing"]],
         ["no mode", { ...fixedLink, pricing: { amount: 100 } }, []],
@@ -1810,7 +1816,8 @@ void test("the relay posts a succeeded payment to the ledger, and the merchant s
   run(
     Effect.gen(function* () {
       const plane = yield* server()
-      const { authorization, link, token } = yield* linkToPay(plane)
+      const title = `Haircut deposit ${ulid()}`
+      const { authorization, token } = yield* linkToPay(plane, { ...fixedLink, title })
       const account = (yield* me(plane, authorization)).body.business?.ledger?.payable_account_ref
 
       const { body: payment } = yield* started(plane, token)
@@ -1819,14 +1826,14 @@ void test("the relay posts a succeeded payment to the ledger, and the merchant s
       assert.equal(ended.status, 200)
 
       const detail = yield* relayed(plane, authorization, payment.id)
-      const entry = plane.ledger.entries.find((sent) => sent.payload.description.includes(payment.id))
+      const entry = plane.ledger.entries.find((sent) => sent.payload.description.endsWith(title))
 
       assert.ok(entry !== undefined && account !== undefined)
       assert.match(entry.key, /^lpost_[0-9A-HJKMNP-TV-Z]{26}$/)
       assert.deepEqual(entry.payload, {
         ledger: "ngn_ng",
         kind: "payment",
-        description: `Payment ${payment.id} via link ${link.id}`,
+        description: `Payment received via ${title}`,
         effective_at: entry.payload.effective_at,
         lines: [{
           debit_account_ref: "acct_test_cash",
@@ -1860,7 +1867,8 @@ void test("a ledger that's down or refuses doesn't change what the customer is t
   run(
     Effect.gen(function* () {
       const down = yield* server({ ledger: fakeLedger(undefined, () => "unreachable") })
-      const ours = yield* linkToPay(down)
+      const title = `Refused ${ulid()}`
+      const ours = yield* linkToPay(down, { ...fixedLink, title })
       const { body: payment } = yield* started(down, ours.token)
 
       const { status, json } = yield* simulatePayment(down, ours.token, payment.id, "succeeded")
@@ -1877,7 +1885,7 @@ void test("a ledger that's down or refuses doesn't change what the customer is t
       // Another plane against a ledger that refuses this payment's posting.
       const refusing = yield* server({
         ledger: fakeLedger(undefined, (entry) =>
-          entry.payload.description.includes(payment.id) ? failing(409, "account_closed") : posting()(entry)),
+          entry.payload.description.endsWith(title) ? failing(409, "account_closed") : posting()(entry)),
       })
 
       const detail = yield* relayed(refusing, ours.authorization, payment.id)
@@ -2215,5 +2223,252 @@ void test("GET /business/balance reads only the caller's account, whatever the r
       yield* balanceOf(plane, theirs.authorization)
 
       assert.deepEqual(plane.ledger.reads.slice(3), [theirAccount])
+    }),
+  ))
+
+const getStatement = (server: Server, authorization: string | undefined, query = "") =>
+  send(server, { method: "GET", path: `/business/statement${query}`, authorization })
+
+// A statement read that succeeded, decoded strictly.
+const readStatement = Effect.fnUntraced(function* (server: Server, authorization: string, query = "") {
+  const { status, json } = yield* getStatement(server, authorization, query)
+
+  assert.equal(status, 200)
+
+  return yield* Schema.decodeUnknownEffect(BusinessStatement)(json, strict)
+})
+
+void test("a period starts at 00:00 UTC today, or rolls back its days, always five minutes clear of now", () => {
+  const start = (period: Account.Period, now: string) => DateTime.formatIso(Account.periodStart(period, DateTime.makeUnsafe(now)))
+  const midday = "2026-10-28T12:34:56.789Z"
+
+  assert.equal(start("today", midday), "2026-10-28T00:00:00.000Z")
+  assert.equal(start("7d", midday), "2026-10-21T12:34:56.789Z")
+  assert.equal(start("30d", midday), "2026-09-28T12:34:56.789Z")
+  // Clear of the ledger's 90-day cap, whatever the clocks' drift.
+  assert.equal(start("90d", midday), "2026-07-30T12:39:56.789Z")
+  // Just past midnight, today starts before it rather than after the ledger's end.
+  assert.equal(start("today", "2026-10-28T00:03:00.000Z"), "2026-10-27T23:58:00.000Z")
+  assert.equal(start("today", "2026-10-28T00:05:00.000Z"), "2026-10-28T00:00:00.000Z")
+})
+
+void test("GET /business/statement asks the ledger for the caller's account, newest first, from where the period starts", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const title = `Haircut deposit ${ulid()}`
+      const { authorization, token } = yield* linkToPay(plane, { ...fixedLink, title })
+      const account = yield* accountRefOf(plane, authorization)
+
+      const { body: payment } = yield* started(plane, token)
+
+      yield* simulatePayment(plane, token, payment.id, "succeeded")
+
+      const { payment: settled } = yield* relayed(plane, authorization, payment.id)
+
+      const cases: ReadonlyArray<readonly [string, Account.Period]> = [
+        ["", "30d"],
+        ["?period=today", "today"],
+        ["?period=7d", "7d"],
+        ["?period=30d", "30d"],
+        ["?period=90d", "90d"],
+      ]
+
+      for (const [query, period] of cases) {
+        const before = yield* DateTime.now
+        const statement = yield* readStatement(plane, authorization, query)
+        const after = yield* DateTime.now
+
+        const sent = plane.ledger.statements.at(-1)
+        const from = Date.parse(sent?.query["from"] ?? "")
+
+        assert.equal(sent?.accountRef, account, query)
+        assert.deepEqual(Object.keys(sent?.query ?? {}).sort(), ["from", "order"], query)
+        assert.equal(sent?.query["order"], "desc", query)
+        assert.ok(
+          from >= DateTime.toEpochMillis(Account.periodStart(period, before)) &&
+            from <= DateTime.toEpochMillis(Account.periodStart(period, after)),
+          `${query} from ${sent?.query["from"]}`,
+        )
+
+        assert.deepEqual(statement.movements, [new StatementMovement({
+          journal_ref: settled.journal_ref ?? "",
+          line_number: 1,
+          direction: "credit",
+          amount: "250000",
+          balance_after: "250000",
+          description: "Payment received",
+          recorded_at: "2026-10-09T09:15:00.000Z",
+        })])
+        assert.equal(statement.closing, "250000")
+      }
+    }),
+  ))
+
+void test("GET /business/statement maps every field, keeps the ledger's order and cursors, and passes a cursor on alone", () =>
+  run(
+    Effect.gen(function* () {
+      const movement = (fields: Readonly<Record<string, string | number>>) => ({
+        journal_reference: "jrn_01M20J1QD2XB8K7G4N9CVF6T3A",
+        line_number: 1,
+        kind: "payment",
+        direction: "credit",
+        amount: 250_000,
+        balance_after: 750_000,
+        description: "Payment received via Haircut deposit",
+        purpose: "payment",
+        recorded_at: "2026-10-09T09:15:00.123Z",
+        ...fields,
+      })
+
+      const answer = (read: StatementRead): Reply => ({
+        status: 200,
+        body: {
+          account: { reference: read.accountRef, holder_reference: `hld_${ulid()}`, name: "Acme Ltd" },
+          period: { from: "2026-09-28T10:00:00Z", to: "2026-10-28T09:59:00Z" },
+          opening_balance: 100,
+          closing_balance: 750_000,
+          entries: [
+            movement({}),
+            movement({ journal_reference: "jrn_01M20J1QD2XB8K7G4N9CVF6T3B", line_number: 2, amount: 500_000, balance_after: 500_000 }),
+            movement({
+              journal_reference: "jrn_01M20J1QD2XB8K7G4N9CVF6T3B",
+              direction: "debit",
+              amount: 9_007_199_254_740_991,
+              balance_after: 0,
+              description: "Fee",
+              purpose: "fee",
+            }),
+          ],
+          page: { limit: 50, previous_cursor: "newer", next_cursor: "older" },
+        },
+      })
+
+      const plane = yield* server({ ledger: fakeLedger(undefined, undefined, undefined, answer) })
+      const { authorization } = yield* withActiveBusiness(plane)
+      const account = yield* accountRefOf(plane, authorization)
+
+      const row = (fields: Partial<StatementMovement>) => new StatementMovement({
+        journal_ref: "jrn_01M20J1QD2XB8K7G4N9CVF6T3A",
+        line_number: 1,
+        direction: "credit",
+        amount: "250000",
+        balance_after: "750000",
+        description: "Payment received via Haircut deposit",
+        recorded_at: "2026-10-09T09:15:00.123Z",
+        ...fields,
+      })
+
+      assert.deepEqual(yield* readStatement(plane, authorization), new BusinessStatement({
+        ledger: "ngn_ng",
+        currency: "NGN",
+        scale: 2,
+        period: { from: "2026-09-28T10:00:00.000Z", to: "2026-10-28T09:59:00.000Z" },
+        opening: "100",
+        closing: "750000",
+        movements: [
+          row({}),
+          row({ journal_ref: "jrn_01M20J1QD2XB8K7G4N9CVF6T3B", line_number: 2, amount: "500000", balance_after: "500000" }),
+          row({
+            journal_ref: "jrn_01M20J1QD2XB8K7G4N9CVF6T3B",
+            direction: "debit",
+            amount: "9007199254740991",
+            balance_after: "0",
+            description: "Fee",
+          }),
+        ],
+        previous: "newer",
+        next: "older",
+      }))
+
+      // The cursor goes on as given; the period it was made in still holds.
+      yield* readStatement(plane, authorization, "?period=7d&cursor=" + encodeURIComponent("older+/="))
+
+      assert.deepEqual(plane.ledger.statements.at(-1), { accountRef: account, query: { order: "desc", cursor: "older+/=" } })
+    }),
+  ))
+
+void test("GET /business/statement refuses an unknown period or a cursor the ledger won't take, and maps a ledger failure", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+
+      assert.deepEqual(yield* getStatement(plane, undefined), { status: 401, json: unauthorized })
+
+      const { authorization } = yield* exchange(plane, fingerprint())
+
+      assert.equal(yield* errorCode(yield* getStatement(plane, authorization)), "409 business_required")
+
+      const { authorization: created } = yield* withBusiness(plane)
+
+      assert.equal(yield* errorCode(yield* getStatement(plane, created)), "409 account_not_opened")
+      assert.deepEqual(plane.ledger.statements, [])
+
+      const { authorization: active } = yield* withActiveBusiness(plane)
+
+      for (const period of ["1y", "", "TODAY", "30"]) {
+        assert.deepEqual(yield* validation(yield* getStatement(plane, active, `?period=${period}`)), ["query:period"], period)
+      }
+
+      assert.deepEqual(plane.ledger.statements, [])
+
+      const refused = (field: string) => (): Reply => ({
+        status: 400,
+        body: {
+          message: "Request validation failed.",
+          error: {
+            code: "validation_error",
+            details: [{ location: "query", field, code: "invalid_value", message: `${field} is invalid` }],
+          },
+        },
+      })
+
+      const misreported = (read: StatementRead): Reply => statementOf({ ...read, accountRef: `acct_${ulid()}` }, [])
+
+      const cases: ReadonlyArray<readonly [string, (read: StatementRead) => Reply, string]> = [
+        ["unreachable", () => "unreachable", "503 ledger_unavailable"],
+        ["ledger 500", () => failing(500, "internal_server_error"), "503 ledger_unavailable"],
+        ["account not found", () => failing(404, "account_not_found"), "502 ledger_bad_response"],
+        ["not JSON", () => ({ status: 200, raw: "not JSON" }), "502 ledger_bad_response"],
+        ["another account", misreported, "502 ledger_bad_response"],
+      ]
+
+      for (const [reason, statement, expected] of cases) {
+        const failingPlane = yield* server({ ledger: fakeLedger(undefined, undefined, undefined, statement) })
+
+        assert.equal(yield* errorCode(yield* getStatement(failingPlane, active)), expected, reason)
+      }
+
+      const cursorRefused = yield* server({ ledger: fakeLedger(undefined, undefined, undefined, refused("cursor")) })
+      const response = yield* getStatement(cursorRefused, active, "?cursor=forged")
+
+      assert.deepEqual(yield* validation(response), ["query:cursor"])
+
+      // Any other refusal is a request plane built wrong.
+      const fromRefused = yield* server({ ledger: fakeLedger(undefined, undefined, undefined, refused("from")) })
+
+      assert.equal((yield* getStatement(fromRefused, active)).status, 500)
+    }),
+  ))
+
+void test("GET /business/statement reads only the caller's account, whatever the request names", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const ours = yield* withActiveBusiness(plane)
+      const theirs = yield* withActiveBusiness(plane)
+      const ourAccount = yield* accountRefOf(plane, ours.authorization)
+      const theirAccount = yield* accountRefOf(plane, theirs.authorization)
+
+      yield* getStatement(plane, ours.authorization, `?account_ref=${theirAccount}&business_id=${theirs.id}`)
+      yield* send(plane, {
+        method: "GET",
+        path: "/business/statement",
+        authorization: ours.authorization,
+        headers: { "x-business-id": theirs.id },
+      })
+      yield* readStatement(plane, theirs.authorization)
+
+      assert.deepEqual(plane.ledger.statements.map(({ accountRef }) => accountRef), [ourAccount, ourAccount, theirAccount])
     }),
   ))

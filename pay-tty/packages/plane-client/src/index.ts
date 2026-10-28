@@ -3,6 +3,7 @@ import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
 
 import {
+  type BusinessGetStatementParams,
   type CreateBusinessRequestEncoded,
   type CreatePaymentLinkRequestEncoded,
   make,
@@ -139,6 +140,19 @@ export const createClient = (httpClient: HttpClient.HttpClient, options: ClientO
               BusinessGetBalance409: ({ cause }) => Effect.fail(cause),
               BusinessGetBalance502: ({ cause }) => Effect.fail(cause),
               BusinessGetBalance503: ({ cause }) => Effect.fail(cause),
+            }),
+          ),
+        getStatement: <Config extends OperationConfig>(request: {
+          readonly params?: BusinessGetStatementParams
+          readonly config?: Config
+        } | undefined) =>
+          client.businessGetStatement(request).pipe(
+            Effect.catchTags({
+              BusinessGetStatement400: ({ cause }) => Effect.fail(cause),
+              BusinessGetStatement401: ({ cause }) => Effect.fail(cause),
+              BusinessGetStatement409: ({ cause }) => Effect.fail(cause),
+              BusinessGetStatement502: ({ cause }) => Effect.fail(cause),
+              BusinessGetStatement503: ({ cause }) => Effect.fail(cause),
             }),
           ),
         /** A new link answers 201 and a repeat of its key 200, with the same body. */

@@ -35,6 +35,11 @@ const idempotencyKeyValid = (column: AnyPgColumn) => sql`${column} ~ '^[!-~]{1,2
 
 const trimmed = (column: AnyPgColumn) => sql`${column} !~ ${sql.raw(`'^${space}|${space}$'`)}`
 
+// What Payments.isOneLine refuses, with Cc spelled out: Postgres has no \p{Cc},
+// and text can't hold NUL.
+const oneLine = (column: AnyPgColumn) =>
+  sql`${column} !~ ${sql.raw(String.raw`'[\u0001-\u001f\u007f-\u009f\u2028\u2029]'`)}`
+
 export const paymentLinks = pgTable(
   "payment_links",
   {
@@ -80,11 +85,11 @@ export const paymentLinks = pgTable(
     check("payment_links_share_token_valid", sql`${table.shareToken} ~ '^[A-Za-z0-9_][A-Za-z0-9_-]{42}$'`),
     check(
       "payment_links_title_valid",
-      sql`${table.title} <> '' and char_length(${table.title}) <= 255 and ${trimmed(table.title)}`,
+      sql`char_length(${table.title}) between 1 and 255 and ${trimmed(table.title)} and ${oneLine(table.title)}`,
     ),
     check(
       "payment_links_description_valid",
-      sql`${table.description} is null or (${table.description} <> '' and char_length(${table.description}) <= 500 and ${trimmed(table.description)})`,
+      sql`${table.description} is null or (char_length(${table.description}) between 1 and 500 and ${trimmed(table.description)})`,
     ),
     check(
       "payment_links_pricing_settings",

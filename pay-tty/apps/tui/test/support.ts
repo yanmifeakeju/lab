@@ -1,6 +1,7 @@
 import {
   type BusinessBalanceEncoded,
   type BusinessInfoEncoded,
+  type BusinessStatementEncoded,
   createClient,
   CreatePaymentLinkRequestEncoded,
   type PayableLinkEncoded,
@@ -14,6 +15,7 @@ import {
   type PaymentStatsEncoded,
   SimulatePaymentRequestEncoded,
   StartPaymentRequestEncoded,
+  type StatementMovementEncoded,
 } from "@pay-tty/plane-client"
 import { DateTime, Deferred, Effect, Layer, Match, Option, Predicate, Schema, type Scope, Stream, SubscriptionRef } from "effect"
 import * as HttpClient from "effect/unstable/http/HttpClient"
@@ -48,6 +50,8 @@ export interface Routes {
   readonly openAccount?: (call: Call) => Reply
   /** `figures()` unless given. */
   readonly balance?: (call: Call) => Reply
+  /** `statement()` unless given. */
+  readonly statement?: (call: Call) => Reply
   readonly createPaymentLink?: (call: Call) => Reply
   /** An empty list unless given. */
   readonly listPaymentLinks?: (call: Call) => Reply
@@ -125,6 +129,7 @@ export const fakePlane = (routes: Routes) => {
         Match.when("/me", () => routes.me),
         Match.when("/business", () => routes.createBusiness),
         Match.when("/business/balance", () => routes.balance ?? (() => ({ status: 200, body: figures() }))),
+        Match.when("/business/statement", () => routes.statement ?? (() => ({ status: 200, body: statement() }))),
         Match.when("/payment_links", () =>
           call.method === "GET" ? (routes.listPaymentLinks ?? (() => ({ status: 200, body: overview() }))) : routes.createPaymentLink),
         Match.when((path) => path.endsWith("/simulate"), () => routes.simulatePayment),
@@ -424,3 +429,50 @@ export const paymentPage = (
   payments: ReadonlyArray<PaymentSummaryEncoded> = [],
   next: string | null = null,
 ): PaymentPageEncoded => ({ payments, next, stats: noStats })
+
+// A credit into the account unless told otherwise.
+export const movement = (fields: Partial<StatementMovementEncoded> = {}): StatementMovementEncoded => ({
+  journal_ref: "jrn_haircut",
+  line_number: 1,
+  direction: "credit",
+  amount: "250000",
+  balance_after: "750000",
+  description: "Payment received via Haircut deposit",
+  recorded_at: "2026-10-09T09:15:00.000Z",
+  ...fields,
+})
+
+export const meetup = movement({
+  journal_ref: "jrn_meetup",
+  amount: "500000",
+  balance_after: "500000",
+  description: "Payment received via Lagos meetup tickets",
+  recorded_at: "2026-10-02T08:00:00.000Z",
+})
+
+/** What GET /business/statement returns: the two movements, newest first, unless told otherwise. */
+export const statement = (
+  movements: ReadonlyArray<StatementMovementEncoded> = [movement(), meetup],
+  fields: Partial<BusinessStatementEncoded> = {},
+): BusinessStatementEncoded => ({
+  ledger: "ngn_ng",
+  currency: "NGN",
+  scale: 2,
+  period: { from: "2026-09-28T10:00:00.000Z", to: "2026-10-28T09:59:00.000Z" },
+  opening: "0",
+  closing: "750000",
+  movements,
+  previous: null,
+  next: null,
+  ...fields,
+})
+
+// `count` credits of ₦1.00, newest first, each named by its position.
+export const credits = (count: number) =>
+  Array.from({ length: count }, (_, index) =>
+    movement({
+      journal_ref: `jrn_${index}`,
+      amount: "100",
+      balance_after: String((count - index) * 100),
+      description: `Payment received via Row ${index}`,
+    }))

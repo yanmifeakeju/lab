@@ -191,7 +191,7 @@ void test("a succeeded payment commits with one posting of its amount from cash 
         assert.equal(posting.businessId, business.id)
         assert.equal(posting.ledger, link.ledger)
         assert.equal(posting.kind, "payment")
-        assert.equal(posting.description, `Payment ${payment.id} via link ${link.id}`)
+        assert.equal(posting.description, `Payment received via ${link.title}`)
         assert.deepEqual(posting.effectiveAt, payment.completedAt)
         assert.deepEqual(posting.lines, [
           { debit_account_ref: "acct_test_cash", credit_account_ref: accountRef, amount: "2500000", purpose: "payment" },

@@ -23,6 +23,7 @@ import * as HttpClientError from "effect/unstable/http/HttpClientError";
 import { type Form, type Link, type Overview, type Request, type Summary, toRequest } from "./payment-link.ts";
 import type { Detail, Filter, Page, State as PaymentState } from "./payments.ts";
 import { Plane } from "./plane.ts";
+import { defaultPeriod, type Period, type Statement } from "./statement.ts";
 
 export type Business = BusinessInfoEncoded;
 
@@ -54,6 +55,17 @@ export interface PaymentsView {
   readonly page: Page;
 }
 
+// Which row a page selects when it lands: the newest, or the oldest after
+// paging to newer movements, so crossing a page boundary reads on.
+export type Landing = "first" | "last";
+
+export interface StatementView {
+  readonly business: Business;
+  readonly period: Period;
+  readonly page: Statement;
+  readonly landing: Landing;
+}
+
 // What the screen behind any popup shows. Unknown until /me answers: a failed
 // load is never taken to mean there is no business.
 export type View = Data.TaggedEnum<{
@@ -64,6 +76,8 @@ export type View = Data.TaggedEnum<{
   Payments: PaymentsView;
   /** A payment from the loaded list with its timeline; the list is kept for Back. */
   PaymentDetail: { readonly list: PaymentsView; readonly detail: Detail };
+  /** A page of the business's ledger statement. */
+  Statement: StatementView;
   /** The business's payment links, for one whose account is open. */
   Links: { readonly business: Business; readonly overview: Overview };
   /** One link of the list, as the list loaded it. */
@@ -98,6 +112,13 @@ export type Operation = Data.TaggedEnum<{
     readonly previous: Page | null;
   };
   OpenPayment: { readonly list: PaymentsView; readonly id: string };
+  // A cursor carries its own period; without one, the period's newest page.
+  ListStatement: {
+    readonly business: Business;
+    readonly period: Period;
+    readonly cursor: string | null;
+    readonly landing: Landing;
+  };
   // The key goes with the request, so Retry can't create a second link.
   CreatePaymentLink: {
     readonly business: Business;
@@ -169,6 +190,14 @@ export interface Interface {
   readonly morePayments: Effect.Effect<void>;
   /** Loads a listed payment's detail; ignored unless payments are showing and idle. */
   readonly openPayment: (id: string) => Effect.Effect<void>;
+  /** Loads the statement; ignored unless an active business is showing and idle. */
+  readonly openStatement: Effect.Effect<void>;
+  /** Loads another period's newest page; ignored unless the statement is showing and idle. */
+  readonly statementPeriod: (period: Period) => Effect.Effect<void>;
+  /** Loads the older or newer page; ignored unless the statement is showing, idle and has one. */
+  readonly statementPage: (direction: "next" | "previous") => Effect.Effect<void>;
+  /** Reloads the period from its newest page; ignored unless the statement is showing and idle. */
+  readonly refreshStatement: Effect.Effect<void>;
   /** Loads the links; ignored unless an active business is showing and idle. */
   readonly manageLinks: Effect.Effect<void>;
   /** Loads the links again; ignored unless they are showing and idle. */
@@ -266,6 +295,21 @@ const popupFor = (operation: Operation, failure: Failure): Popup => {
       })),
       Match.orElse(() => ({
         message: "Couldn't load the payment.", retry: operation, close: "dismiss" as const,
+      })),
+    ),
+    ListStatement: (): Popup => Match.value(code).pipe(
+      Match.when("business_required", () => ({
+        message: "Create a business first.", retry: null, close: "refresh" as const,
+      })),
+      Match.when("account_not_opened", () => ({
+        message: "Your account isn't open yet.", retry: null, close: "refresh" as const,
+      })),
+      // Only a page's cursor can be refused; the period itself still loads.
+      Match.when("validation_error", () => ({
+        message: "That page is no longer available. Press r to reload the period.", retry: null, close: "dismiss" as const,
+      })),
+      Match.orElse(() => ({
+        message: "Couldn't load your statement.", retry: operation, close: "dismiss" as const,
       })),
     ),
     ListLinks: () =>
@@ -522,6 +566,13 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
               authorized((client) => client.getPayment(id)),
               (detail) => View.PaymentDetail({ list, detail }),
             ),
+          ListStatement: ({ business, period, cursor, landing }) =>
+            Effect.map(
+              authorized((client) =>
+                client.getStatement({ params: cursor === null ? { period } : { cursor } })
+              ),
+              (page) => View.Statement({ business, period, page, landing }),
+            ),
           ListLinks: ({ business }) =>
             Effect.map(
               authorized((client) => client.listPaymentLinks(undefined)),
@@ -724,6 +775,56 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
       }
     });
 
+  const requestStatement = (
+    choose: (view: View) => Omit<Extract<Operation, { readonly _tag: "ListStatement" }>, "_tag"> | undefined,
+  ) =>
+    Effect.gen(function* () {
+      const operation = yield* SubscriptionRef.modify(state, (current) => {
+        const request = current.pending || current.popup !== null ? undefined : choose(current.view);
+
+        return request === undefined
+          ? ([undefined, current] as const)
+          : ([Operation.ListStatement(request), { ...current, pending: true }] as const);
+      });
+
+      if (operation !== undefined) {
+        yield* perform(operation);
+      }
+    });
+
+  const openStatement = requestStatement((view) =>
+    View.$is("HasBusiness")(view) && view.business.ledger !== null
+      ? { business: view.business, period: defaultPeriod, cursor: null, landing: "first" }
+      : undefined,
+  );
+
+  const statementPeriod = (period: Period) =>
+    requestStatement((view) =>
+      View.$is("Statement")(view)
+        ? { business: view.business, period, cursor: null, landing: "first" }
+        : undefined,
+    );
+
+  // Pages replace each other, so the opening and closing always cover the whole period.
+  const statementPage = (direction: "next" | "previous") =>
+    requestStatement((view) => {
+      if (!View.$is("Statement")(view)) {
+        return undefined;
+      }
+
+      const cursor = view.page[direction];
+
+      return cursor === null
+        ? undefined
+        : { business: view.business, period: view.period, cursor, landing: direction === "next" ? "first" : "last" };
+    });
+
+  const refreshStatement = requestStatement((view) =>
+    View.$is("Statement")(view)
+      ? { business: view.business, period: view.period, cursor: null, landing: "first" }
+      : undefined,
+  );
+
   const refreshLinks = Effect.gen(function* () {
     const business = yield* SubscriptionRef.modify(
       state,
@@ -840,6 +941,7 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
         Payments: ({ origin }) =>
           [undefined, { ...current, view: Predicate.isTagged(origin, "HasBusiness") ? home(origin.business, request) : origin }] as const,
         PaymentDetail: ({ list }) => [undefined, { ...current, view: View.Payments(list) }] as const,
+        Statement: ({ business }) => [undefined, { ...current, view: home(business, request) }] as const,
         Unknown: () => stay,
         NoBusiness: () => stay,
         HasBusiness: () => stay,
@@ -917,6 +1019,10 @@ export const make = Effect.fnUntraced(function* (fingerprint: string) {
     filterPayments,
     morePayments,
     openPayment,
+    openStatement,
+    statementPeriod,
+    statementPage,
+    refreshStatement,
     manageLinks,
     refreshLinks,
     openLink,

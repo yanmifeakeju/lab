@@ -363,6 +363,106 @@
         }
       }
     },
+    "/business/statement": {
+      "get": {
+        "tags": [
+          "business"
+        ],
+        "operationId": "business.getStatement",
+        "parameters": [
+          {
+            "name": "period",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "today",
+                "7d",
+                "30d",
+                "90d"
+              ],
+              "default": "30d"
+            },
+            "required": false
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "BusinessStatement",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BusinessStatementEncoded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationErrorResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponseEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedResponseEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictResponseEncoded"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "BadGatewayResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadGatewayResponseEncoded"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "ServiceUnavailableResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceUnavailableResponseEncoded"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/payment_links": {
       "post": {
         "tags": [
@@ -1365,6 +1465,124 @@
           "scale",
           "available",
           "pending"
+        ],
+        "additionalProperties": false
+      },
+      "StatementMovementEncoded": {
+        "type": "object",
+        "properties": {
+          "journal_ref": {
+            "type": "string"
+          },
+          "line_number": {
+            "type": "integer"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "debit",
+              "credit"
+            ]
+          },
+          "amount": {
+            "type": "string",
+            "description": "In minor units of the ledger's currency."
+          },
+          "balance_after": {
+            "type": "string",
+            "description": "In minor units of the ledger's currency."
+          },
+          "description": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "journal_ref",
+          "line_number",
+          "direction",
+          "amount",
+          "balance_after",
+          "description",
+          "recorded_at"
+        ],
+        "additionalProperties": false
+      },
+      "BusinessStatementEncoded": {
+        "type": "object",
+        "properties": {
+          "ledger": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "scale": {
+            "type": "integer"
+          },
+          "period": {
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "from",
+              "to"
+            ],
+            "additionalProperties": false
+          },
+          "opening": {
+            "type": "string",
+            "description": "In minor units of the ledger's currency."
+          },
+          "closing": {
+            "type": "string",
+            "description": "In minor units of the ledger's currency."
+          },
+          "movements": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StatementMovementEncoded"
+            }
+          },
+          "previous": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "ledger",
+          "currency",
+          "scale",
+          "period",
+          "opening",
+          "closing",
+          "movements",
+          "previous",
+          "next"
         ],
         "additionalProperties": false
       },

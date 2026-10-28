@@ -128,6 +128,61 @@ const respond = (request: HttpClientRequest.HttpClientRequest, answer: Reply) =>
 
 const isAccount = Schema.is(Schema.Struct({ reference: Schema.String }))
 
+/** A statement read: the account and every query parameter sent. */
+export interface StatementRead {
+  readonly accountRef: string
+  readonly query: Readonly<Record<string, string>>
+}
+
+// What the ledger serves for a statement of this account, from these lines
+// taken into it, oldest first.
+export const statementOf = (
+  read: StatementRead,
+  lines: ReadonlyArray<{
+    readonly journalRef: string
+    readonly lineNumber: number
+    readonly line: PostJournalEntryRequestJson["lines"][number]
+  }>,
+): Reply => {
+  let balance = 0
+
+  const movements = lines.flatMap(({ journalRef, lineNumber, line }) => {
+    const direction = line.credit_account_ref === read.accountRef
+      ? "credit"
+      : line.debit_account_ref === read.accountRef ? "debit" : undefined
+
+    if (direction === undefined) {
+      return []
+    }
+
+    balance += direction === "credit" ? line.amount : -line.amount
+
+    return [{
+      journal_reference: journalRef,
+      line_number: lineNumber,
+      kind: "payment",
+      direction,
+      amount: line.amount,
+      balance_after: balance,
+      description: "Payment received",
+      purpose: line.purpose,
+      recorded_at: "2026-10-09T09:15:00Z",
+    }]
+  })
+
+  return {
+    status: 200,
+    body: {
+      account: { reference: read.accountRef, holder_reference: `hld_${ulid()}`, name: "Acme Ltd" },
+      period: { from: read.query["from"] ?? "2026-09-28T10:00:00Z", to: "2026-10-28T09:59:00Z" },
+      opening_balance: 0,
+      closing_balance: balance,
+      entries: read.query["order"] === "desc" ? movements.reverse() : movements,
+      page: { limit: 50, previous_cursor: null, next_cursor: null },
+    },
+  }
+}
+
 export interface FakeLedger {
   // Payable account creations, and what the ledger answered each.
   readonly requests: ReadonlyArray<Payload>
@@ -135,6 +190,7 @@ export interface FakeLedger {
   readonly entries: ReadonlyArray<Entry>
   // The account refs read, in order.
   readonly reads: ReadonlyArray<string>
+  readonly statements: ReadonlyArray<StatementRead>
   readonly layer: Layer.Layer<LedgerClient.Service>
 }
 
@@ -144,12 +200,16 @@ export const fakeLedger = (
   // Left out, an account read answers with the account as created, its
   // posted credits and debits summed from the entries the ledger took.
   read?: (accountRef: string) => Reply,
+  // Left out, a statement lists the account's lines from the entries taken.
+  statement?: (read: StatementRead) => Reply,
 ): FakeLedger => {
   const requests: Array<Payload> = []
   const replies: Array<Reply> = []
   const entries: Array<Entry> = []
   const taken: Array<Entry> = []
   const reads: Array<string> = []
+  const statements: Array<StatementRead> = []
+  const journals = new Map<Entry, string>()
 
   // Accounts the ledger created, by ref, as it answered.
   const opened = new Map<string, object>()
@@ -184,6 +244,20 @@ export const fakeLedger = (
       const web = yield* Effect.orDie(HttpClientRequest.toWeb(request))
       const path = new URL(web.url).pathname
 
+      if (web.method === "GET" && path.startsWith("/accounts/") && path.endsWith("/statement")) {
+        const statementRead = {
+          accountRef: decodeURIComponent(path.slice("/accounts/".length, -"/statement".length)),
+          query: Object.fromEntries(new URL(web.url).searchParams),
+        }
+
+        statements.push(statementRead)
+
+        const listed = taken.flatMap((entry) =>
+          entry.payload.lines.map((line, index) => ({ journalRef: journals.get(entry) ?? "", lineNumber: index + 1, line })))
+
+        return yield* respond(request, (statement ?? ((read) => statementOf(read, listed)))(statementRead))
+      }
+
       if (web.method === "GET" && path.startsWith("/accounts/")) {
         const accountRef = decodeURIComponent(path.slice("/accounts/".length))
 
@@ -207,6 +281,10 @@ export const fakeLedger = (
 
         if (answer !== "unreachable" && answer.status === 201) {
           taken.push(entry)
+
+          if ("body" in answer && Schema.is(Schema.Struct({ journal_ref: Schema.String }))(answer.body)) {
+            journals.set(entry, answer.body.journal_ref)
+          }
         }
       } else {
         const payload = yield* Effect.orDie(Schema.decodeUnknownEffect(CreatePayableAccountRequestJson)(body))
@@ -231,6 +309,7 @@ export const fakeLedger = (
     replies,
     entries,
     reads,
+    statements,
     // Configured here, so the tests need no LEDGER_BASE_URL.
     layer: LedgerClient.layer.pipe(
       Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),

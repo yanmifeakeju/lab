@@ -28,6 +28,10 @@ import {
   paid,
   type Reply,
   scenario,
+  credits,
+  meetup,
+  movement,
+  statement,
   summary,
   tips,
 } from "./support.ts"
@@ -1424,3 +1428,293 @@ void test(
     }),
   ),
 )
+
+const statementQueries = (plane: ReturnType<typeof fakePlane>) =>
+  plane.calls.filter(({ path }) => path === "/business/statement").map(({ query }) => Object.fromEntries(query))
+
+// The selected row of a frame, without its marker.
+const selectedRow = (frame: string) => rowsOf(frame).find((row) => row.startsWith("› "))?.slice(2).trim()
+
+void test("home lists Statement under a ledger even when the balance failed, and ↑/↓ stop at the ends", scenario(
+  Effect.gen(function* () {
+    const plane = fakePlane({ me: me(opened), balance: () => failure(503, "ledger_unavailable") })
+    const tui = yield* screen(plane)
+
+    const menu = yield* tui.showing("Balance unavailable")
+
+    assert.ok(rowsOf(menu).includes("  Statement       s"))
+
+    tui.keys.pressArrow("down")
+    tui.keys.pressArrow("down")
+    tui.keys.pressArrow("down")
+    yield* tui.showing("› Statement       s")
+    tui.keys.pressArrow("up")
+    yield* tui.showing("› Payment links   l")
+    tui.keys.pressArrow("down")
+    yield* tui.showing("› Statement       s")
+    tui.keys.pressEnter()
+    yield* tui.showing("Up to a minute ago")
+    tui.keys.pressEscape()
+    yield* tui.showing("Statement       s")
+    tui.keys.pressArrow("up")
+    tui.keys.pressArrow("up")
+    tui.keys.pressArrow("up")
+    yield* tui.showing("› Payments        p")
+    tui.keys.pressKey("s")
+    yield* tui.showing("Up to a minute ago")
+
+    assert.deepEqual(statementQueries(plane), [{ period: "30d" }, { period: "30d" }])
+
+    tui.close()
+    yield* Fiber.join(tui.fiber)
+  }),
+))
+
+void test("no account, no Statement entry, and s asks for nothing", scenario(
+  Effect.gen(function* () {
+    const plane = fakePlane({ me: me(business()) })
+    const tui = yield* screen(plane)
+
+    const frame = yield* tui.showing("Press o to open your account.")
+
+    assert.doesNotMatch(frame, /Statement/)
+
+    tui.keys.pressKey("s")
+
+    assert.doesNotMatch(yield* tui.frame, /Statement/)
+    assert.deepEqual(statementQueries(plane), [])
+
+    tui.close()
+    yield* Fiber.join(tui.fiber)
+  }),
+))
+
+void test("the statement shows its period, balances and movements newest first, and ←/→ and r start the period over", scenario(
+  Effect.gen(function* () {
+    const plane = fakePlane({ me: me(opened) })
+    const tui = yield* screen(plane, { width: 90, height: 20 })
+
+    yield* tui.showing("Statement       s")
+    tui.keys.pressKey("s")
+
+    const frame = yield* tui.showing("Up to a minute ago")
+    const rows = rowsOf(frame)
+
+    assert.ok(rows.includes("Statement   Today · 7 days · [30 days] · 90 days"))
+    assert.ok(rows.includes("28 Sep – 28 Oct   Opening ₦0.00  →  Closing ₦7,500.00"))
+    assert.ok(rows.includes("↑/↓ · ←/→ period · r refresh · Esc back"))
+
+    const listed = rows.filter((row) => row.includes("Payment received via"))
+
+    assert.deepEqual(listed.map((row) => row.trimEnd()), [
+      "› 9 Oct  Payment received via Haircut deposit                  +₦2,500.00  ₦7,500.00",
+      "  2 Oct  Payment received via Lagos meetup tickets             +₦5,000.00  ₦5,000.00",
+    ])
+
+    tui.keys.pressArrow("down")
+    yield* tui.matching((shown) => selectedRow(shown)?.includes("Lagos") === true)
+    tui.keys.pressArrow("down")
+    yield* tui.matching((shown) => selectedRow(shown)?.includes("Lagos") === true)
+
+    tui.keys.pressArrow("right")
+    yield* tui.matching((shown) => shown.includes("[90 days]") && selectedRow(shown)?.includes("Haircut") === true)
+    tui.keys.pressArrow("right")
+    yield* tui.showing("[Today]")
+    tui.keys.pressArrow("left")
+    yield* tui.showing("[90 days]")
+    tui.keys.pressArrow("down")
+    yield* tui.matching((shown) => selectedRow(shown)?.includes("Lagos") === true)
+    tui.keys.pressKey("r")
+    yield* tui.matching((shown) => selectedRow(shown)?.includes("Haircut") === true)
+
+    // n and p have no page to go to.
+    tui.keys.pressKey("n")
+    tui.keys.pressKey("p")
+    yield* tui.frame
+
+    assert.deepEqual(statementQueries(plane), [
+      { period: "30d" },
+      { period: "90d" },
+      { period: "today" },
+      { period: "90d" },
+      { period: "90d" },
+    ])
+
+    tui.keys.pressEscape()
+    yield* tui.showing("Statement       s")
+
+    assert.equal(plane.calls.filter(({ path }) => path === "/business/balance").length, 2)
+
+    tui.close()
+    yield* Fiber.join(tui.fiber)
+  }),
+))
+
+void test("n loads older and selects its first row; p loads newer and selects its last; each only where it leads", scenario(
+  Effect.gen(function* () {
+    const plane = fakePlane({
+      me: me(opened),
+      statement: inTurn(
+        { status: 200, body: statement([movement(), movement({ journal_ref: "jrn_two", description: "Second" })], { next: "older" }) },
+        { status: 200, body: statement([meetup, movement({ journal_ref: "jrn_four", description: "Fourth" })], { previous: "newer" }) },
+        { status: 200, body: statement([movement(), movement({ journal_ref: "jrn_two", description: "Second" })], { next: "older" }) },
+      ),
+    })
+
+    const tui = yield* screen(plane)
+
+    yield* tui.showing("Statement       s")
+    tui.keys.pressKey("s")
+
+    const newest = yield* tui.showing("n page")
+
+    assert.ok(!newest.includes("n/p"))
+    assert.match(selectedRow(newest) ?? "", /Haircut/)
+
+    tui.keys.pressKey("p")
+    tui.keys.pressKey("n")
+
+    const older = yield* tui.showing("p page")
+
+    assert.match(selectedRow(older) ?? "", /Lagos/)
+
+    tui.keys.pressKey("n")
+    tui.keys.pressKey("p")
+
+    const newer = yield* tui.matching((frame) => frame.includes("n page"))
+
+    assert.match(selectedRow(newer) ?? "", /Second/)
+    assert.deepEqual(statementQueries(plane), [{ period: "30d" }, { cursor: "older" }, { cursor: "newer" }])
+
+    tui.close()
+    yield* Fiber.join(tui.fiber)
+  }),
+))
+
+void test("an empty period still shows its balances; a failed one a popup that retries", scenario(
+  Effect.gen(function* () {
+    const held = yield* Deferred.make<Reply>()
+
+    const plane = fakePlane({
+      me: me(opened),
+      statement: first({ held }, "unreachable")(() => ({ status: 200, body: statement([], { opening: "500", closing: "500" }) })),
+    })
+
+    const tui = yield* screen(plane)
+
+    yield* tui.showing("Statement       s")
+    tui.keys.pressKey("s")
+    yield* tui.showing("Loading…")
+    yield* Deferred.succeed(held, { status: 200, body: statement() })
+    yield* tui.showing("Haircut")
+    tui.keys.pressArrow("right")
+
+    const popup = yield* tui.showing("Couldn't load your statement.")
+
+    assert.match(popup, /\[Enter\] Retry/)
+    assert.match(popup, /Haircut/)
+
+    tui.keys.pressEnter()
+
+    const empty = yield* tui.showing("No movements in this period.")
+
+    assert.match(empty, /\[90 days\]/)
+    assert.match(empty, /Opening ₦5\.00  →  Closing ₦5\.00/)
+    assert.match(empty, /Up to a minute ago/)
+
+    tui.close()
+    yield* Fiber.join(tui.fiber)
+  }),
+))
+
+void test("narrow, the tabs and hints shorten, the description gives way, then the balance column goes", scenario(
+  Effect.gen(function* () {
+    const plane = fakePlane({ me: me(opened), statement: () => ({ status: 200, body: statement(undefined, { next: "older" }) }) })
+    const tui = yield* screen(plane, { width: 60, height: 14 })
+
+    yield* tui.showing("Statement       s")
+    tui.keys.pressKey("s")
+
+    const medium = rowsOf(yield* tui.showing("Up to a minute ago"))
+
+    // The tabs still fit whole; the description doesn't.
+    assert.ok(medium.includes("Statement   Today · 7 days · [30 days] · 90 days"))
+    assert.ok(medium.includes("↑/↓ · ←/→ · n · r · Esc"))
+    assert.ok(medium.some((row) => /^› 9 Oct  Payment received via… +\+₦2,500\.00  ₦7,500\.00$/.test(row.trimEnd())))
+
+    for (const width of [32, 40, 44]) {
+      tui.setup.resize(width, 10)
+
+      const frame = yield* tui.matching((shown) => shown.includes("Up to a minute ago") && shown.includes("Esc"))
+      const rows = frame.split("\n").filter((row) => row !== "")
+
+      assert.equal(rows.length, 10)
+      assert.ok(rows.every((row) => stringWidth(row) === width), String(width))
+      assert.ok(rowsOf(frame).some((row) => row.includes("[30d]")), String(width))
+      assert.match(selectedRow(frame) ?? "", /^9 Oct .*\+₦2,500\.00$/)
+      assert.match(frame, /Open ₦0\.00 → Close ₦7,500\.00|Opening/)
+    }
+
+    tui.close()
+    yield* Fiber.join(tui.fiber)
+  }),
+))
+
+void test("on a 10-line terminal, ↓ reaches the last of 50 rows, keeping it, the header and the footer in view", scenario(
+  Effect.gen(function* () {
+    const plane = fakePlane({
+      me: me(opened),
+      statement: () => ({ status: 200, body: statement(credits(50), { closing: "5000" }) }),
+    })
+
+    const tui = yield* screen(plane, { width: 70, height: 10 })
+
+    yield* tui.showing("Statement       s")
+    tui.keys.pressKey("s")
+    yield* tui.showing("Row 0")
+
+    for (let index = 1; index < 50; index++) {
+      tui.keys.pressArrow("down")
+
+      const frame = yield* tui.matching((shown) => selectedRow(shown)?.includes(`Row ${index} `) === true)
+
+      for (const kept of ["[30 days]", "Closing ₦50.00", "Up to a minute ago", "Esc back"]) {
+        assert.ok(frame.includes(kept), `${kept} at row ${index}`)
+      }
+    }
+
+    tui.keys.pressArrow("down")
+
+    assert.match(selectedRow(yield* tui.frame) ?? "", /Row 49 /)
+
+    tui.close()
+    yield* Fiber.join(tui.fiber)
+  }),
+))
+
+void test("a description with line breaks and tabs stays on one row, in line with the rest", scenario(
+  Effect.gen(function* () {
+    const plane = fakePlane({
+      me: me(opened),
+      statement: () => ({
+        status: 200,
+        body: statement([movement({ description: "Payment\nreceived\tvia\r\nOld link" }), meetup]),
+      }),
+    })
+
+    const tui = yield* screen(plane, { width: 90, height: 20 })
+
+    yield* tui.showing("Statement       s")
+    tui.keys.pressKey("s")
+
+    const rows = rowsOf(yield* tui.showing("Up to a minute ago")).filter((row) => /^[› ] \d+ Oct/.test(row))
+
+    assert.equal(rows.length, 2)
+    assert.match(rows[0] ?? "", /^› 9 Oct  Payment received via Old link +\+₦2,500\.00  ₦7,500\.00/)
+    assert.equal(rows[0]?.indexOf("+₦"), rows[1]?.indexOf("+₦"))
+    assert.equal(rows[0]?.trimEnd().length, rows[1]?.trimEnd().length)
+
+    tui.close()
+    yield* Fiber.join(tui.fiber)
+  }),
+))
