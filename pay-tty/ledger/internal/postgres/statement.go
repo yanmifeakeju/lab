@@ -136,9 +136,18 @@ func (s *Store) GetStatement(
 		return statement.Result{}, fmt.Errorf("query statement account: %w", err)
 	}
 
+	order := input.Order
+	if input.Cursor != nil {
+		order = input.Cursor.Order
+	}
+	if order == "" {
+		order = statement.OrderAsc
+	}
 	isPrevious := input.Cursor != nil && input.Cursor.Navigation == statement.NavigationPrevious
+
+	// The page queries are named for asc; desc travels the other way.
 	query := statementHead + statementNextPage
-	if isPrevious {
+	if isPrevious != (order == statement.OrderDesc) {
 		query = statementHead + statementPreviousPage
 	}
 
@@ -241,59 +250,37 @@ func (s *Store) GetStatement(
 		},
 	}
 
-	// Handle pagination boundaries and cursor creation.
+	// The query fetched one row past the page, in its own direction, so the
+	// page is cut before it is put back in the order asked for.
+	hasMore := len(fetched) > input.Limit
+	if hasMore {
+		fetched = fetched[:input.Limit]
+	}
+	hasPrevious, hasNext := input.Cursor != nil, hasMore
 	if isPrevious {
-		hasPrevious := len(fetched) > input.Limit
-		if hasPrevious {
-			fetched = fetched[:input.Limit]
-		}
-		// Rows were retrieved DESC, reverse back to chronological order (ASC).
 		slices.Reverse(fetched)
+		// Arrived via previous navigation, so a next page exists.
+		hasPrevious, hasNext = hasMore, true
+	}
 
-		hasNext := true // Arrived via previous navigation, so next page exists.
-
-		if hasPrevious && len(fetched) > 0 {
-			result.Page.Previous = &statement.Cursor{
-				Navigation: statement.NavigationPrevious,
-				Position: statement.Position{
-					RecordedAt: fetched[0].RecordedAt,
-					Sequence:   fetched[0].Sequence,
-				},
-			}
+	if hasPrevious && len(fetched) > 0 {
+		result.Page.Previous = &statement.Cursor{
+			Navigation: statement.NavigationPrevious,
+			Order:      order,
+			Position: statement.Position{
+				RecordedAt: fetched[0].RecordedAt,
+				Sequence:   fetched[0].Sequence,
+			},
 		}
-		if hasNext && len(fetched) > 0 {
-			result.Page.Next = &statement.Cursor{
-				Navigation: statement.NavigationNext,
-				Position: statement.Position{
-					RecordedAt: fetched[len(fetched)-1].RecordedAt,
-					Sequence:   fetched[len(fetched)-1].Sequence,
-				},
-			}
-		}
-	} else {
-		hasNext := len(fetched) > input.Limit
-		if hasNext {
-			fetched = fetched[:input.Limit]
-		}
-		hasPrevious := input.Cursor != nil // If forward with cursor, a previous page exists.
-
-		if hasPrevious && len(fetched) > 0 {
-			result.Page.Previous = &statement.Cursor{
-				Navigation: statement.NavigationPrevious,
-				Position: statement.Position{
-					RecordedAt: fetched[0].RecordedAt,
-					Sequence:   fetched[0].Sequence,
-				},
-			}
-		}
-		if hasNext && len(fetched) > 0 {
-			result.Page.Next = &statement.Cursor{
-				Navigation: statement.NavigationNext,
-				Position: statement.Position{
-					RecordedAt: fetched[len(fetched)-1].RecordedAt,
-					Sequence:   fetched[len(fetched)-1].Sequence,
-				},
-			}
+	}
+	if hasNext && len(fetched) > 0 {
+		result.Page.Next = &statement.Cursor{
+			Navigation: statement.NavigationNext,
+			Order:      order,
+			Position: statement.Position{
+				RecordedAt: fetched[len(fetched)-1].RecordedAt,
+				Sequence:   fetched[len(fetched)-1].Sequence,
+			},
 		}
 	}
 

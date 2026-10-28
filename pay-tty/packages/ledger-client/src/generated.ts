@@ -98,8 +98,8 @@ export type GetAccount404 = ErrorResponse
 export const GetAccount404 = ErrorResponse
 export type GetAccount500 = ErrorResponse
 export const GetAccount500 = ErrorResponse
-export type GetAccountStatementParams = { readonly "from"?: string, readonly "to"?: string, readonly "limit"?: number, readonly "cursor"?: string }
-export const GetAccountStatementParams = Schema.Struct({ "from": Schema.optionalKey(Schema.String.annotate({ "format": "date-time" })), "to": Schema.optionalKey(Schema.String.annotate({ "format": "date-time" })), "limit": Schema.optionalKey(Schema.Number.annotate({ "default": 50 }).check(Schema.isInt().annotate({ "expected": "an integer" })).check(Schema.isGreaterThanOrEqualTo(1).annotate({ "expected": "a value greater than or equal to 1" })).check(Schema.isLessThanOrEqualTo(100).annotate({ "expected": "a value less than or equal to 100" }))), "cursor": Schema.optionalKey(Schema.String) })
+export type GetAccountStatementParams = { readonly "from"?: string, readonly "to"?: string, readonly "limit"?: number, readonly "order"?: "asc" | "desc", readonly "cursor"?: string }
+export const GetAccountStatementParams = Schema.Struct({ "from": Schema.optionalKey(Schema.String.annotate({ "format": "date-time" })), "to": Schema.optionalKey(Schema.String.annotate({ "format": "date-time" })), "limit": Schema.optionalKey(Schema.Number.annotate({ "default": 50 }).check(Schema.isInt().annotate({ "expected": "an integer" })).check(Schema.isGreaterThanOrEqualTo(1).annotate({ "expected": "a value greater than or equal to 1" })).check(Schema.isLessThanOrEqualTo(100).annotate({ "expected": "a value less than or equal to 100" }))), "order": Schema.optionalKey(Schema.Literals(["asc", "desc"]).annotate({ "default": "asc" })), "cursor": Schema.optionalKey(Schema.String) })
 export type GetAccountStatement200 = GetAccountStatementResponse
 export const GetAccountStatement200 = GetAccountStatementResponse
 export type GetAccountStatement400 = ValidationErrorResponse
@@ -267,7 +267,7 @@ export const make = (
   ),
     "getAccountStatement": (accountReference, options) => __makePathRequest(HttpClientRequest.get, [accountReference], () => "/accounts/" + __encodePathParam(accountReference) + "/statement").pipe(
     Effect.flatMap((request) => request.pipe(
-      HttpClientRequest.setUrlParams({ "from": options?.params?.["from"] as any, "to": options?.params?.["to"] as any, "limit": options?.params?.["limit"] as any, "cursor": options?.params?.["cursor"] as any }),
+      HttpClientRequest.setUrlParams({ "from": options?.params?.["from"] as any, "to": options?.params?.["to"] as any, "limit": options?.params?.["limit"] as any, "order": options?.params?.["order"] as any, "cursor": options?.params?.["cursor"] as any }),
       withResponse(options?.config)(HttpClientResponse.matchStatus({
       "2xx": decodeSuccess(GetAccountStatement200),
       "400": decodeError("GetAccountStatement400", GetAccountStatement400),
@@ -319,7 +319,7 @@ readonly "createPayableAccount": <Config extends OperationConfig>(options: { rea
 */
 readonly "getAccount": <Config extends OperationConfig>(accountReference: string, options: { readonly config?: Config | undefined } | undefined) => Effect.Effect<WithOptionalResponse<typeof GetAccount200.Type, Config>, HttpClientError.HttpClientError | SchemaError | LedgerClientError<"GetAccount400", typeof GetAccount400.Type> | LedgerClientError<"GetAccount404", typeof GetAccount404.Type> | LedgerClientError<"GetAccount500", typeof GetAccount500.Type>>
   /**
-* Retrieves the journal movements affecting one payable account within a recorded-time period, in the order they were applied to the account (`recorded_at, sequence`).
+* Retrieves the journal movements affecting one payable account within a recorded-time period. With `order=asc`, the default, movements are in the order they were applied to the account (`recorded_at, sequence`); `desc` reverses it.
 * 
 * ### Example movements
 * 

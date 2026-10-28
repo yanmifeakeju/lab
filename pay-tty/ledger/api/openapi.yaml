@@ -118,7 +118,7 @@ paths:
       operationId: getAccountStatement
       summary: Get a payable account statement
       description: |
-        Retrieves the journal movements affecting one payable account within a recorded-time period, in the order they were applied to the account (`recorded_at, sequence`).
+        Retrieves the journal movements affecting one payable account within a recorded-time period. With `order=asc`, the default, movements are in the order they were applied to the account (`recorded_at, sequence`); `desc` reverses it.
 
         ### Example movements
 
@@ -155,6 +155,16 @@ paths:
             minimum: 1
             maximum: 100
             default: 50
+        - name: order
+          in: query
+          required: false
+          description: Order of `entries` and the direction of `next_cursor`. Ignored when `cursor` is present.
+          schema:
+            type: string
+            enum:
+              - asc
+              - desc
+            default: asc
         - name: cursor
           in: query
           required: false

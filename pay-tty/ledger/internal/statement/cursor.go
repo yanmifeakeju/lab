@@ -16,11 +16,13 @@ type Position struct {
 // Cursor identifies where and in which direction statement pagination resumes.
 type Cursor struct {
 	Navigation Navigation
+	Order      Order
 	Position   Position
 }
 
 type cursorPayload struct {
 	Navigation Navigation `json:"nav"`
+	Order      Order      `json:"ord"`
 	RecordedAt time.Time  `json:"rec"`
 	Sequence   int64      `json:"seq"`
 	From       time.Time  `json:"from"`
@@ -41,6 +43,10 @@ func validNavigation(nav Navigation) bool {
 	return nav == NavigationNext || nav == NavigationPrevious
 }
 
+func validOrder(order Order) bool {
+	return order == OrderAsc || order == OrderDesc
+}
+
 func validPeriod(period Period) bool {
 	return !period.From.IsZero() && !period.To.IsZero() && period.From.Before(period.To)
 }
@@ -57,9 +63,13 @@ func EncodeCursor(cursor *Cursor, period Period) (*string, error) {
 	if !validNavigation(cursor.Navigation) {
 		return nil, fmt.Errorf("%w: unknown navigation direction %q", ErrInvalidCursor, cursor.Navigation)
 	}
+	if !validOrder(cursor.Order) {
+		return nil, fmt.Errorf("%w: unknown order %q", ErrInvalidCursor, cursor.Order)
+	}
 
 	payload := cursorPayload{
 		Navigation: cursor.Navigation,
+		Order:      cursor.Order,
 		RecordedAt: cursor.Position.RecordedAt.UTC(),
 		Sequence:   cursor.Position.Sequence,
 		From:       period.From.UTC(),
@@ -96,12 +106,13 @@ func DecodeCursor(token string) (*Cursor, Period, error) {
 		To:   payload.To,
 	}
 
-	if !validNavigation(payload.Navigation) || !validPosition(pos) || !validPeriod(period) {
+	if !validNavigation(payload.Navigation) || !validOrder(payload.Order) || !validPosition(pos) || !validPeriod(period) {
 		return nil, Period{}, ErrInvalidCursor
 	}
 
 	cursor := &Cursor{
 		Navigation: payload.Navigation,
+		Order:      payload.Order,
 		Position:   pos,
 	}
 

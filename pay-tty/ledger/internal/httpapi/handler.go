@@ -624,6 +624,7 @@ func (s *server) GetAccountStatement(
 	var (
 		from   *time.Time
 		to     *time.Time
+		order  = statement.OrderAsc
 		cursor *statement.Cursor
 	)
 
@@ -642,7 +643,11 @@ func (s *server) GetAccountStatement(
 		cursor = decCursor
 		from = &boundPeriod.From
 		to = &boundPeriod.To
+		order = decCursor.Order
 	} else {
+		if request.Params.Order != nil {
+			order = statement.Order(*request.Params.Order)
+		}
 		if request.Params.From != nil {
 			v := request.Params.From.UTC()
 			from = &v
@@ -657,6 +662,7 @@ func (s *server) GetAccountStatement(
 		AccountReference: request.AccountReference,
 		From:             from,
 		To:               to,
+		Order:            order,
 		Limit:            limit,
 		Cursor:           cursor,
 	})

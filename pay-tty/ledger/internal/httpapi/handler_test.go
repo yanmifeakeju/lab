@@ -1565,6 +1565,7 @@ func TestGetAccountStatement_HappyPath(t *testing.T) {
 				Limit: 50,
 				Next: &statement.Cursor{
 					Navigation: statement.NavigationNext,
+					Order:      statement.OrderAsc,
 					Position: statement.Position{
 						RecordedAt: recordedAt,
 						Sequence:   2,
@@ -1627,6 +1628,7 @@ func TestGetAccountStatement_WithCursor(t *testing.T) {
 
 	cursor := &statement.Cursor{
 		Navigation: statement.NavigationNext,
+		Order:      statement.OrderAsc,
 		Position: statement.Position{
 			RecordedAt: recordedAt,
 			Sequence:   2,
@@ -1731,7 +1733,7 @@ func TestGetAccountStatement_ValidationErrors(t *testing.T) {
 		{
 			name: "cursor sequence invalid",
 			target: func() string {
-				tok := base64.RawURLEncoding.EncodeToString([]byte(`{"nav":"next","rec":"2026-09-10T09:15:00Z","seq":0,"from":"2026-09-01T00:00:00Z","to":"2026-09-15T00:00:00Z"}`))
+				tok := base64.RawURLEncoding.EncodeToString([]byte(`{"nav":"next","ord":"asc","rec":"2026-09-10T09:15:00Z","seq":0,"from":"2026-09-01T00:00:00Z","to":"2026-09-15T00:00:00Z"}`))
 				return "/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?cursor=" + tok
 			}(),
 			wantField:  "cursor",
@@ -1772,6 +1774,88 @@ func TestGetAccountStatement_ValidationErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGetAccountStatement_Order(t *testing.T) {
+	from := time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, time.September, 15, 0, 0, 0, 0, time.UTC)
+
+	token, err := statement.EncodeCursor(&statement.Cursor{
+		Navigation: statement.NavigationNext,
+		Order:      statement.OrderAsc,
+		Position: statement.Position{
+			RecordedAt: time.Date(2026, time.September, 5, 0, 0, 0, 0, time.UTC),
+			Sequence:   1,
+		},
+	}, statement.Period{From: from, To: to})
+	if err != nil {
+		t.Fatalf("EncodeCursor: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		query string
+		want  statement.Order
+	}{
+		{name: "omitted defaults to asc", want: statement.OrderAsc},
+		{name: "desc passes through", query: "?order=desc", want: statement.OrderDesc},
+		{name: "cursor order wins", query: "?order=desc&cursor=" + *token, want: statement.OrderAsc},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &fakeService{
+				statementResult: statement.Result{
+					Account: statement.Account{Reference: "acct_01M20H8704F1FDM1CFWSZDVJPV"},
+					Period:  statement.Period{From: from, To: to},
+				},
+			}
+			handler, err := httpapi.NewHandler(svc)
+			if err != nil {
+				t.Fatalf("NewHandler: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement"+tt.query, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			if svc.statementInput.Order != tt.want {
+				t.Errorf("input Order = %q, want %q", svc.statementInput.Order, tt.want)
+			}
+		})
+	}
+
+	t.Run("unknown order is rejected", func(t *testing.T) {
+		svc := &fakeService{}
+		handler, err := httpapi.NewHandler(svc)
+		if err != nil {
+			t.Fatalf("NewHandler: %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/accounts/acct_01M20H8704F1FDM1CFWSZDVJPV/statement?order=sideways", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+		}
+		if svc.statementCalls != 0 {
+			t.Errorf("GetStatement calls = %d, want 0", svc.statementCalls)
+		}
+		var got api.ValidationErrorResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode validation response: %v", err)
+		}
+		if len(got.Error.Details) != 1 {
+			t.Fatalf("details = %+v, want one detail", got.Error.Details)
+		}
+		if d := got.Error.Details[0]; d.Location != api.Query || d.Field != "order" {
+			t.Errorf("detail = (%q, %q), want (query, order)", d.Location, d.Field)
+		}
+	})
 }
 
 func TestGetAccountStatement_ServiceErrors(t *testing.T) {
@@ -1831,6 +1915,7 @@ func TestGetAccountStatement_Period(t *testing.T) {
 
 	cursor := &statement.Cursor{
 		Navigation: statement.NavigationNext,
+		Order:      statement.OrderAsc,
 		Position: statement.Position{
 			RecordedAt: time.Date(2026, time.September, 5, 0, 0, 0, 0, time.UTC),
 			Sequence:   1,
@@ -1905,6 +1990,7 @@ func TestGetAccountStatement_Period(t *testing.T) {
 func TestGetAccountStatement_PeriodErrors(t *testing.T) {
 	cursor := &statement.Cursor{
 		Navigation: statement.NavigationNext,
+		Order:      statement.OrderAsc,
 		Position: statement.Position{
 			RecordedAt: time.Date(2026, time.September, 5, 0, 0, 0, 0, time.UTC),
 			Sequence:   1,

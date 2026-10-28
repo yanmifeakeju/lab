@@ -5,6 +5,8 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -659,5 +661,171 @@ func assertBetween(t *testing.T, name string, got, earliest, latest time.Time) {
 	t.Helper()
 	if got.Before(earliest) || got.After(latest) {
 		t.Errorf("%s = %v, want between %v and %v", name, got, earliest, latest)
+	}
+}
+
+func TestStore_GetStatement_DescOrder(t *testing.T) {
+	fixture := newPostEntryFixture(t)
+	store := postgres.NewWithStatementMargin(fixture.tx, 0)
+
+	for i := 1; i <= 7; i++ {
+		fixture.mustPost(t, journal.PostInput{
+			LedgerSlug:  "ngn_ng",
+			RequestID:   fmt.Sprintf("req_desc_%d", i),
+			Kind:        "payment",
+			Description: "Desc entry",
+			Lines: []journal.LineInput{
+				{
+					DebitAccountReference:  fixture.platform.Cash.Reference,
+					CreditAccountReference: fixture.payable.Reference,
+					Amount:                 int64(i * 100),
+					Purpose:                "Desc movement",
+				},
+			},
+		})
+	}
+
+	all, err := store.GetStatement(t.Context(), statement.ListInput{
+		AccountReference: fixture.payable.Reference,
+		Limit:            50,
+	})
+	if err != nil {
+		t.Fatalf("GetStatement(all) error = %v", err)
+	}
+	if len(all.Movements) != 7 {
+		t.Fatalf("len(all) = %d, want 7", len(all.Movements))
+	}
+
+	// The period holds movements 1..5: movement 0 sets the opening balance, and
+	// movement 6 sits at the exclusive end, so the first desc page must start
+	// below it.
+	m := all.Movements
+	from, to := m[1].RecordedAt, m[6].RecordedAt
+	input := func(order statement.Order, limit int, cursor *statement.Cursor) statement.ListInput {
+		return statement.ListInput{
+			AccountReference: fixture.payable.Reference,
+			From:             new(from),
+			To:               new(to),
+			Order:            order,
+			Limit:            limit,
+			Cursor:           cursor,
+		}
+	}
+	get := func(t *testing.T, in statement.ListInput) statement.Result {
+		t.Helper()
+		res, err := store.GetStatement(t.Context(), in)
+		if err != nil {
+			t.Fatalf("GetStatement() error = %v", err)
+		}
+		if res.OpeningBalance != m[0].BalanceAfter || res.ClosingBalance != m[5].BalanceAfter {
+			t.Errorf("balances = (%d, %d), want (%d, %d)",
+				res.OpeningBalance, res.ClosingBalance, m[0].BalanceAfter, m[5].BalanceAfter)
+		}
+		return res
+	}
+	walk := func(t *testing.T, order statement.Order) []statement.Result {
+		t.Helper()
+		pages := []statement.Result{get(t, input(order, 2, nil))}
+		for pages[len(pages)-1].Page.Next != nil {
+			if len(pages) > 10 {
+				t.Fatal("pagination did not terminate")
+			}
+			pages = append(pages, get(t, input(order, 2, pages[len(pages)-1].Page.Next)))
+		}
+		return pages
+	}
+
+	t.Run("first page is the newest movements", func(t *testing.T) {
+		res := get(t, input(statement.OrderDesc, 2, nil))
+		assertSequences(t, res.Movements, m[5], m[4])
+		if res.Movements[0].BalanceAfter != res.ClosingBalance {
+			t.Errorf("first BalanceAfter = %d, want closing %d", res.Movements[0].BalanceAfter, res.ClosingBalance)
+		}
+		if res.Page.Previous != nil || res.Page.Next == nil {
+			t.Errorf("cursors = (%v, %v), want (nil, non-nil)", res.Page.Previous, res.Page.Next)
+		}
+	})
+
+	t.Run("desc walk is the reverse of asc walk", func(t *testing.T) {
+		var asc, desc []statement.Movement
+		for _, p := range walk(t, statement.OrderAsc) {
+			asc = append(asc, p.Movements...)
+		}
+		descPages := walk(t, statement.OrderDesc)
+		for _, p := range descPages {
+			desc = append(desc, p.Movements...)
+		}
+		assertSequences(t, asc, m[1], m[2], m[3], m[4], m[5])
+		assertSequences(t, desc, m[5], m[4], m[3], m[2], m[1])
+
+		last := descPages[len(descPages)-1]
+		if len(descPages) != 3 || len(last.Movements) != 1 || last.Page.Next != nil || last.Page.Previous == nil {
+			t.Errorf("last of %d pages: %d movements, cursors = (%v, %v), want 3 pages ending in 1 movement with only previous",
+				len(descPages), len(last.Movements), last.Page.Previous, last.Page.Next)
+		}
+	})
+
+	t.Run("next then previous returns the same page", func(t *testing.T) {
+		pages := walk(t, statement.OrderDesc)
+		for i := 1; i < len(pages); i++ {
+			back := get(t, input(statement.OrderDesc, 2, pages[i].Page.Previous))
+			assertSequences(t, back.Movements, pages[i-1].Movements...)
+			if (back.Page.Previous == nil) != (i == 1) || back.Page.Next == nil {
+				t.Errorf("back to page %d cursors = (%v, %v)", i-1, back.Page.Previous, back.Page.Next)
+			}
+		}
+	})
+
+	t.Run("exactly limit movements is one page", func(t *testing.T) {
+		for _, order := range []statement.Order{statement.OrderAsc, statement.OrderDesc} {
+			res := get(t, input(order, 5, nil))
+			if len(res.Movements) != 5 || res.Page.Previous != nil || res.Page.Next != nil {
+				t.Errorf("%s: %d movements, cursors = (%v, %v), want 5 and none",
+					order, len(res.Movements), res.Page.Previous, res.Page.Next)
+			}
+		}
+	})
+
+	t.Run("cursor order replaces the requested order", func(t *testing.T) {
+		first := get(t, input(statement.OrderAsc, 2, nil))
+		res := get(t, input(statement.OrderDesc, 2, first.Page.Next))
+		assertSequences(t, res.Movements, m[3], m[4])
+		if res.Page.Next == nil || res.Page.Next.Order != statement.OrderAsc {
+			t.Errorf("Next = %v, want an asc cursor", res.Page.Next)
+		}
+	})
+
+	t.Run("empty period", func(t *testing.T) {
+		for _, order := range []statement.Order{statement.OrderAsc, statement.OrderDesc} {
+			res, err := store.GetStatement(t.Context(), statement.ListInput{
+				AccountReference: fixture.payable.Reference,
+				From:             new(time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)),
+				To:               new(time.Date(2025, time.February, 1, 0, 0, 0, 0, time.UTC)),
+				Order:            order,
+				Limit:            50,
+			})
+			if err != nil {
+				t.Fatalf("%s: GetStatement() error = %v", order, err)
+			}
+			if len(res.Movements) != 0 || res.OpeningBalance != 0 || res.ClosingBalance != 0 ||
+				res.Page.Previous != nil || res.Page.Next != nil {
+				t.Errorf("%s: %+v, want an empty statement", order, res)
+			}
+		}
+	})
+}
+
+func assertSequences(t *testing.T, got []statement.Movement, want ...statement.Movement) {
+	t.Helper()
+	gotSeq := make([]int64, len(got))
+	for i, m := range got {
+		gotSeq[i] = m.Sequence
+	}
+	wantSeq := make([]int64, len(want))
+	for i, m := range want {
+		wantSeq[i] = m.Sequence
+	}
+	if !slices.Equal(gotSeq, wantSeq) {
+		t.Errorf("sequences = %v, want %v", gotSeq, wantSeq)
 	}
 }

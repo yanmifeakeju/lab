@@ -25,6 +25,16 @@ const (
 	NavigationPrevious Navigation = "previous"
 )
 
+// Order is the order of a statement's movements and the direction of its next page.
+type Order string
+
+const (
+	// OrderAsc lists movements in the order they were applied to the account.
+	OrderAsc Order = "asc"
+	// OrderDesc lists movements newest first.
+	OrderDesc Order = "desc"
+)
+
 // A statement is historical, not a live view of the journal: its period ends at
 // least Margin before now, so every posting inside it has committed.
 const (
@@ -36,11 +46,13 @@ const (
 // ListInput contains the parameters for listing a payable account's statement.
 //
 // To defaults to Margin before now, and a later To is reduced to it. From
-// defaults to DefaultPeriod before the resolved To.
+// defaults to DefaultPeriod before the resolved To. Order defaults to OrderAsc,
+// and a Cursor's order replaces it.
 type ListInput struct {
 	AccountReference string
 	From             *time.Time
 	To               *time.Time
+	Order            Order
 	Limit            int
 	Cursor           *Cursor
 }
