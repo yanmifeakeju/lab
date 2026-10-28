@@ -1,6 +1,6 @@
 # @pay-tty/ledger-client
 
-Effect-native client generated from the repository's `openapi.yaml` contract.
+Effect-native client generated from the ledger's contract, `ledger/api/openapi.yaml`.
 
 Import application-facing APIs from the package root:
 

@@ -1,6 +1,6 @@
 import { Schema } from "effect"
 
-// Error bodies follow the ledger API's shapes (openapi.yaml), so a client reads
+// Error bodies follow the ledger API's shapes (ledger/api/openapi.yaml), so a client reads
 // both services' failures the same way.
 
 export const Location = Schema.Literals(["request", "path", "query", "header", "body"])

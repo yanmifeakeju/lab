@@ -2,7 +2,7 @@
   "$schema": "https://turborepo.com/schema.json",
   "globalDependencies": [
     ".oxlintrc.json",
-    "openapi.yaml",
+    "ledger/api/openapi.yaml",
     "tsconfig.json",
     "tools/oxlint/anti-slop/**"
   ],
