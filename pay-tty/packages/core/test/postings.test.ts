@@ -2,8 +2,8 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 
 import { PostJournalEntryRequestJson } from "@pay-tty/ledger-client"
-import { and, eq, inArray } from "drizzle-orm"
-import { Cause, ConfigProvider, DateTime, Deferred, Effect, Exit, Fiber, Layer, Predicate, Schema } from "effect"
+import { and, eq, inArray, sql } from "drizzle-orm"
+import { Cause, ConfigProvider, DateTime, Deferred, Duration, Effect, Exit, Fiber, Layer, Predicate, Schema } from "effect"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientError from "effect/unstable/http/HttpClientError"
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
@@ -11,7 +11,7 @@ import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse"
 import { ulid } from "ulid"
 
 import { Business } from "../src/business/business.ts"
-import { Database } from "../src/database/client.ts"
+import { Database, layer as DatabaseLayer } from "../src/database/client.ts"
 import { LedgerClient } from "../src/ledger/client.ts"
 import { LedgerPostings } from "../src/ledger/postings.ts"
 import { Ledger } from "../src/ledger/slug.ts"
@@ -112,6 +112,8 @@ interface Answer {
 
 type Reply = Answer | "unreachable"
 
+const isAnswer = (reply: Reply | Effect.Effect<Reply>): reply is Reply => !Effect.isEffect(reply)
+
 // The ledger's answer to a posting: the same entry for a replay of a key.
 const entry = (payload: Payload, journalRef: string, createdAt = "2026-10-26T14:02:00Z"): Answer => ({
   status: 201,
@@ -133,7 +135,7 @@ const refusal = (status: number, code: string): Reply => ({
 
 // The ledger service, faked at the HTTP boundary so the client and its
 // decoding still run.
-const fakeLedger = (reply: (sent: Sent) => Reply) => {
+const fakeLedger = (reply: (sent: Sent) => Reply | Effect.Effect<Reply>) => {
   const sent: Array<Sent> = []
 
   const http = HttpClient.make((request) =>
@@ -148,7 +150,8 @@ const fakeLedger = (reply: (sent: Sent) => Reply) => {
 
       sent.push(call)
 
-      const answer = reply(call)
+      const replied = reply(call)
+      const answer = isAnswer(replied) ? replied : yield* replied
 
       if (answer === "unreachable") {
         return yield* new HttpClientError.HttpClientError({
@@ -170,12 +173,90 @@ const fakeLedger = (reply: (sent: Sent) => Reply) => {
   return { sent, layer }
 }
 
-const send = (row: typeof ledgerPostings.$inferSelect) =>
+// Leases the row to a pass of the test's own, as a claim does.
+const leased = (id: string) =>
+  Effect.gen(function* () {
+    const database = yield* Database
+    const claim = LedgerPostings.ClaimID.make(`lclaim_${ulid()}`)
+
+    yield* database.use((db) =>
+      db
+        .update(ledgerPostings)
+        .set({ claimId: claim, claimedUntil: sql`now() + interval '1 minute'` })
+        .where(eq(ledgerPostings.id, id)),
+    )
+
+    return claim
+  })
+
+const send = (row: typeof ledgerPostings.$inferSelect, claim?: LedgerPostings.ClaimID) =>
   Effect.gen(function* () {
     const postings = yield* LedgerPostings.Service
 
-    return yield* postings.send(asPosting(row))
+    return yield* postings.send(claim ?? (yield* leased(row.id)), asPosting(row))
   })
+
+// Whether each row's lease has ended, by the database's clock, and who held it.
+const leasesOf = (ids: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const database = yield* Database
+
+    const rows = yield* database.use((db) =>
+      db
+        .select({
+          id: ledgerPostings.id,
+          claimId: ledgerPostings.claimId,
+          ended: sql<boolean>`${ledgerPostings.claimedUntil} <= now()`,
+        })
+        .from(ledgerPostings)
+        .where(inArray(ledgerPostings.id, [...ids])),
+    )
+
+    return new Map(rows.map((row) => [row.id, row]))
+  })
+
+// The database, with every statement after the first `ok` failing as a lost
+// connection would.
+const failingAfter = (ok: number) =>
+  Layer.effect(Database)(
+    Effect.gen(function* () {
+      const database = yield* Database
+      let statements = 0
+
+      return Database.of({
+        use: (query) => (statements++ < ok ? database.use(query) : Effect.die(new Error("connection lost"))),
+        transaction: database.transaction,
+      })
+    }),
+  )
+
+// The database, with the first statement held until `go` and then run to the
+// end whatever its caller does, as a query already sent would be.
+const heldFirst = (sent: Deferred.Deferred<void>, go: Deferred.Deferred<void>, done: Deferred.Deferred<void>) =>
+  Layer.effect(Database)(
+    Effect.gen(function* () {
+      const database = yield* Database
+      let statements = 0
+
+      return Database.of({
+        use: (query) =>
+          statements++ > 0
+            ? database.use(query)
+            : Effect.gen(function* () {
+                const context = yield* Effect.context<never>()
+
+                const run = Deferred.succeed(sent, undefined).pipe(
+                  Effect.andThen(Deferred.await(go)),
+                  Effect.andThen(database.use(query)),
+                  Effect.ensuring(Deferred.succeed(done, undefined)),
+                )
+
+                return yield* Effect.promise(() => Effect.runPromiseWith(context)(run))
+              }),
+        transaction: database.transaction,
+      })
+    }),
+  )
 
 void test("a succeeded payment commits with one posting of its amount from cash to the business's account", () =>
   runtime.runPromise(
@@ -455,16 +536,35 @@ void test("a relay pass sends what is waiting and stops at the first posting the
         assert.deepEqual(after.get(second?.id ?? ""), ["created", 1])
         assert.deepEqual(after.get(third?.id ?? ""), ["created", 0], "not sent once the ledger was down")
 
-        // Back up: the rest go through, and a pass with nothing to send is quiet.
+        // The retried posting and the unsent one are released, still naming
+        // the pass that held them.
+        const leases = yield* leasesOf([first, second, third].map((row) => row?.id ?? ""))
+        const claim = leases.get(first?.id ?? "")?.claimId
+
+        assert.ok(claim !== null && claim !== undefined)
+
+        for (const id of [second?.id, third?.id]) {
+          assert.deepEqual([leases.get(id ?? "")?.claimId, leases.get(id ?? "")?.ended], [claim, true])
+        }
+
+        // Back up: the rest go through in order, and a pass with nothing to
+        // send is quiet.
         const up = fakeLedger(({ payload, key }) => entry(payload, `jrn_${key}`))
 
         yield* relay(up.layer)
         assert.deepEqual((yield* postingsOf(ids)).map((row) => row.state), ["posted", "posted", "posted"])
+        assert.deepEqual(
+          up.sent.map((call) => call.key).filter((key) => key === second?.id || key === third?.id),
+          [second?.id, third?.id],
+        )
 
-        const sent = up.sent.length
+        // Only ours: other files may commit postings while this runs.
+        const ours = new Set([first?.id, second?.id, third?.id])
+        const sent = () => up.sent.filter((call) => ours.has(call.key ?? "")).length
+        const before = sent()
 
         yield* relay(up.layer)
-        assert.equal(up.sent.length, sent)
+        assert.equal(sent(), before)
       }),
     ),
   ))
@@ -518,52 +618,342 @@ void test("a posting the ledger will never take leaves the queue, and the rest o
     ),
   ))
 
-// Committed, so a second transaction can see the rows the first one locks.
-void test("a claim skips postings another transaction holds", () =>
+void test("a send records nothing on a claim it no longer holds", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const database = yield* Database
+        const { business } = yield* createBusiness()
+        const row = yield* postingOf((yield* paid(yield* linkOf(business.id))).id)
+
+        // The stale pass's lease expired, and another pass took the row over.
+        const stale = yield* leased(row.id)
+        const current = yield* leased(row.id)
+
+        const replies: ReadonlyArray<readonly [LedgerPostings.Outcome, (sent: Sent) => Reply]> = [
+          ["posted", ({ payload }) => entry(payload, "jrn_stale")],
+          ["refused", () => refusal(409, "account_closed")],
+          ["retrying", () => "unreachable"],
+        ]
+
+        for (const [expected, reply] of replies) {
+          assert.equal(yield* send(row, stale).pipe(Effect.provide(fakeLedger(reply).layer)), expected)
+
+          const stored = yield* postingOf(row.paymentId ?? "")
+
+          assert.deepEqual(
+            [stored.state, stored.attempts, stored.journalRef, stored.errorCode, stored.claimId],
+            ["created", 0, null, null, current],
+            expected,
+          )
+        }
+
+        const ledger = fakeLedger(({ payload }) => entry(payload, "jrn_current"))
+
+        assert.equal(yield* send(row, current).pipe(Effect.provide(ledger.layer)), "posted")
+
+        const posted = yield* postingOf(row.paymentId ?? "")
+
+        assert.deepEqual([posted.state, posted.attempts, posted.journalRef], ["posted", 1, "jrn_current"])
+
+        // Resolved once: the stale pass can't move it again either.
+        yield* database.use((db) => db.update(ledgerPostings).set({ claimId: stale }).where(eq(ledgerPostings.id, row.id)))
+        yield* send(row, stale).pipe(Effect.provide(fakeLedger(() => refusal(409, "account_closed")).layer))
+        assert.equal((yield* postingOf(row.paymentId ?? "")).state, "posted")
+      }),
+    ),
+  ))
+
+// Committed, so claims on their own connections see each other's leases.
+void test("a claim skips postings under another pass's lease, takes them once it expires, and never shares them", () =>
   runtime.runPromise(
     Effect.gen(function* () {
       const database = yield* Database
       const { business } = yield* createBusiness()
-      const row = yield* postingOf((yield* paid(yield* linkOf(business.id))).id)
+      const link = yield* linkOf(business.id)
+      const ids = [(yield* paid(link)).id, (yield* paid(link)).id, (yield* paid(link)).id]
+      const rows = yield* Effect.forEach(ids, postingOf)
+      const ours = new Set(rows.map((row) => row.id))
 
       const claim = Effect.gen(function* () {
         const postings = yield* LedgerPostings.Service
+        const claimed = yield* postings.claim(1_000)
 
-        return (yield* postings.claim(1_000)).map((posting): string => posting.id)
+        return claimed.postings.map((posting): string => posting.id).filter((id) => ours.has(id))
       }).pipe(Effect.provide(fakeLedger(() => "unreachable").layer))
 
-      yield* Effect.gen(function* () {
-        const claimed = yield* Deferred.make<ReadonlyArray<string>>()
-        const release = yield* Deferred.make<void>()
-
-        const holder = yield* Effect.forkChild(
-          database.transaction(
-            Effect.gen(function* () {
-              yield* Deferred.succeed(claimed, yield* claim)
-              yield* Deferred.await(release)
-            }),
-          ),
+      const expire = (id: string) =>
+        database.use((db) =>
+          db
+            .update(ledgerPostings)
+            .set({ claimedUntil: sql`now() - interval '1 second'` })
+            .where(eq(ledgerPostings.id, id)),
         )
 
-        const held = yield* Deferred.await(claimed)
-        const others = yield* database.transaction(claim)
+      yield* Effect.gen(function* () {
+        // Oldest first.
+        assert.deepEqual(yield* claim, rows.map((row) => row.id))
 
-        yield* Deferred.succeed(release, undefined)
-        yield* Fiber.join(holder)
+        // A pass that died after claiming holds them until the lease expires.
+        assert.deepEqual(yield* claim, [])
 
-        assert.ok(held.includes(row.id))
-        assert.ok(!others.includes(row.id))
+        yield* expire(rows[1]?.id ?? "")
+        assert.deepEqual(yield* claim, [rows[1]?.id])
 
-        // Released, it is claimed again.
-        assert.ok((yield* database.transaction(claim)).includes(row.id))
+        yield* Effect.forEach(ids, (id) => Effect.andThen(postingOf(id), (row) => expire(row.id)))
+
+        const [one, other] = yield* Effect.all([claim, claim], { concurrency: 2 })
+
+        assert.deepEqual(one.filter((id) => other.includes(id)), [])
+        assert.deepEqual(new Set([...one, ...other]), ours)
       }).pipe(
         // Leaves nothing for other tests' relays to send.
         Effect.ensuring(
           database.use((db) =>
-            db.update(ledgerPostings).set({ state: "refused", errorCode: "test_cleanup" }).where(eq(ledgerPostings.id, row.id)),
+            db.update(ledgerPostings).set({ state: "refused", errorCode: "test_cleanup" }).where(inArray(ledgerPostings.id, [...ours])),
           ),
         ),
       )
+    }),
+  ))
+
+void test("a pass whose claim fails sends nothing", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const { business } = yield* createBusiness()
+        const row = yield* postingOf((yield* paid(yield* linkOf(business.id))).id)
+        const ledger = fakeLedger(({ payload }) => entry(payload, "jrn_unsent"))
+
+        const exit = yield* Effect.exit(relay(ledger.layer.pipe(Layer.provide(failingAfter(0)))))
+
+        assert.ok(Exit.hasDies(exit))
+        assert.deepEqual(ledger.sent, [])
+
+        const stored = yield* postingOf(row.paymentId ?? "")
+
+        assert.deepEqual([stored.state, stored.attempts, stored.claimId], ["created", 0, null])
+      }),
+    ),
+  ))
+
+void test("a posting the ledger took but plane never recorded is posted from the replay once its lease expires", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const database = yield* Database
+        const { business } = yield* createBusiness()
+        const row = yield* postingOf((yield* paid(yield* linkOf(business.id))).id)
+
+        // The ledger keeps the first entry per key and replays it.
+        const posted = new Map<string, string>()
+
+        const ledger = fakeLedger(({ payload, key }) => {
+          const journalRef = posted.get(key ?? "") ?? `jrn_${ulid()}`
+
+          posted.set(key ?? "", journalRef)
+
+          return entry(payload, journalRef)
+        })
+
+        // Only the claim gets through: recording and releasing both fail.
+        assert.ok(Exit.hasDies(yield* Effect.exit(relay(ledger.layer.pipe(Layer.provide(failingAfter(1)))))))
+
+        const unrecorded = yield* postingOf(row.paymentId ?? "")
+        const journalRef = posted.get(row.id)
+
+        assert.ok(journalRef !== undefined, "the ledger posted it")
+        assert.deepEqual([unrecorded.state, unrecorded.attempts], ["created", 0])
+        assert.equal((yield* leasesOf([row.id])).get(row.id)?.ended, false, "still claimed")
+
+        // Leased, it waits; expired, the next pass gets the replay.
+        yield* relay(ledger.layer)
+        assert.equal((yield* postingOf(row.paymentId ?? "")).state, "created")
+
+        yield* database.use((db) =>
+          db.update(ledgerPostings).set({ claimedUntil: sql`now() - interval '1 second'` }).where(eq(ledgerPostings.id, row.id)),
+        )
+        yield* relay(ledger.layer)
+
+        const stored = yield* postingOf(row.paymentId ?? "")
+
+        assert.deepEqual([stored.state, stored.journalRef, stored.attempts], ["posted", journalRef, 1])
+      }),
+    ),
+  ))
+
+void test("a ledger slower than the send timeout leaves the posting to retry, and the resend posts the replay", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const { business } = yield* createBusiness()
+        const link = yield* linkOf(business.id)
+        const ids = [(yield* paid(link)).id, (yield* paid(link)).id]
+        const [slow, behind] = yield* Effect.forEach(ids, postingOf)
+
+        // It posts at once but answers the first time only after the relay
+        // gave up on it.
+        let answered = false
+
+        const ledger = fakeLedger(({ payload, key }) => {
+          const answer = entry(payload, `jrn_${key}`)
+
+          if (key !== slow?.id || answered) {
+            return answer
+          }
+
+          answered = true
+
+          return Effect.as(Effect.sleep(Duration.sum(LedgerPostings.sendTimeout, Duration.seconds(1))), answer)
+        })
+
+        assert.ok(Predicate.isTagged(yield* Effect.flip(relay(ledger.layer)), "LedgerPostings.UnavailableError"))
+
+        const after = new Map((yield* postingsOf(ids)).map((row) => [row.id, [row.state, row.attempts]]))
+
+        assert.deepEqual(after.get(slow?.id ?? ""), ["created", 1])
+        assert.deepEqual(after.get(behind?.id ?? ""), ["created", 0])
+        const leases = yield* leasesOf([slow?.id ?? "", behind?.id ?? ""])
+
+        assert.deepEqual([...leases.values()].map((lease) => lease.ended), [true, true], "released")
+
+        yield* relay(ledger.layer)
+
+        const stored = yield* postingOf(slow?.paymentId ?? "")
+
+        assert.deepEqual([stored.state, stored.journalRef, stored.attempts], ["posted", `jrn_${slow?.id}`, 2])
+      }),
+    ),
+  ))
+
+void test("an interrupted pass releases what it left unsent", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const { business } = yield* createBusiness()
+        const link = yield* linkOf(business.id)
+        const ids = [(yield* paid(link)).id, (yield* paid(link)).id]
+        const [first] = yield* Effect.forEach(ids, postingOf)
+        const calling = yield* Deferred.make<void>()
+
+        const ledger = fakeLedger(({ payload, key }) =>
+          key === first?.id ? Effect.andThen(Deferred.succeed(calling, undefined), Effect.never) : entry(payload, `jrn_${key}`),
+        )
+
+        const pass = yield* Effect.forkChild(relay(ledger.layer))
+
+        yield* Deferred.await(calling)
+        yield* Fiber.interrupt(pass)
+
+        const rows = yield* postingsOf(ids)
+        const leases = yield* leasesOf(rows.map((row) => row.id))
+
+        for (const row of rows) {
+          assert.deepEqual([row.state, leases.get(row.id)?.ended], ["created", true])
+          assert.ok(row.claimId !== null)
+        }
+      }),
+    ),
+  ))
+
+void test("a pass interrupted while claiming still releases what the claim took", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const { business } = yield* createBusiness()
+        const link = yield* linkOf(business.id)
+        const ids = [(yield* paid(link)).id, (yield* paid(link)).id]
+        const rows = yield* postingsOf(ids)
+        const ledger = fakeLedger(({ payload, key }) => entry(payload, `jrn_${key}`))
+        const [sent, go, done] = yield* Effect.all([Deferred.make<void>(), Deferred.make<void>(), Deferred.make<void>()])
+
+        const pass = yield* Effect.forkChild(relay(ledger.layer.pipe(Layer.provide(heldFirst(sent, go, done)))))
+
+        yield* Deferred.await(sent)
+
+        // Interrupted while the claim is on the wire; the claim then lands.
+        const interrupting = yield* Effect.forkChild(Fiber.interrupt(pass))
+
+        yield* Effect.sleep("20 millis")
+        yield* Deferred.succeed(go, undefined)
+        yield* Fiber.join(interrupting)
+        yield* Deferred.await(done)
+
+        assert.deepEqual(ledger.sent, [])
+
+        const leases = yield* leasesOf(rows.map((row) => row.id))
+
+        for (const row of rows) {
+          const lease = leases.get(row.id)
+
+          assert.ok(lease?.claimId !== null, "claimed")
+          assert.equal(lease?.ended, true, "released")
+        }
+      }),
+    ),
+  ))
+
+// Committed, so another connection can see what the relay has recorded and
+// what it still holds.
+void test("the relay holds no connection or lock while the ledger answers", () =>
+  runtime.runPromise(
+    Effect.gen(function* () {
+      const database = yield* Database
+      const { business } = yield* createBusiness()
+      const link = yield* linkOf(business.id)
+      const ids = [(yield* paid(link)).id, (yield* paid(link)).id]
+      const [first, second] = yield* Effect.forEach(ids, postingOf)
+
+      // Asked from a pool of its own, so it can't join anything the relay
+      // has open.
+      const seen = Effect.gen(function* () {
+        const elsewhere = yield* Database
+
+        const recorded = yield* elsewhere.use((db) =>
+          db.select({ state: ledgerPostings.state }).from(ledgerPostings).where(eq(ledgerPostings.id, first?.id ?? "")),
+        )
+
+        const lockable = yield* Effect.exit(
+          elsewhere.transaction(
+            elsewhere.use((db) =>
+              db
+                .select({ id: ledgerPostings.id })
+                .from(ledgerPostings)
+                .where(eq(ledgerPostings.id, second?.id ?? ""))
+                .for("update", { noWait: true }),
+            ),
+          ),
+        )
+
+        return [recorded[0]?.state, Exit.isSuccess(lockable)] as const
+      }).pipe(Effect.provide(DatabaseLayer), Effect.orDie)
+
+      const checks: Array<readonly [string | undefined, boolean]> = []
+
+      const ledger = fakeLedger(({ payload, key }) => {
+        const answer = entry(payload, `jrn_${key}`)
+
+        return key === second?.id
+          ? seen.pipe(
+            Effect.tap((check) => Effect.sync(() => checks.push(check))),
+            Effect.as(answer),
+          )
+          : answer
+      })
+
+      yield* relay(ledger.layer).pipe(
+        Effect.ensuring(
+          database.use((db) =>
+            db
+              .update(ledgerPostings)
+              .set({ state: "refused", errorCode: "test_cleanup" })
+              .where(and(inArray(ledgerPostings.id, [first?.id ?? "", second?.id ?? ""]), eq(ledgerPostings.state, "created"))),
+          ),
+        ),
+      )
+
+      assert.deepEqual(checks, [["posted", true]])
+      assert.deepEqual((yield* postingsOf(ids)).map((row) => row.state), ["posted", "posted"])
     }),
   ))
 

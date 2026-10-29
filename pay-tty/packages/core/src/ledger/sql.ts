@@ -114,6 +114,11 @@ export const ledgerPostings = pgTable(
     errorCode: text("error_code"),
     attempts: integer("attempts").default(0).notNull(),
     lastAttemptAt: at("last_attempt_at"),
+    // The relay pass leasing the row, until claimed_until. Its writes match
+    // claim_id, so a pass whose lease was taken over changes nothing. Both
+    // stay once the row resolves, naming the pass that last held it.
+    claimId: text("claim_id"),
+    claimedUntil: at("claimed_until"),
     ...createdAt,
     // When the ledger accepted the first entry.
     recordedAt: at("recorded_at"),
@@ -140,6 +145,7 @@ export const ledgerPostings = pgTable(
           and ${table.errorCode} is not null and ${table.resolutionRef} is null)`,
     ),
     check("ledger_postings_recorded_with_journal", sql`(${table.journalRef} is null) = (${table.recordedAt} is null)`),
+    check("ledger_postings_claimed_together", sql`(${table.claimId} is null) = (${table.claimedUntil} is null)`),
     uniqueIndex("ledger_postings_payment_unique").on(table.paymentId).where(sql`${table.paymentId} is not null`),
     index("ledger_postings_created_idx").on(table.createdAt).where(sql`${table.state} = 'created'`),
   ],
