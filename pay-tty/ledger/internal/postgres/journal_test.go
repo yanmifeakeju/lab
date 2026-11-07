@@ -1373,9 +1373,6 @@ func assertPostedEntry(t *testing.T, tx *sql.Tx, got journal.Entry, want postedE
 	if got.Description != want.Description {
 		t.Errorf("entry Description = %q, want %q", got.Description, want.Description)
 	}
-	if got.ExpiresAt != nil {
-		t.Errorf("entry ExpiresAt = %v, want nil", got.ExpiresAt)
-	}
 	if !got.EffectiveAt.Equal(want.EffectiveAt) {
 		t.Errorf("entry EffectiveAt = %v, want %v", got.EffectiveAt, want.EffectiveAt)
 	}
@@ -1384,22 +1381,23 @@ func assertPostedEntry(t *testing.T, tx *sql.Tx, got journal.Entry, want postedE
 	}
 
 	const query = `
-		SELECT ledger_id, pending_entry_id IS NULL
-		FROM journal_entries
-		WHERE public_ref = $1`
+		SELECT entry.ledger_id, auth.id IS NULL
+		FROM journal_entries entry
+		LEFT JOIN authorizations auth ON auth.entry_id = entry.id
+		WHERE entry.public_ref = $1`
 
 	var (
-		ledgerID           int
-		pendingEntryIsNull bool
+		ledgerID        int
+		noAuthorization bool
 	)
-	if err := tx.QueryRowContext(t.Context(), query, got.Reference).Scan(&ledgerID, &pendingEntryIsNull); err != nil {
+	if err := tx.QueryRowContext(t.Context(), query, got.Reference).Scan(&ledgerID, &noAuthorization); err != nil {
 		t.Fatalf("read journal entry %s: %v", got.Reference, err)
 	}
 	if ledgerID != want.LedgerID {
 		t.Errorf("entry ledger_id = %d, want %d", ledgerID, want.LedgerID)
 	}
-	if !pendingEntryIsNull {
-		t.Error("entry pending_entry_id is set, want NULL")
+	if !noAuthorization {
+		t.Error("immediate entry has an authorization, want none")
 	}
 }
 

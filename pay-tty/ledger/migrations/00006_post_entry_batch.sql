@@ -24,11 +24,15 @@
 --   LG026  batch_lines_exceeded (exceeds 5,000 lines total)
 --   LG027  batch_too_small (fewer than 10 entries)
 --
+--
 -- Per-entry rejection codes (individual entry outcome):
 --   account_not_found
 --   account_closed
 --   insufficient_funds
 --   idempotency_conflict
+--
+-- Pending entries are checked and posted as in post_entry(): they move the
+-- pending counters, write no movements and open an authorization.
 
 -- batch_claim_known_entries() marks every still-pending entry whose request id
 -- already exists in the ledger: existing when the fingerprint matches,
@@ -96,8 +100,6 @@ RETURNS TABLE (
   out_kind             text,
   out_state            text,
   out_description      text,
-  out_expires_at       timestamp with time zone,
-  out_pending_entry_id bigint,
   out_effective_at     timestamp with time zone,
   out_created_at       timestamp with time zone
 )
@@ -147,6 +149,7 @@ BEGIN
     kind             text NOT NULL,
     description      text NOT NULL,
     effective_at     timestamp with time zone,
+    pending          boolean NOT NULL,
     fingerprint      text NOT NULL,
     status           text NOT NULL DEFAULT 'pending',
     error_code       text,
@@ -165,6 +168,7 @@ BEGIN
     kind,
     description,
     effective_at,
+    pending,
     fingerprint,
     lines
   )
@@ -174,20 +178,20 @@ BEGIN
     entry.val->>'public_ref',
     entry.val->>'kind',
     entry.val->>'description',
-    CASE
-      WHEN entry.val->>'effective_at' IS NOT NULL
-      THEN (entry.val->>'effective_at')::timestamp with time zone
-      ELSE NULL
-    END,
+    (entry.val->>'effective_at')::timestamp with time zone,
+    coalesce((entry.val->>'pending')::boolean, false),
     journal_fingerprint(
       p_ledger_slug,
       entry.val->>'kind',
       entry.val->>'description',
       (entry.val->>'effective_at')::timestamp with time zone,
-      entry.val->'lines'
+      entry.val->'lines',
+      coalesce((entry.val->>'pending')::boolean, false)
     ),
     entry.val->'lines'
   FROM jsonb_array_elements(p_entries) WITH ORDINALITY AS entry(val, ord);
+
+
 
   -- Check for duplicate idempotency keys within the batch
   SELECT count(*), count(DISTINCT bw.request_id)
@@ -242,7 +246,6 @@ BEGIN
       request_id,
       fingerprint,
       kind,
-      state,
       description,
       effective_at
     )
@@ -252,7 +255,6 @@ BEGIN
       w.request_id,
       w.fingerprint,
       w.kind,
-      'posted',
       w.description,
       coalesce(w.effective_at, now())
     FROM pg_temp.batch_entries_work w
@@ -448,7 +450,7 @@ BEGIN
 
   -- Iterate through claimed entries in request order
   FOR v_cur_entry IN
-    SELECT w.entry_index
+    SELECT w.entry_index, w.pending
     FROM pg_temp.batch_entries_work w
     WHERE w.status = 'claimed'
     ORDER BY w.entry_index
@@ -470,16 +472,29 @@ BEGIN
       JOIN pg_temp.batch_account_balances b ON b.account_id = t.account_id
       WHERE t.entry_index = v_cur_entry.entry_index
     LOOP
-      IF account_limit_exceeded(
-        v_acct.debits_must_not_exceed_credits,
-        v_acct.credits_must_not_exceed_debits,
-        v_acct.debits_pending,
-        v_acct.credits_pending,
-        v_acct.debits_posted,
-        v_acct.credits_posted,
-        v_acct.entry_debit,
-        v_acct.entry_credit
-      ) THEN
+      -- A pending credit is not yet spendable, so it is counted as pending.
+      IF (CASE
+        WHEN v_cur_entry.pending THEN account_limit_exceeded(
+          v_acct.debits_must_not_exceed_credits,
+          v_acct.credits_must_not_exceed_debits,
+          v_acct.debits_pending + v_acct.entry_debit,
+          v_acct.credits_pending + v_acct.entry_credit,
+          v_acct.debits_posted,
+          v_acct.credits_posted,
+          0,
+          0
+        )
+        ELSE account_limit_exceeded(
+          v_acct.debits_must_not_exceed_credits,
+          v_acct.credits_must_not_exceed_debits,
+          v_acct.debits_pending,
+          v_acct.credits_pending,
+          v_acct.debits_posted,
+          v_acct.credits_posted,
+          v_acct.entry_debit,
+          v_acct.entry_credit
+        )
+      END) THEN
         v_entry_ok := false;
         EXIT;
       END IF;
@@ -488,8 +503,14 @@ BEGIN
     IF v_entry_ok THEN
       -- Update running balances
       UPDATE pg_temp.batch_account_balances b
-      SET debits_posted = b.debits_posted + t.debit,
-          credits_posted = b.credits_posted + t.credit
+      SET debits_posted = b.debits_posted
+            + CASE WHEN v_cur_entry.pending THEN 0 ELSE t.debit END,
+          credits_posted = b.credits_posted
+            + CASE WHEN v_cur_entry.pending THEN 0 ELSE t.credit END,
+          debits_pending = b.debits_pending
+            + CASE WHEN v_cur_entry.pending THEN t.debit ELSE 0 END,
+          credits_pending = b.credits_pending
+            + CASE WHEN v_cur_entry.pending THEN t.credit ELSE 0 END
       FROM pg_temp.batch_entry_totals t
       WHERE t.entry_index = v_cur_entry.entry_index
         AND t.account_id = b.account_id;
@@ -533,7 +554,7 @@ BEGIN
     bl.credit_account_id,
     bl.line_number,
     bl.amount,
-    'posted',
+    CASE WHEN w.pending THEN 'pending' ELSE 'posted' END,
     bl.purpose
   FROM pg_temp.batch_lines_work bl
   JOIN pg_temp.batch_entries_work w ON w.entry_index = bl.entry_index
@@ -555,6 +576,7 @@ BEGIN
     JOIN pg_temp.batch_entries_work w ON w.entry_index = bl.entry_index
     JOIN accounts a ON a.id = bl.debit_account_id
     WHERE w.status = 'created'
+      AND NOT w.pending
       AND a.records_movements = true
 
     UNION ALL
@@ -572,6 +594,7 @@ BEGIN
     JOIN pg_temp.batch_entries_work w ON w.entry_index = bl.entry_index
     JOIN accounts a ON a.id = bl.credit_account_id
     WHERE w.status = 'created'
+      AND NOT w.pending
       AND a.records_movements = true
   ),
   account_prev AS (
@@ -625,11 +648,13 @@ BEGIN
     FROM inserted_movements im
     GROUP BY im.account_id
   ),
-  batch_account_posted_totals AS (
+  batch_account_totals AS (
     SELECT
       t.account_id,
-      sum(t.debit)::bigint AS total_debit,
-      sum(t.credit)::bigint AS total_credit
+      sum(t.debit) FILTER (WHERE NOT w.pending)::bigint AS posted_debit,
+      sum(t.credit) FILTER (WHERE NOT w.pending)::bigint AS posted_credit,
+      sum(t.debit) FILTER (WHERE w.pending)::bigint AS pending_debit,
+      sum(t.credit) FILTER (WHERE w.pending)::bigint AS pending_credit
     FROM pg_temp.batch_entry_totals t
     JOIN pg_temp.batch_entries_work w ON w.entry_index = t.entry_index
     WHERE w.status = 'created'
@@ -637,15 +662,25 @@ BEGIN
   )
   -- 10. Update tracked account counters once
   UPDATE accounts a
-  SET debits_posted = a.debits_posted + coalesce(tot.total_debit, 0),
-      credits_posted = a.credits_posted + coalesce(tot.total_credit, 0),
+  SET debits_posted = a.debits_posted + coalesce(tot.posted_debit, 0),
+      credits_posted = a.credits_posted + coalesce(tot.posted_credit, 0),
+      debits_pending = a.debits_pending + coalesce(tot.pending_debit, 0),
+      credits_pending = a.credits_pending + coalesce(tot.pending_credit, 0),
       movement_count = a.movement_count + coalesce(mc.cnt, 0)
-  FROM batch_account_posted_totals tot
+  FROM batch_account_totals tot
   LEFT JOIN movement_counts mc ON mc.account_id = tot.account_id
   WHERE a.id = tot.account_id
     AND a.tracks_balance;
 
-  -- 11. Return results in request order
+  INSERT INTO authorizations (ledger_id, entry_id)
+  SELECT v_ledger.id, w.entry_id
+  FROM pg_temp.batch_entries_work w
+  WHERE w.status = 'created'
+    AND w.pending
+  ORDER BY w.entry_id;
+
+  -- 11. Return results in request order. Replays report the entry's current
+  -- state, which an authorization may have moved on since.
   RETURN QUERY
   SELECT
     w.entry_index AS out_entry_index,
@@ -657,17 +692,17 @@ BEGIN
     w.public_ref AS out_public_ref,
     v_ledger.id AS out_ledger_id,
     w.kind AS out_kind,
-    -- Note: out_state is 'posted' and out_expires_at / out_pending_entry_id are NULL because
-    -- this routine currently only posts immediate entries. When authorizations/pending entries
-    -- and resolution routines are integrated, existing hits on authorizations will need to reflect
-    -- the stored entry's actual state, expires_at, and pending_entry_id.
-    'posted'::text AS out_state,
+    CASE
+      WHEN w.status = 'rejected' THEN NULL
+      ELSE coalesce(auth.state, 'posted')
+    END AS out_state,
     w.description AS out_description,
-    NULL::timestamp with time zone AS out_expires_at,
-    NULL::bigint AS out_pending_entry_id,
     w.effective_at AS out_effective_at,
     w.created_at AS out_created_at
   FROM pg_temp.batch_entries_work w
+  LEFT JOIN authorizations auth
+    ON auth.entry_id = w.entry_id
+   AND w.status <> 'rejected'
   ORDER BY w.entry_index;
 
 END $$;

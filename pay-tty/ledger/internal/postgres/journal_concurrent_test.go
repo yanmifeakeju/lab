@@ -346,6 +346,7 @@ func newCommittedPostEntryFixture(t *testing.T) committedPostEntryFixture {
 			arg   any
 		}{
 			{`DELETE FROM account_movements WHERE account_id IN (SELECT id FROM accounts WHERE ledger_id = $1)`, ledgerID},
+			{`DELETE FROM authorizations WHERE ledger_id = $1`, ledgerID},
 			{`DELETE FROM journal_lines WHERE ledger_id = $1`, ledgerID},
 			{`DELETE FROM journal_entries WHERE ledger_id = $1`, ledgerID},
 			{`DELETE FROM accounts WHERE ledger_id = $1`, ledgerID},

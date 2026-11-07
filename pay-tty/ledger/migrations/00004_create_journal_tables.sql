@@ -6,10 +6,7 @@ CREATE TABLE "journal_entries" (
 	"request_id" text NOT NULL,
 	"fingerprint" text NOT NULL,
 	"kind" text NOT NULL,
-	"state" text NOT NULL,
 	"description" text NOT NULL,
-	"expires_at" timestamp with time zone,
-	"pending_entry_id" bigint,
 	"effective_at" timestamp with time zone NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "journal_entries_public_ref_unique" UNIQUE ("public_ref"),
@@ -21,21 +18,13 @@ CREATE TABLE "journal_entries" (
 	CONSTRAINT "journal_entries_kind_length" CHECK (length("journal_entries"."kind") <= 64),
 	CONSTRAINT "journal_entries_description_not_blank" CHECK ("journal_entries"."description" ~ '\S'),
 	CONSTRAINT "journal_entries_description_length" CHECK (length("journal_entries"."description") <= 500),
-	CONSTRAINT "journal_entries_state_valid" CHECK ("journal_entries"."state" in ('pending', 'posted', 'captured', 'voided', 'expired')),
-	CONSTRAINT "journal_entries_pending_has_expiry" CHECK ("journal_entries"."state" <> 'pending' or "journal_entries"."expires_at" is not null),
-	CONSTRAINT "journal_entries_terminal_has_expiry" CHECK ("journal_entries"."state" not in ('captured', 'voided', 'expired') or "journal_entries"."expires_at" is not null),
-	CONSTRAINT "journal_entries_resolution_is_posted" CHECK ("journal_entries"."pending_entry_id" is null or "journal_entries"."state" = 'posted'),
-	CONSTRAINT "journal_entries_not_self_referencing" CHECK ("journal_entries"."pending_entry_id" is null or "journal_entries"."pending_entry_id" <> "journal_entries"."id"),
 	CONSTRAINT "journal_entries_id_ledger_id_unique" UNIQUE ("id", "ledger_id"),
 	CONSTRAINT "journal_entries_ledger_request_id_unique" UNIQUE ("ledger_id", "request_id")
 );
 
 ALTER TABLE "journal_entries" ADD CONSTRAINT "journal_entries_ledger_id_ledgers_id_fk" FOREIGN KEY ("ledger_id") REFERENCES "public"."ledgers"("id") ON DELETE no action ON UPDATE no action;
-ALTER TABLE "journal_entries" ADD CONSTRAINT "journal_entries_pending_entry_ledger_fk" FOREIGN KEY ("pending_entry_id", "ledger_id") REFERENCES "public"."journal_entries"("id", "ledger_id") ON DELETE no action ON UPDATE no action;
 
-CREATE UNIQUE INDEX "journal_entries_pending_entry_key" ON "journal_entries" USING btree ("pending_entry_id") WHERE "pending_entry_id" is not null;
 CREATE INDEX "journal_entries_ledger_effective_idx" ON "journal_entries" USING btree ("ledger_id", "effective_at" DESC, "id" DESC);
-CREATE INDEX "journal_entries_expiry_idx" ON "journal_entries" USING btree ("expires_at") WHERE "state" = 'pending';
 
 ALTER TABLE "accounts" ADD CONSTRAINT "accounts_id_ledger_id_unique" UNIQUE ("id", "ledger_id");
 
@@ -64,6 +53,54 @@ ALTER TABLE "journal_lines" ADD CONSTRAINT "journal_lines_credit_account_ledger_
 
 CREATE INDEX "journal_lines_debit_account_idx" ON "journal_lines" USING btree ("debit_account_id", "ledger_id", "journal_entry_id");
 CREATE INDEX "journal_lines_credit_account_idx" ON "journal_lines" USING btree ("credit_account_id", "ledger_id", "journal_entry_id");
+
+-- Journal entries and lines are facts: no routine updates them, and
+-- corrections are new entries. Deletes stay allowed because post_entries()
+-- removes the claims of rejected requests before they have lines.
+
+-- +goose StatementBegin
+CREATE OR REPLACE FUNCTION journal_append_only()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
+END;
+$$;
+-- +goose StatementEnd
+
+CREATE TRIGGER journal_entries_append_only
+BEFORE UPDATE ON journal_entries
+FOR EACH ROW
+EXECUTE FUNCTION journal_append_only();
+
+CREATE TRIGGER journal_lines_append_only
+BEFORE UPDATE ON journal_lines
+FOR EACH ROW
+EXECUTE FUNCTION journal_append_only();
+
+-- A pending entry's lifecycle. Journal entries and lines record only what was
+-- posted; the authorization is the one row that changes, once, when a
+-- resolution entry captures or voids the pending entry. Nothing expires: the
+-- caller decides when a pending entry is resolved.
+CREATE TABLE "authorizations" (
+	"id" bigint PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+	"ledger_id" integer NOT NULL,
+	"entry_id" bigint NOT NULL,
+	"state" text DEFAULT 'pending' NOT NULL,
+	"resolution_entry_id" bigint,
+	"resolved_at" timestamp with time zone,
+	CONSTRAINT "authorizations_entry_unique" UNIQUE ("entry_id"),
+	CONSTRAINT "authorizations_resolution_entry_unique" UNIQUE ("resolution_entry_id"),
+	CONSTRAINT "authorizations_state_valid" CHECK ("authorizations"."state" in ('pending', 'captured', 'voided')),
+	CONSTRAINT "authorizations_pending_unresolved" CHECK (("authorizations"."state" = 'pending') = ("authorizations"."resolution_entry_id" is null)),
+	CONSTRAINT "authorizations_resolved_at_with_resolution" CHECK (("authorizations"."resolution_entry_id" is null) = ("authorizations"."resolved_at" is null)),
+	CONSTRAINT "authorizations_not_self_resolving" CHECK ("authorizations"."resolution_entry_id" <> "authorizations"."entry_id")
+);
+
+ALTER TABLE "authorizations" ADD CONSTRAINT "authorizations_entry_ledger_fk" FOREIGN KEY ("entry_id", "ledger_id") REFERENCES "public"."journal_entries"("id", "ledger_id") ON DELETE no action ON UPDATE no action;
+ALTER TABLE "authorizations" ADD CONSTRAINT "authorizations_resolution_ledger_fk" FOREIGN KEY ("resolution_entry_id", "ledger_id") REFERENCES "public"."journal_entries"("id", "ledger_id") ON DELETE no action ON UPDATE no action;
+
 
 CREATE TABLE "account_movements" (
 	"account_id"       bigint      NOT NULL REFERENCES "accounts" ("id"),

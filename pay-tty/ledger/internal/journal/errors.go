@@ -1,6 +1,9 @@
 package journal
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var (
 	// ErrLedgerNotFound is returned when the supplied ledger slug does not exist.
@@ -68,4 +71,32 @@ var (
 	// ErrPurposeTooLong is returned when a line purpose exceeds the stored
 	// length limit.
 	ErrPurposeTooLong = errors.New("purpose too long")
+
+	// ErrEntryNotFound is returned when a resolution names no entry in the
+	// ledger.
+	ErrEntryNotFound = errors.New("entry not found")
+
+	// ErrEntryNotPending is returned when a resolution names an entry that was
+	// posted immediately.
+	ErrEntryNotPending = errors.New("entry not pending")
+
+	// ErrEntryResolved is returned when the pending entry was already
+	// resolved. The error is a *ResolvedError naming the winner.
+	ErrEntryResolved = errors.New("entry resolved")
+
+	// ErrDuplicatePendingReference is returned when a batch names one pending
+	// entry twice.
+	ErrDuplicatePendingReference = errors.New("duplicate pending reference")
 )
+
+// ResolvedError reports the resolution that won a pending entry.
+type ResolvedError struct {
+	State               State
+	ResolutionReference string
+}
+
+func (e *ResolvedError) Error() string {
+	return fmt.Sprintf("%s: %s by %s", ErrEntryResolved, e.State, e.ResolutionReference)
+}
+
+func (e *ResolvedError) Is(target error) bool { return target == ErrEntryResolved }

@@ -6,20 +6,16 @@ import (
 	"time"
 )
 
-// State represents the lifecycle status of a journal entry.
+// State represents the lifecycle status of a journal entry. An entry posted
+// immediately is always posted; a pending entry takes its authorization's
+// state.
 type State string
 
 const (
-	// StatePosted indicates an entry whose financial movements are committed and reflected in posted balances.
-	StatePosted State = "posted"
-	// StatePending indicates a two-phase entry that holds funds pending capture or expiration.
-	StatePending State = "pending"
-	// StateCaptured indicates a pending entry that was subsequently captured.
+	StatePosted   State = "posted"
+	StatePending  State = "pending"
 	StateCaptured State = "captured"
-	// StateVoided indicates a pending entry that was canceled before completion.
-	StateVoided State = "voided"
-	// StateExpired indicates a pending entry whose authorization window elapsed without capture.
-	StateExpired State = "expired"
+	StateVoided   State = "voided"
 )
 
 // Entry represents an immutable journal entry recorded in the ledger.
@@ -34,9 +30,6 @@ type Entry struct {
 	State State
 	// Description provides a human-readable explanation of why the entry occurred.
 	Description string
-	// ExpiresAt is the timestamp after which a pending entry is considered expired.
-	// It is nil for one-phase posted entries.
-	ExpiresAt *time.Time
 	// EffectiveAt is the business date and time at which the financial effect applies, if provided.
 	// Otherwise, it equals the posting time.
 	EffectiveAt time.Time
@@ -61,6 +54,7 @@ type PostInput struct {
 	Description string
 	EffectiveAt *time.Time
 	Lines       []LineInput
+	Pending     bool
 }
 
 // PostResult contains the outcome of a posting operation.
@@ -94,6 +88,7 @@ type BatchItemInput struct {
 	Description string
 	EffectiveAt *time.Time
 	Lines       []LineInput
+	Pending     bool
 }
 
 // Batch limits enforced across single batch postings.
@@ -113,15 +108,89 @@ type BatchInput struct {
 	Entries    []BatchItemInput
 }
 
-// BatchItemResult contains the outcome for one entry in a posted batch.
+// BatchItemResult contains the outcome for one entry in a posted batch. State
+// is set unless the entry was rejected.
 type BatchItemResult struct {
 	RequestID  string
 	Status     BatchItemStatus
 	JournalRef *string
+	State      State
 	Error      *BatchItemError
 }
 
 // BatchResult contains the results for all entries in a batch posting.
 type BatchResult struct {
 	Results []BatchItemResult
+}
+
+// Action is how a resolution settles a pending entry.
+type Action string
+
+const (
+	ActionCapture Action = "capture"
+	ActionVoid    Action = "void"
+)
+
+// ResolveInput asks for one pending entry to be captured or voided.
+type ResolveInput struct {
+	LedgerSlug       string
+	RequestID        string
+	PendingReference string
+	Action           Action
+	EffectiveAt      *time.Time
+}
+
+// Resolution is a posted entry that settled a pending one. It copies the
+// pending entry's kind, description and lines.
+type Resolution struct {
+	Reference        string
+	RequestID        string
+	Kind             string
+	Description      string
+	EffectiveAt      time.Time
+	CreatedAt        time.Time
+	PendingReference string
+	// State is the pending entry's state after this resolution.
+	State State
+}
+
+// ResolveResult contains the outcome of a resolution.
+type ResolveResult struct {
+	Resolution Resolution
+	// Created is false when an identical request was already resolved.
+	Created bool
+}
+
+// ResolveBatchItemInput describes one resolution within a batch.
+type ResolveBatchItemInput struct {
+	RequestID        string
+	PendingReference string
+	Action           Action
+	EffectiveAt      *time.Time
+}
+
+// ResolveBatchInput contains the parameters required to resolve a batch.
+type ResolveBatchInput struct {
+	LedgerSlug string
+	Items      []ResolveBatchItemInput
+}
+
+// ResolveBatchItemResult contains the outcome for one item in a batch.
+type ResolveBatchItemResult struct {
+	RequestID        string
+	PendingReference string
+	Status           BatchItemStatus
+	// JournalRef is this item's resolution; nil when rejected.
+	JournalRef *string
+	// State is the pending entry's state: after this resolution, or the one
+	// that won when the item was rejected as entry_resolved.
+	State *State
+	// ResolvedBy is the winning resolution of an entry_resolved rejection.
+	ResolvedBy *string
+	Error      *BatchItemError
+}
+
+// ResolveBatchResult contains the results for all items in a batch.
+type ResolveBatchResult struct {
+	Results []ResolveBatchItemResult
 }

@@ -43,19 +43,64 @@ func (e AccountStatus) Valid() bool {
 
 // Defines values for BatchPostEntryResultStatus.
 const (
-	Created  BatchPostEntryResultStatus = "created"
-	Existing BatchPostEntryResultStatus = "existing"
-	Rejected BatchPostEntryResultStatus = "rejected"
+	BatchPostEntryResultStatusCreated  BatchPostEntryResultStatus = "created"
+	BatchPostEntryResultStatusExisting BatchPostEntryResultStatus = "existing"
+	BatchPostEntryResultStatusRejected BatchPostEntryResultStatus = "rejected"
 )
 
 // Valid indicates whether the value is a known member of the BatchPostEntryResultStatus enum.
 func (e BatchPostEntryResultStatus) Valid() bool {
 	switch e {
-	case Created:
+	case BatchPostEntryResultStatusCreated:
 		return true
-	case Existing:
+	case BatchPostEntryResultStatusExisting:
 		return true
-	case Rejected:
+	case BatchPostEntryResultStatusRejected:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for BatchResolveEntryResultStatus.
+const (
+	BatchResolveEntryResultStatusCreated  BatchResolveEntryResultStatus = "created"
+	BatchResolveEntryResultStatusExisting BatchResolveEntryResultStatus = "existing"
+	BatchResolveEntryResultStatusRejected BatchResolveEntryResultStatus = "rejected"
+)
+
+// Valid indicates whether the value is a known member of the BatchResolveEntryResultStatus enum.
+func (e BatchResolveEntryResultStatus) Valid() bool {
+	switch e {
+	case BatchResolveEntryResultStatusCreated:
+		return true
+	case BatchResolveEntryResultStatusExisting:
+		return true
+	case BatchResolveEntryResultStatusRejected:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for EntryState.
+const (
+	Captured EntryState = "captured"
+	Pending  EntryState = "pending"
+	Posted   EntryState = "posted"
+	Voided   EntryState = "voided"
+)
+
+// Valid indicates whether the value is a known member of the EntryState enum.
+func (e EntryState) Valid() bool {
+	switch e {
+	case Captured:
+		return true
+	case Pending:
+		return true
+	case Posted:
+		return true
+	case Voided:
 		return true
 	default:
 		return false
@@ -66,6 +111,9 @@ func (e BatchPostEntryResultStatus) Valid() bool {
 const (
 	AccountClosed       ErrorCode = "account_closed"
 	AccountNotFound     ErrorCode = "account_not_found"
+	EntryNotFound       ErrorCode = "entry_not_found"
+	EntryNotPending     ErrorCode = "entry_not_pending"
+	EntryResolved       ErrorCode = "entry_resolved"
 	HolderConflict      ErrorCode = "holder_conflict"
 	IdempotencyConflict ErrorCode = "idempotency_conflict"
 	InsufficientFunds   ErrorCode = "insufficient_funds"
@@ -80,6 +128,12 @@ func (e ErrorCode) Valid() bool {
 	case AccountClosed:
 		return true
 	case AccountNotFound:
+		return true
+	case EntryNotFound:
+		return true
+	case EntryNotPending:
+		return true
+	case EntryResolved:
 		return true
 	case HolderConflict:
 		return true
@@ -113,15 +167,18 @@ func (e PayableAccountKind) Valid() bool {
 	}
 }
 
-// Defines values for PostJournalEntryResponseState.
+// Defines values for ResolutionAction.
 const (
-	Posted PostJournalEntryResponseState = "posted"
+	Capture ResolutionAction = "capture"
+	Void    ResolutionAction = "void"
 )
 
-// Valid indicates whether the value is a known member of the PostJournalEntryResponseState enum.
-func (e PostJournalEntryResponseState) Valid() bool {
+// Valid indicates whether the value is a known member of the ResolutionAction enum.
+func (e ResolutionAction) Valid() bool {
 	switch e {
-	case Posted:
+	case Capture:
+		return true
+	case Void:
 		return true
 	default:
 		return false
@@ -310,6 +367,9 @@ type BatchPostEntryItem struct {
 	// Kind Business classification of a journal entry.
 	Kind  JournalEntryKind       `json:"kind"`
 	Lines []PostJournalEntryLine `json:"lines"`
+
+	// Pending Posts the entry as pending: it moves only the pending counters and stays off the statement until it is captured. Pending incoming credits are not spendable. A pending entry never expires; the caller captures or voids it.
+	Pending *PendingFlag `json:"pending,omitempty"`
 }
 
 // BatchPostEntryResult defines model for BatchPostEntryResult.
@@ -319,13 +379,73 @@ type BatchPostEntryResult struct {
 	// IdempotencyKey Caller-generated identifier used to make a ledger operation idempotent.
 	//
 	// Example: payment_123
-	IdempotencyKey IdempotencyKey             `json:"idempotency_key"`
-	JournalRef     *JournalRef                `json:"journal_ref"`
-	Status         BatchPostEntryResultStatus `json:"status"`
+	IdempotencyKey IdempotencyKey `json:"idempotency_key"`
+	JournalRef     *JournalRef    `json:"journal_ref"`
+
+	// State Null when rejected.
+	State  *EntryState                `json:"state"`
+	Status BatchPostEntryResultStatus `json:"status"`
 }
 
 // BatchPostEntryResultStatus defines model for BatchPostEntryResult.Status.
 type BatchPostEntryResultStatus string
+
+// BatchResolveEntriesRequest defines model for BatchResolveEntriesRequest.
+type BatchResolveEntriesRequest struct {
+	Items []BatchResolveEntryItem `json:"items"`
+
+	// Ledger Opaque identifier assigned to the ledger.
+	//
+	// Example: ngn_ng
+	Ledger LedgerSlug `json:"ledger"`
+}
+
+// BatchResolveEntriesResponse defines model for BatchResolveEntriesResponse.
+type BatchResolveEntriesResponse struct {
+	Results []BatchResolveEntryResult `json:"results"`
+}
+
+// BatchResolveEntryItem defines model for BatchResolveEntryItem.
+type BatchResolveEntryItem struct {
+	Action      ResolutionAction `json:"action"`
+	EffectiveAt *time.Time       `json:"effective_at,omitempty"`
+
+	// IdempotencyKey Identifies this resolution. It shares one keyspace per ledger with every other entry key, so the same key resolves the same entry through either resolve endpoint.
+	IdempotencyKey IdempotencyKey `json:"idempotency_key"`
+
+	// PendingRef Stable opaque reference assigned to a journal entry by the ledger.
+	//
+	// Example: jrn_01K33YW0MDHJ9E4N7Z2QPV6R8K
+	PendingRef JournalRef `json:"pending_ref"`
+}
+
+// BatchResolveEntryResult defines model for BatchResolveEntryResult.
+type BatchResolveEntryResult struct {
+	Error *BatchEntryError `json:"error"`
+
+	// IdempotencyKey Caller-generated identifier used to make a ledger operation idempotent.
+	//
+	// Example: payment_123
+	IdempotencyKey IdempotencyKey `json:"idempotency_key"`
+
+	// JournalRef This item's resolution; null when rejected.
+	JournalRef *JournalRef `json:"journal_ref"`
+
+	// PendingRef Stable opaque reference assigned to a journal entry by the ledger.
+	//
+	// Example: jrn_01K33YW0MDHJ9E4N7Z2QPV6R8K
+	PendingRef JournalRef `json:"pending_ref"`
+
+	// PendingState The pending entry's state after this resolution, or the state the winning resolution left when the item was rejected as `entry_resolved`.
+	PendingState *EntryState `json:"pending_state"`
+
+	// ResolvedBy With `entry_resolved`, the winning resolution.
+	ResolvedBy *JournalRef                   `json:"resolved_by"`
+	Status     BatchResolveEntryResultStatus `json:"status"`
+}
+
+// BatchResolveEntryResultStatus defines model for BatchResolveEntryResult.Status.
+type BatchResolveEntryResultStatus string
 
 // CreatePayableAccountRequest defines model for CreatePayableAccountRequest.
 type CreatePayableAccountRequest struct {
@@ -377,6 +497,9 @@ type CreatePayableAccountResponse struct {
 	// Example: open
 	Status AccountStatus `json:"status"`
 }
+
+// EntryState `posted` for an entry posted immediately or a resolution; otherwise the state of the pending entry's authorization.
+type EntryState string
 
 // ErrorCode defines model for ErrorCode.
 type ErrorCode string
@@ -479,6 +602,9 @@ type LedgerSlug = string
 // PayableAccountKind Example: payable
 type PayableAccountKind string
 
+// PendingFlag Posts the entry as pending: it moves only the pending counters and stays off the statement until it is captured. Pending incoming credits are not spendable. A pending entry never expires; the caller captures or voids it.
+type PendingFlag = bool
+
 // PostJournalEntryLine defines model for PostJournalEntryLine.
 type PostJournalEntryLine struct {
 	// Amount Positive amount expressed in the ledger's minor units.
@@ -513,6 +639,9 @@ type PostJournalEntryRequest struct {
 	// Example: ngn_ng
 	Ledger LedgerSlug             `json:"ledger"`
 	Lines  []PostJournalEntryLine `json:"lines"`
+
+	// Pending Posts the entry as pending: it moves only the pending counters and stays off the statement until it is captured. Pending incoming credits are not spendable. A pending entry never expires; the caller captures or voids it.
+	Pending *PendingFlag `json:"pending,omitempty"`
 }
 
 // PostJournalEntryResponse defines model for PostJournalEntryResponse.
@@ -532,12 +661,65 @@ type PostJournalEntryResponse struct {
 	// LedgerSlug Opaque identifier assigned to the ledger.
 	//
 	// Example: ngn_ng
-	LedgerSlug LedgerSlug                    `json:"ledger_slug"`
-	State      PostJournalEntryResponseState `json:"state"`
+	LedgerSlug LedgerSlug `json:"ledger_slug"`
+
+	// State `posted` for an entry posted immediately or a resolution; otherwise the state of the pending entry's authorization.
+	State EntryState `json:"state"`
 }
 
-// PostJournalEntryResponseState defines model for PostJournalEntryResponse.State.
-type PostJournalEntryResponseState string
+// ResolutionAction defines model for ResolutionAction.
+type ResolutionAction string
+
+// ResolveConflictResponse defines model for ResolveConflictResponse.
+type ResolveConflictResponse struct {
+	Error   ErrorInfo `json:"error"`
+	Message string    `json:"message"`
+
+	// PendingState With `entry_resolved`, the state the winning resolution left.
+	PendingState *EntryState `json:"pending_state,omitempty"`
+
+	// ResolvedBy With `entry_resolved`, the winning resolution.
+	ResolvedBy *JournalRef `json:"resolved_by,omitempty"`
+}
+
+// ResolveJournalEntryRequest defines model for ResolveJournalEntryRequest.
+type ResolveJournalEntryRequest struct {
+	Action      ResolutionAction `json:"action"`
+	EffectiveAt *time.Time       `json:"effective_at,omitempty"`
+
+	// Ledger Opaque identifier assigned to the ledger.
+	//
+	// Example: ngn_ng
+	Ledger LedgerSlug `json:"ledger"`
+}
+
+// ResolveJournalEntryResponse defines model for ResolveJournalEntryResponse.
+type ResolveJournalEntryResponse struct {
+	CreatedAt   time.Time `json:"created_at"`
+	Description string    `json:"description"`
+	EffectiveAt time.Time `json:"effective_at"`
+
+	// JournalRef Stable opaque reference assigned to a journal entry by the ledger.
+	//
+	// Example: jrn_01K33YW0MDHJ9E4N7Z2QPV6R8K
+	JournalRef JournalRef `json:"journal_ref"`
+
+	// Kind Business classification of a journal entry.
+	Kind JournalEntryKind `json:"kind"`
+
+	// LedgerSlug Opaque identifier assigned to the ledger.
+	//
+	// Example: ngn_ng
+	LedgerSlug LedgerSlug `json:"ledger_slug"`
+
+	// PendingRef Stable opaque reference assigned to a journal entry by the ledger.
+	//
+	// Example: jrn_01K33YW0MDHJ9E4N7Z2QPV6R8K
+	PendingRef JournalRef `json:"pending_ref"`
+
+	// State `posted` for an entry posted immediately or a resolution; otherwise the state of the pending entry's authorization.
+	State EntryState `json:"state"`
+}
 
 // StatementAccount defines model for StatementAccount.
 type StatementAccount struct {
@@ -678,6 +860,12 @@ type PostJournalEntryParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 }
 
+// ResolveJournalEntryParams defines parameters for ResolveJournalEntry.
+type ResolveJournalEntryParams struct {
+	// IdempotencyKey Caller-generated key for this resolution. It shares one keyspace per ledger with the keys sent to every other entry endpoint.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
 // CreatePayableAccountJSONRequestBody defines body for CreatePayableAccount for application/json ContentType.
 type CreatePayableAccountJSONRequestBody = CreatePayableAccountRequest
 
@@ -686,6 +874,12 @@ type PostJournalEntryJSONRequestBody = PostJournalEntryRequest
 
 // PostJournalEntriesBatchJSONRequestBody defines body for PostJournalEntriesBatch for application/json ContentType.
 type PostJournalEntriesBatchJSONRequestBody = BatchPostEntriesRequest
+
+// ResolveJournalEntriesBatchJSONRequestBody defines body for ResolveJournalEntriesBatch for application/json ContentType.
+type ResolveJournalEntriesBatchJSONRequestBody = BatchResolveEntriesRequest
+
+// ResolveJournalEntryJSONRequestBody defines body for ResolveJournalEntry for application/json ContentType.
+type ResolveJournalEntryJSONRequestBody = ResolveJournalEntryRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -704,6 +898,12 @@ type ServerInterface interface {
 	// PostJournalEntriesBatch Post a batch of journal entries to a ledger
 	// (POST /entries/batch)
 	PostJournalEntriesBatch(w http.ResponseWriter, r *http.Request)
+	// ResolveJournalEntriesBatch Capture or void a batch of pending journal entries
+	// (POST /entries/resolve/batch)
+	ResolveJournalEntriesBatch(w http.ResponseWriter, r *http.Request)
+	// ResolveJournalEntry Capture or void a pending journal entry
+	// (POST /entries/{journal_ref}/resolve)
+	ResolveJournalEntry(w http.ResponseWriter, r *http.Request, journalRef JournalRef, params ResolveJournalEntryParams)
 	// GetHealth Check whether the service is running
 	// (GET /health)
 	GetHealth(w http.ResponseWriter, r *http.Request)
@@ -911,6 +1111,74 @@ func (siw *ServerInterfaceWrapper) PostJournalEntriesBatch(w http.ResponseWriter
 	handler.ServeHTTP(w, r)
 }
 
+// ResolveJournalEntriesBatch operation middleware
+func (siw *ServerInterfaceWrapper) ResolveJournalEntriesBatch(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResolveJournalEntriesBatch(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ResolveJournalEntry operation middleware
+func (siw *ServerInterfaceWrapper) ResolveJournalEntry(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "journal_ref" -------------
+	var journalRef JournalRef
+
+	err = runtime.BindStyledParameterWithOptions("simple", "journal_ref", r.PathValue("journal_ref"), &journalRef, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "journal_ref", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ResolveJournalEntryParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey IdempotencyKey
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = IdempotencyKey
+
+	} else {
+		err := fmt.Errorf("Header parameter Idempotency-Key is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "Idempotency-Key", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ResolveJournalEntry(w, r, journalRef, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetHealth operation middleware
 func (siw *ServerInterfaceWrapper) GetHealth(w http.ResponseWriter, r *http.Request) {
 
@@ -1051,6 +1319,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/accounts/{account_reference}/statement", wrapper.GetAccountStatement)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/entries", wrapper.PostJournalEntry)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/entries/batch", wrapper.PostJournalEntriesBatch)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/entries/{journal_ref}/resolve", wrapper.ResolveJournalEntry)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/entries/resolve/batch", wrapper.ResolveJournalEntriesBatch)
 
 	return m
 }
@@ -1435,6 +1705,178 @@ func (response PostJournalEntriesBatch500JSONResponse) VisitPostJournalEntriesBa
 	return err
 }
 
+type ResolveJournalEntriesBatchRequestObject struct {
+	Body *ResolveJournalEntriesBatchJSONRequestBody
+}
+
+type ResolveJournalEntriesBatchResponseObject interface {
+	VisitResolveJournalEntriesBatchResponse(w http.ResponseWriter) error
+}
+
+type ResolveJournalEntriesBatch200JSONResponse BatchResolveEntriesResponse
+
+func (response ResolveJournalEntriesBatch200JSONResponse) VisitResolveJournalEntriesBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResolveJournalEntriesBatch400JSONResponse struct{ InvalidRequestJSONResponse }
+
+func (response ResolveJournalEntriesBatch400JSONResponse) VisitResolveJournalEntriesBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResolveJournalEntriesBatch404JSONResponse ErrorResponse
+
+func (response ResolveJournalEntriesBatch404JSONResponse) VisitResolveJournalEntriesBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResolveJournalEntriesBatch409JSONResponse ErrorResponse
+
+func (response ResolveJournalEntriesBatch409JSONResponse) VisitResolveJournalEntriesBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResolveJournalEntriesBatch500JSONResponse ErrorResponse
+
+func (response ResolveJournalEntriesBatch500JSONResponse) VisitResolveJournalEntriesBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResolveJournalEntryRequestObject struct {
+	JournalRef JournalRef `json:"journal_ref"`
+	Params     ResolveJournalEntryParams
+	Body       *ResolveJournalEntryJSONRequestBody
+}
+
+type ResolveJournalEntryResponseObject interface {
+	VisitResolveJournalEntryResponse(w http.ResponseWriter) error
+}
+
+type ResolveJournalEntry200JSONResponse ResolveJournalEntryResponse
+
+func (response ResolveJournalEntry200JSONResponse) VisitResolveJournalEntryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResolveJournalEntry201JSONResponse ResolveJournalEntryResponse
+
+func (response ResolveJournalEntry201JSONResponse) VisitResolveJournalEntryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResolveJournalEntry400JSONResponse struct{ InvalidRequestJSONResponse }
+
+func (response ResolveJournalEntry400JSONResponse) VisitResolveJournalEntryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResolveJournalEntry404JSONResponse ErrorResponse
+
+func (response ResolveJournalEntry404JSONResponse) VisitResolveJournalEntryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResolveJournalEntry409JSONResponse ResolveConflictResponse
+
+func (response ResolveJournalEntry409JSONResponse) VisitResolveJournalEntryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ResolveJournalEntry500JSONResponse ErrorResponse
+
+func (response ResolveJournalEntry500JSONResponse) VisitResolveJournalEntryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetHealthRequestObject struct {
 }
 
@@ -1473,6 +1915,12 @@ type StrictServerInterface interface {
 	// PostJournalEntriesBatch Post a batch of journal entries to a ledger
 	// (POST /entries/batch)
 	PostJournalEntriesBatch(ctx context.Context, request PostJournalEntriesBatchRequestObject) (PostJournalEntriesBatchResponseObject, error)
+	// ResolveJournalEntriesBatch Capture or void a batch of pending journal entries
+	// (POST /entries/resolve/batch)
+	ResolveJournalEntriesBatch(ctx context.Context, request ResolveJournalEntriesBatchRequestObject) (ResolveJournalEntriesBatchResponseObject, error)
+	// ResolveJournalEntry Capture or void a pending journal entry
+	// (POST /entries/{journal_ref}/resolve)
+	ResolveJournalEntry(ctx context.Context, request ResolveJournalEntryRequestObject) (ResolveJournalEntryResponseObject, error)
 	// GetHealth Check whether the service is running
 	// (GET /health)
 	GetHealth(ctx context.Context, request GetHealthRequestObject) (GetHealthResponseObject, error)
@@ -1665,6 +2113,71 @@ func (sh *strictHandler) PostJournalEntriesBatch(w http.ResponseWriter, r *http.
 	}
 }
 
+// ResolveJournalEntriesBatch operation middleware
+func (sh *strictHandler) ResolveJournalEntriesBatch(w http.ResponseWriter, r *http.Request) {
+	var request ResolveJournalEntriesBatchRequestObject
+
+	var body ResolveJournalEntriesBatchJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ResolveJournalEntriesBatch(ctx, request.(ResolveJournalEntriesBatchRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ResolveJournalEntriesBatch")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ResolveJournalEntriesBatchResponseObject); ok {
+		if err := validResponse.VisitResolveJournalEntriesBatchResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ResolveJournalEntry operation middleware
+func (sh *strictHandler) ResolveJournalEntry(w http.ResponseWriter, r *http.Request, journalRef JournalRef, params ResolveJournalEntryParams) {
+	var request ResolveJournalEntryRequestObject
+
+	request.JournalRef = journalRef
+	request.Params = params
+
+	var body ResolveJournalEntryJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ResolveJournalEntry(ctx, request.(ResolveJournalEntryRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ResolveJournalEntry")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ResolveJournalEntryResponseObject); ok {
+		if err := validResponse.VisitResolveJournalEntryResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // GetHealth operation middleware
 func (sh *strictHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
 	var request GetHealthRequestObject
@@ -1694,85 +2207,101 @@ func (sh *strictHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
-	"AP//",
+	"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",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

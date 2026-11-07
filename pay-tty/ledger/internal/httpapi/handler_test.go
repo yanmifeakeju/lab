@@ -41,6 +41,32 @@ type fakeService struct {
 	batchResult     journal.BatchResult
 	batchErr        error
 	batchCalls      int
+	resolveInput    journal.ResolveInput
+	resolveResult   journal.ResolveResult
+	resolveErr      error
+	resolveCalls    int
+	rbatchInput     journal.ResolveBatchInput
+	rbatchResult    journal.ResolveBatchResult
+	rbatchErr       error
+	rbatchCalls     int
+}
+
+func (f *fakeService) ResolveEntry(
+	_ context.Context,
+	input journal.ResolveInput,
+) (journal.ResolveResult, error) {
+	f.resolveInput = input
+	f.resolveCalls++
+	return f.resolveResult, f.resolveErr
+}
+
+func (f *fakeService) ResolveEntries(
+	_ context.Context,
+	input journal.ResolveBatchInput,
+) (journal.ResolveBatchResult, error) {
+	f.rbatchInput = input
+	f.rbatchCalls++
+	return f.rbatchResult, f.rbatchErr
 }
 
 func (f *fakeService) CreatePayableAccount(

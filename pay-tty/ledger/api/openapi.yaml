@@ -379,6 +379,158 @@ paths:
                 error:
                   code: internal_server_error
 
+  /entries/{journal_ref}/resolve:
+    post:
+      operationId: resolveJournalEntry
+      summary: Capture or void a pending journal entry
+      description: >-
+        Writes a posted resolution entry that copies the pending entry's lines,
+        kind and description. A capture makes the amounts final; a void releases
+        them. A pending entry is resolved exactly once.
+      parameters:
+        - name: journal_ref
+          in: path
+          required: true
+          description: The pending entry to resolve.
+          schema:
+            $ref: "#/components/schemas/JournalRef"
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: >-
+            Caller-generated key for this resolution. It shares one keyspace per
+            ledger with the keys sent to every other entry endpoint.
+          schema:
+            $ref: "#/components/schemas/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolveJournalEntryRequest"
+      responses:
+        "200":
+          description: An identical request was previously completed; the existing resolution is returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResolveJournalEntryResponse"
+        "201":
+          description: The pending entry was resolved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResolveJournalEntryResponse"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          description: The ledger has no entry with this reference.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: Entry not found.
+                error:
+                  code: entry_not_found
+        "409":
+          description: The resolution conflicts with the entry's state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResolveConflictResponse"
+              examples:
+                entryResolved:
+                  summary: Another resolution already settled the entry
+                  value:
+                    message: Entry is already captured.
+                    error:
+                      code: entry_resolved
+                    pending_state: captured
+                    resolved_by: jrn_01K33YW0MDHJ9E4N7Z2QPV6R8K
+                entryNotPending:
+                  summary: The entry was posted immediately
+                  value:
+                    message: Entry was posted immediately and has nothing to resolve.
+                    error:
+                      code: entry_not_pending
+                ledgerClosed:
+                  summary: The ledger is closed
+                  value:
+                    message: Ledger is closed.
+                    error:
+                      code: ledger_closed
+                idempotencyConflict:
+                  summary: The idempotency key was previously used for different content
+                  value:
+                    message: Idempotency key was previously used with different content.
+                    error:
+                      code: idempotency_conflict
+        "500":
+          description: The server could not complete the request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: The server could not complete the request.
+                error:
+                  code: internal_server_error
+
+  /entries/resolve/batch:
+    post:
+      operationId: resolveJournalEntriesBatch
+      summary: Capture or void a batch of pending journal entries
+      description: >-
+        Each item carries its own idempotency key in the body, as batch posting
+        does, and gets its own outcome. A batch may not name one pending entry
+        twice.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchResolveEntriesRequest"
+      responses:
+        "200":
+          description: Batch processed. Outcomes for each item returned in request order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchResolveEntriesResponse"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          description: The ledger does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: Ledger not found.
+                error:
+                  code: ledger_not_found
+        "409":
+          description: The ledger is closed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: Ledger is closed.
+                error:
+                  code: ledger_closed
+        "500":
+          description: The server could not complete the request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                message: The server could not complete the request.
+                error:
+                  code: internal_server_error
+
 components:
   schemas:
     LedgerSlug:
@@ -489,6 +641,8 @@ components:
         effective_at:
           type: string
           format: date-time
+        pending:
+          $ref: "#/components/schemas/PendingFlag"
         lines:
           type: array
           minItems: 1
@@ -554,9 +708,7 @@ components:
         kind:
           $ref: "#/components/schemas/JournalEntryKind"
         state:
-          type: string
-          enum:
-            - posted
+          $ref: "#/components/schemas/EntryState"
         description:
           type: string
           minLength: 1
@@ -566,6 +718,198 @@ components:
         created_at:
           type: string
           format: date-time
+
+    PendingFlag:
+      type: boolean
+      description: >-
+        Posts the entry as pending: it moves only the pending counters and stays
+        off the statement until it is captured. Pending incoming credits are not
+        spendable. A pending entry never expires; the caller captures or voids
+        it.
+
+    EntryState:
+      type: string
+      description: >-
+        `posted` for an entry posted immediately or a resolution; otherwise the
+        state of the pending entry's authorization.
+      enum:
+        - posted
+        - pending
+        - captured
+        - voided
+
+    ResolutionAction:
+      type: string
+      enum:
+        - capture
+        - void
+      x-validation-messages:
+        enum: must be capture or void
+
+    ResolveJournalEntryRequest:
+      type: object
+      required:
+        - ledger
+        - action
+      properties:
+        ledger:
+          $ref: "#/components/schemas/LedgerSlug"
+        action:
+          $ref: "#/components/schemas/ResolutionAction"
+        effective_at:
+          type: string
+          format: date-time
+
+    ResolveJournalEntryResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - journal_ref
+        - pending_ref
+        - ledger_slug
+        - kind
+        - state
+        - description
+        - effective_at
+        - created_at
+      properties:
+        journal_ref:
+          $ref: "#/components/schemas/JournalRef"
+        pending_ref:
+          $ref: "#/components/schemas/JournalRef"
+        ledger_slug:
+          $ref: "#/components/schemas/LedgerSlug"
+        kind:
+          $ref: "#/components/schemas/JournalEntryKind"
+        state:
+          $ref: "#/components/schemas/EntryState"
+        description:
+          type: string
+          minLength: 1
+        effective_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    ResolveConflictResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - message
+        - error
+      properties:
+        message:
+          type: string
+          minLength: 1
+        error:
+          $ref: "#/components/schemas/ErrorInfo"
+        pending_state:
+          allOf:
+            - $ref: "#/components/schemas/EntryState"
+          description: With `entry_resolved`, the state the winning resolution left.
+        resolved_by:
+          allOf:
+            - $ref: "#/components/schemas/JournalRef"
+          description: With `entry_resolved`, the winning resolution.
+
+    BatchResolveEntriesRequest:
+      type: object
+      required:
+        - ledger
+        - items
+      properties:
+        ledger:
+          $ref: "#/components/schemas/LedgerSlug"
+        items:
+          type: array
+          minItems: 10
+          maxItems: 1000
+          items:
+            $ref: "#/components/schemas/BatchResolveEntryItem"
+          x-validation-messages:
+            type: must be an array
+            minItems: must contain at least 10 items; resolve fewer than that one at a time instead
+            maxItems: must not contain more than 1000 items
+
+    BatchResolveEntryItem:
+      type: object
+      required:
+        - idempotency_key
+        - pending_ref
+        - action
+      properties:
+        idempotency_key:
+          allOf:
+            - $ref: "#/components/schemas/IdempotencyKey"
+          description: >-
+            Identifies this resolution. It shares one keyspace per ledger with
+            every other entry key, so the same key resolves the same entry
+            through either resolve endpoint.
+        pending_ref:
+          $ref: "#/components/schemas/JournalRef"
+        action:
+          $ref: "#/components/schemas/ResolutionAction"
+        effective_at:
+          type: string
+          format: date-time
+
+    BatchResolveEntriesResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - results
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/BatchResolveEntryResult"
+
+    BatchResolveEntryResult:
+      type: object
+      additionalProperties: false
+      required:
+        - idempotency_key
+        - pending_ref
+        - status
+        - journal_ref
+        - pending_state
+        - resolved_by
+        - error
+      properties:
+        idempotency_key:
+          $ref: "#/components/schemas/IdempotencyKey"
+        pending_ref:
+          $ref: "#/components/schemas/JournalRef"
+        status:
+          type: string
+          enum:
+            - created
+            - existing
+            - rejected
+        journal_ref:
+          allOf:
+            - $ref: "#/components/schemas/JournalRef"
+          nullable: true
+          description: This item's resolution; null when rejected.
+        pending_state:
+          allOf:
+            - $ref: "#/components/schemas/EntryState"
+          nullable: true
+          description: >-
+            The pending entry's state after this resolution, or the state the
+            winning resolution left when the item was rejected as
+            `entry_resolved`.
+        resolved_by:
+          allOf:
+            - $ref: "#/components/schemas/JournalRef"
+          nullable: true
+          description: With `entry_resolved`, the winning resolution.
+        error:
+          allOf:
+            - $ref: "#/components/schemas/BatchEntryError"
+          nullable: true
 
     BatchPostEntriesRequest:
       type: object
@@ -621,6 +965,8 @@ components:
         effective_at:
           type: string
           format: date-time
+        pending:
+          $ref: "#/components/schemas/PendingFlag"
         lines:
           type: array
           minItems: 1
@@ -650,6 +996,7 @@ components:
         - idempotency_key
         - status
         - journal_ref
+        - state
         - error
       properties:
         idempotency_key:
@@ -664,6 +1011,11 @@ components:
           allOf:
             - $ref: "#/components/schemas/JournalRef"
           nullable: true
+        state:
+          allOf:
+            - $ref: "#/components/schemas/EntryState"
+          nullable: true
+          description: Null when rejected.
         error:
           allOf:
             - $ref: "#/components/schemas/BatchEntryError"
@@ -960,6 +1312,9 @@ components:
         - account_closed
         - insufficient_funds
         - idempotency_conflict
+        - entry_not_found
+        - entry_not_pending
+        - entry_resolved
         - internal_server_error
 
     StatementDirection:

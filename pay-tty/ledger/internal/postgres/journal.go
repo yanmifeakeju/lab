@@ -14,19 +14,17 @@ import (
 	"paytty.akeju.me/ledger/internal/journal"
 )
 
-// journalEntryRow is a journal_entries row.
+// journalEntryRow is a journal_entries row with its authorization's state.
 type journalEntryRow struct {
-	ID             int64
-	Reference      string
-	LedgerID       int
-	RequestID      string
-	Kind           string
-	State          string
-	Description    string
-	ExpiresAt      sql.NullTime
-	PendingEntryID sql.NullInt64
-	EffectiveAt    time.Time
-	CreatedAt      time.Time
+	ID          int64
+	Reference   string
+	LedgerID    int
+	RequestID   string
+	Kind        string
+	State       string
+	Description string
+	EffectiveAt time.Time
+	CreatedAt   time.Time
 }
 
 func (r journalEntryRow) entry() journal.Entry {
@@ -36,7 +34,6 @@ func (r journalEntryRow) entry() journal.Entry {
 		Kind:        r.Kind,
 		State:       journal.State(r.State),
 		Description: r.Description,
-		ExpiresAt:   timePtr(r.ExpiresAt),
 		EffectiveAt: r.EffectiveAt,
 		CreatedAt:   r.CreatedAt,
 	}
@@ -49,14 +46,14 @@ type postEntryLine struct {
 	Purpose                string `json:"purpose"`
 }
 
-// PostEntry records an immediately posted journal entry, or returns the
+// PostEntry records a journal entry, immediate or pending, or returns the
 // existing entry when the request is an idempotent retry.
 func (s *Store) PostEntry(ctx context.Context, input journal.PostInput) (journal.PostResult, error) {
 	var (
 		row     journalEntryRow
 		created bool
 	)
-	const q = `SELECT * FROM post_entry($1, $2, $3, $4, $5, $6, $7::jsonb)`
+	const q = `SELECT * FROM post_entry($1, $2, $3, $4, $5, $6, $7::jsonb, $8)`
 
 	journalReference := "jrn_" + ulid.Make().String()
 	entryLines := make([]postEntryLine, len(input.Lines))
@@ -83,6 +80,7 @@ func (s *Store) PostEntry(ctx context.Context, input journal.PostInput) (journal
 		input.Description,
 		input.EffectiveAt,
 		string(encodedLines),
+		input.Pending,
 	).Scan(
 		&row.ID,
 		&row.Reference,
@@ -91,8 +89,6 @@ func (s *Store) PostEntry(ctx context.Context, input journal.PostInput) (journal
 		&row.Kind,
 		&row.State,
 		&row.Description,
-		&row.ExpiresAt,
-		&row.PendingEntryID,
 		&row.EffectiveAt,
 		&row.CreatedAt,
 		&created,
@@ -111,11 +107,12 @@ type postBatchEntryItem struct {
 	Description string          `json:"description"`
 	EffectiveAt *time.Time      `json:"effective_at,omitempty"`
 	Lines       []postEntryLine `json:"lines"`
+	Pending     bool            `json:"pending"`
 }
 
 // PostEntries records a batch of journal entries in a single database transaction.
 func (s *Store) PostEntries(ctx context.Context, input journal.BatchInput) (journal.BatchResult, error) {
-	const q = `SELECT out_entry_index, out_request_id, out_status, out_error_code, out_error_message, out_public_ref FROM post_entries($1, $2::jsonb)`
+	const q = `SELECT out_entry_index, out_request_id, out_status, out_error_code, out_error_message, out_public_ref, out_state FROM post_entries($1, $2::jsonb)`
 
 	batchItems := make([]postBatchEntryItem, len(input.Entries))
 	for i, entry := range input.Entries {
@@ -134,8 +131,9 @@ func (s *Store) PostEntries(ctx context.Context, input journal.BatchInput) (jour
 			RequestID:   entry.RequestID,
 			Kind:        entry.Kind,
 			Description: entry.Description,
-			EffectiveAt: entry.EffectiveAt,
+			EffectiveAt: toMicroseconds(entry.EffectiveAt),
 			Lines:       lines,
+			Pending:     entry.Pending,
 		}
 	}
 
@@ -159,6 +157,7 @@ func (s *Store) PostEntries(ctx context.Context, input journal.BatchInput) (jour
 			errorCode    sql.NullString
 			errorMessage sql.NullString
 			publicRef    sql.NullString
+			state        sql.NullString
 		)
 
 		if err := rows.Scan(
@@ -168,6 +167,7 @@ func (s *Store) PostEntries(ctx context.Context, input journal.BatchInput) (jour
 			&errorCode,
 			&errorMessage,
 			&publicRef,
+			&state,
 		); err != nil {
 			return journal.BatchResult{}, fmt.Errorf("scan batch item result: %w", err)
 		}
@@ -175,6 +175,7 @@ func (s *Store) PostEntries(ctx context.Context, input journal.BatchInput) (jour
 		item := journal.BatchItemResult{
 			RequestID: requestID,
 			Status:    journal.BatchItemStatus(status),
+			State:     journal.State(state.String),
 		}
 
 		if publicRef.Valid && status != string(journal.BatchItemRejected) {
@@ -222,6 +223,24 @@ func mapPostEntryError(err error) error {
 			return fmt.Errorf("%w: %s", journal.ErrAccountNotFound, pgErr.Message)
 		case "LG024":
 			return fmt.Errorf("%w: %s", journal.ErrInsufficientFunds, pgErr.Message)
+		case "LG031":
+			return fmt.Errorf("%w: %s", journal.ErrEntryNotFound, pgErr.Message)
+		case "LG032":
+			return fmt.Errorf("%w: %s", journal.ErrEntryNotPending, pgErr.Message)
+		case "LG033":
+			var winner struct {
+				State         string `json:"state"`
+				ResolutionRef string `json:"resolution_ref"`
+			}
+			if err := json.Unmarshal([]byte(pgErr.Detail), &winner); err != nil {
+				return fmt.Errorf("decode entry_resolved detail %q: %w", pgErr.Detail, err)
+			}
+			return &journal.ResolvedError{
+				State:               journal.State(winner.State),
+				ResolutionReference: winner.ResolutionRef,
+			}
+		case "LG035":
+			return fmt.Errorf("%w: %s", journal.ErrDuplicatePendingReference, pgErr.Message)
 		case "23514":
 			switch pgErr.ConstraintName {
 			// The routines pre-check limits so a breach is normally a domain

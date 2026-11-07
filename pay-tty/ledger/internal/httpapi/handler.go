@@ -32,6 +32,11 @@ type JournalEntryPoster interface {
 	PostEntries(context.Context, journal.BatchInput) (journal.BatchResult, error)
 }
 
+type JournalEntryResolver interface {
+	ResolveEntry(context.Context, journal.ResolveInput) (journal.ResolveResult, error)
+	ResolveEntries(context.Context, journal.ResolveBatchInput) (journal.ResolveBatchResult, error)
+}
+
 type StatementGetter interface {
 	GetStatement(context.Context, statement.ListInput) (statement.Result, error)
 }
@@ -41,6 +46,7 @@ type Service interface {
 	PayableAccountCreator
 	PayableAccountGetter
 	JournalEntryPoster
+	JournalEntryResolver
 	StatementGetter
 }
 
@@ -179,6 +185,8 @@ func (s *server) PostJournalEntry(
 	ctx context.Context,
 	request api.PostJournalEntryRequestObject,
 ) (api.PostJournalEntryResponseObject, error) {
+	pending := request.Body.Pending != nil && *request.Body.Pending
+
 	lines := make([]journal.LineInput, len(request.Body.Lines))
 	for i, line := range request.Body.Lines {
 		if line.DebitAccountRef == line.CreditAccountRef {
@@ -227,6 +235,7 @@ func (s *server) PostJournalEntry(
 		Description: description,
 		EffectiveAt: request.Body.EffectiveAt,
 		Lines:       lines,
+		Pending:     pending,
 	})
 	if err != nil {
 		return mapPostJournalEntryError(err), nil
@@ -236,7 +245,7 @@ func (s *server) PostJournalEntry(
 		JournalRef:  result.Entry.Reference,
 		LedgerSlug:  request.Body.Ledger,
 		Kind:        result.Entry.Kind,
-		State:       api.PostJournalEntryResponseState(result.Entry.State),
+		State:       api.EntryState(result.Entry.State),
 		Description: result.Entry.Description,
 		EffectiveAt: result.Entry.EffectiveAt,
 		CreatedAt:   result.Entry.CreatedAt,
@@ -284,6 +293,8 @@ func (s *server) PostJournalEntriesBatch(
 			), nil
 		}
 		seenKeys[key] = struct{}{}
+
+		pending := entry.Pending != nil && *entry.Pending
 
 		if len(entry.Lines) == 0 {
 			return postJournalEntriesBatchValidationResponse(
@@ -347,6 +358,7 @@ func (s *server) PostJournalEntriesBatch(
 			Description: description,
 			EffectiveAt: entry.EffectiveAt,
 			Lines:       lines,
+			Pending:     pending,
 		}
 	}
 
@@ -368,10 +380,17 @@ func (s *server) PostJournalEntriesBatch(
 			}
 		}
 
+		var state *api.EntryState
+		if r.State != "" {
+			st := api.EntryState(r.State)
+			state = &st
+		}
+
 		results[i] = api.BatchPostEntryResult{
 			IdempotencyKey: r.RequestID,
 			Status:         api.BatchPostEntryResultStatus(r.Status),
 			JournalRef:     r.JournalRef,
+			State:          state,
 			Error:          errInfo,
 		}
 	}

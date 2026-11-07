@@ -77,7 +77,7 @@ func TestPostJournalEntriesBatch_HappyPath(t *testing.T) {
 	}
 
 	// Result 0: created
-	if got.Results[0].IdempotencyKey != "pay_1" || got.Results[0].Status != api.Created {
+	if got.Results[0].IdempotencyKey != "pay_1" || got.Results[0].Status != api.BatchPostEntryResultStatusCreated {
 		t.Errorf("result[0] = %+v", got.Results[0])
 	}
 	if got.Results[0].JournalRef == nil || *got.Results[0].JournalRef != ref1 {
@@ -88,7 +88,7 @@ func TestPostJournalEntriesBatch_HappyPath(t *testing.T) {
 	}
 
 	// Result 1: rejected
-	if got.Results[1].IdempotencyKey != "payout_2" || got.Results[1].Status != api.Rejected {
+	if got.Results[1].IdempotencyKey != "payout_2" || got.Results[1].Status != api.BatchPostEntryResultStatusRejected {
 		t.Errorf("result[1] = %+v", got.Results[1])
 	}
 	if got.Results[1].JournalRef != nil {

@@ -52,16 +52,19 @@ All timestamps include a time zone. `created_at` is assigned by the database.
 ledger
   ├── accounts
   │     └── journal lines (debit or credit side)
-  └── journal entries
-          ├── journal lines
-          └── resolution entry ──> pending entry
+  ├── journal entries
+  │       └── journal lines
+  └── authorizations
+          ├── entry ──────────> pending journal entry
+          └── resolution ─────> resolving journal entry
 
 holder
   └── payable accounts
 ```
 
-An entry and every account referenced by its lines must belong to the same
-ledger. Composite foreign keys enforce this in the database.
+An entry, every account referenced by its lines, and an authorization with both
+of its entries must belong to the same ledger. Composite foreign keys enforce
+this in the database.
 
 ## Ledgers
 
@@ -175,12 +178,13 @@ or more balanced transfer lines.
 | `request_id` | Caller-provided idempotency identifier. It is unique within a ledger. |
 | `fingerprint` | Digest of the meaningful request contents. It detects reuse of a request ID with different content. It is not a secret. |
 | `kind` | Client-defined business classification string (e.g. `payment`, `settlement`, `fee`). |
-| `state` | Current business lifecycle state: `pending`, `posted`, `captured`, `voided`, or `expired`. |
 | `description` | Required human-readable explanation naming the business event. |
-| `expires_at` | Deadline for resolving an authorization. Pending and terminal authorization entries retain it for audit. |
-| `pending_entry_id` | Original pending authorization resolved by this entry. Only a posted resolution entry may set it. |
 | `effective_at` | Business time of the operation or resolution. |
 | `created_at` | Time the ledger stored the entry. |
+
+Journal entries record what was posted and are never updated once their
+routine commits; a trigger refuses updates to entries and lines. A pending entry's lifecycle lives in its authorization. An
+entry with no authorization is posted.
 
 ### Idempotency
 
@@ -195,30 +199,61 @@ public_ref   ledger-generated; identifies the stored journal entry
 A retry with the same ledger, request ID, and fingerprint returns the existing
 entry. Reusing the request ID with a different fingerprint is an idempotency
 conflict. The fingerprint must cover every meaningful input, including kind,
-requested state, accounts, amounts, expiry, effective time, and description.
+accounts, amounts, effective time, description, and whether the entry is
+pending. The pending key is hashed only for pending entries, so an immediate
+entry hashes as it did before pending entries existed.
+
+A resolution has its own fingerprint over the pending reference, action, and
+effective time, marked with a different operation, so a post and a resolution
+never look alike. Request ids share one keyspace per ledger across every entry
+endpoint.
 
 ### Lifecycle
 
-An entry may be posted immediately, or it may begin as a pending authorization:
+An entry may be posted immediately, or it may begin pending and open an
+authorization:
 
 ```text
-                         capture
-                    ┌──────────────> captured
-                    │
-pending authorization ── void ─────> voided
-                    │
-                    └── timeout ───> expired
+                     capture
+                ┌──────────────> captured
+                │
+pending entry ──┴── void ─────> voided
 
-immediate operation ───────────────> posted
+immediate operation ───────────> posted
 ```
 
-The pending entry changes to the terminal business state. Capture, void, and
-expiry also create a new posted resolution entry whose `pending_entry_id`
-references the authorization. A unique index permits only one resolution entry
-for an authorization, including under concurrent requests.
+Capture and void each write a posted resolution entry that copies the
+pending entry's lines, kind, and description, and close the authorization. The
+pending entry's own lines are never rewritten. The resolution preserves when
+and why the balance transition happened.
 
-The resolution entry preserves when and why the balance transition happened.
-The authorization's original lines are never rewritten.
+## Authorizations
+
+An authorization is the state machine of one pending entry. It is the only row
+in the journal that changes, and it changes once.
+
+| Column | Meaning and reason |
+| --- | --- |
+| `id` | Internal identity; the lock that serialises resolutions. |
+| `ledger_id` | Ledger shared by the authorization and both of its entries. |
+| `entry_id` | The pending journal entry. Unique. |
+| `state` | `pending`, `captured`, or `voided`. |
+| `resolution_entry_id` | The entry that resolved it. Unique; null while pending. |
+| `resolved_at` | When it was resolved; null while pending. |
+
+Keeping the lifecycle apart from the journal leaves journal entries
+append-only, gives exactly one place to enforce one resolution per pending
+entry. A CHECK pairs `state = 'pending'` with a
+null resolution, so the state and the resolution cannot disagree.
+
+There is no ledger expiry: a pending entry stays pending until the caller
+captures or voids it. Auto-voiding a hold whose money did leave would let the
+holder spend it twice, so a lost hold stays held until a person resolves it.
+
+**Partial capture** is not supported. It would move resolutions to a child
+table of (authorization, entry, action, amount) and keep captured and released
+totals on the authorization, checked against its amount. Which lines a partial
+capture takes from a multi-line entry is left to that change.
 
 ## Journal lines
 
@@ -257,9 +292,12 @@ entry state   what happened to the business operation
 line effect   what this immutable movement did to balance counters
 ```
 
-After capture, for example, the original authorization has state `captured` but
-its original lines still have effect `pending`. The linked resolution entry is
-`posted`, and its copied lines have effect `pending_posted`.
+After capture, for example, the authorization has state `captured` but the
+pending entry's lines still have effect `pending`. The resolution entry's
+copied lines have effect `pending_posted`.
+
+A pending credit is not spendable: the limit checks count it with the pending
+counters, never as posted.
 
 ## Account movements
 
@@ -295,26 +333,142 @@ The schema enforces:
 - valid kinds, states, and effects;
 - one ledger for the entry and both accounts;
 - one request ID per ledger;
-- one resolution entry per pending authorization;
-- required expiry for pending and terminal authorization states;
+- one authorization per pending entry and one resolution per authorization;
+- a resolution exactly when the authorization is not pending;
 - non-negative account counters and account exposure limits;
 - untracked accounts maintain zero counters;
 - immutable balance limit flags and records_movements.
 
-The posting and resolution routines must enforce:
+The posting and resolution routines enforce:
 
 - at least one line;
 - every supplied account resolves exactly once;
 - all affected balance-tracking accounts are locked in a stable order;
 - closed ledgers and accounts reject new activity;
 - an idempotent retry has the same fingerprint;
-- only a pending entry can be captured, voided, or expired;
-- capture and release copy the authorization's lines exactly;
+- only a pending authorization is captured or voided, decided under
+  its row lock;
+- a resolution copies the pending entry's lines exactly;
 - the line effect matches the requested operation;
 - balance-counter updates and journal writes commit or roll back together.
 
 Posted journal lines are append-only audit records. Corrections are represented
 by new reversing entries, never by editing historical amounts or accounts.
+
+## Posting routines
+
+Two routines post entries, immediate or pending, and two resolve them. Each
+pair is a single and a batch implementation, separate on purpose:
+`post_entry` raises on the first problem it finds, while `post_entries` has to
+record an outcome for every entry in a batch, and giving each entry its own
+`BEGIN ... EXCEPTION` block would open a subtransaction per entry — past 64 of
+those in one transaction, Postgres slows every backend, not only the one
+running the batch. Routing single postings through the batch routine was
+measured at roughly a quarter of the throughput, so they stay apart.
+
+What they must agree on is factored out rather than duplicated:
+
+- `journal_fingerprint()` identifies a request by its content. Both routines
+  must hash identically, or an entry posted through one would look new to the
+  other.
+- `account_limit_exceeded()` is the overdraft arithmetic. The same expressions
+  appear in the `accounts` CHECK constraints, which cannot call a function;
+  those constraints are the enforcement, this is the pre-check that turns a
+  violation into a domain error instead of a constraint failure.
+- `journal_entry_totals()` aggregates one entry's lines by account.
+- `accounts.tracks_balance` is a stored generated column: an account has a
+  limit to enforce or a movement history to keep. Only these accounts are
+  locked and have their counters updated.
+
+### Lock order
+
+Every routine uses the same global lock order: ledger, idempotency keys,
+authorizations, then every account it touches that tracks a balance. Only the
+resolution routines lock authorizations, in id order. A request key is claimed by
+inserting its `journal_entries` row; a batch inserts claims in request-id order.
+Accounts use `FOR UPDATE` in id order.
+
+Before the lines because the line foreign keys take KEY SHARE locks on the
+accounts they reference, so locking afterwards would let two concurrent
+entries each hold KEY SHARE while waiting for the other's `FOR UPDATE`.
+
+Everything read to decide an entry's fate is read after that lock, too:
+whether an account is closed, and what its counters say. A check made before
+the lock can be overtaken by a transaction that was in flight at the time and
+commits while the posting waits.
+
+Request claims come before account locks because an idempotency conflict can
+name different accounts, so account locks cannot protect the request-id
+namespace. Keeping the phases in this order also prevents a single post from
+holding an uncommitted id while waiting for an account a batch holds and that
+batch waits for the same id — a cycle Postgres would break with `40P01`.
+
+The batch creates provisional entry rows before checking individual accounts
+and limits. It deletes the rows for rejected items before inserting any lines,
+so a rejected request still leaves no journal entry and its idempotency key can
+be reused. Accepted claims become the posted entries.
+
+### `post_entry`
+
+Posts one entry, or returns the existing one when the idempotency key
+identifies an identical request. A replay is answered before any account lock
+is taken, and reports the entry's current state. A pending entry moves only the
+pending counters, writes no movements, and inserts its authorization.
+
+### `post_entries`
+
+Posts 10 to 1,000 entries, capped at 5,000 lines in total, in one transaction
+under one commit flush. The lower bound is not arbitrary: setting up a batch
+costs about what ten single postings cost, so a smaller batch would be slower
+than sending the same entries to `post_entry` one at a time. Callers with
+fewer than ten entries to flush belong on that routine, and the API says so.
+
+- **Outcomes.** One result per entry, in request order: `created`, `existing`,
+  or `rejected` with one of `account_not_found`, `account_closed`,
+  `insufficient_funds` or `idempotency_conflict`. Every check is a query or
+  plain arithmetic, so a rejected entry never needs rolling back.
+- **Limits.** Running balances for limited accounts are held in memory and
+  advanced in batch order, so only the entry that would breach a limit is
+  rejected; later entries are checked against the balance without it. Request
+  ids are claimed and classified before this simulation, so an entry that will
+  resolve as existing or conflicting is never included in the running balance.
+- **Movements.** Accounts that record them get gapless sequences and running
+  balances across the whole batch. An account's movements in one batch share a
+  single `recorded_at`, taken as `greatest(clock_timestamp(), previous
+  recorded_at)`; `sequence` orders them.
+- **Counters** are updated once per tracked account with the batch's totals.
+- **Whole-batch failure**, rolling back everything: a malformed payload, an
+  entry with no lines, a duplicate request id within the batch, a batch outside
+  the size or line caps, an unknown ledger, or a closed ledger unless every
+  entry in the batch is an idempotent replay.
+
+Pending entries post in a batch exactly as through `post_entry`. A batch may
+mix pending and immediate entries; the running balances move pending counters
+for pending ones, so holds are checked against funds in batch order.
+
+The 1,000 cap is about the lock, not throughput. A batch holds each tracked
+account's lock until it commits, so a larger batch mostly makes that account's
+other postings wait longer, for little gain per item.
+
+### `resolve_entry`
+
+Captures or voids one pending entry. The pending entry is read without a lock,
+since entries are immutable, then the request id is claimed and the
+authorization locked before anything that decides the outcome is read. It
+refuses an unknown entry, an immediate one, one already resolved (naming the
+winner). Resolutions check neither
+account closure nor limits: a capture keeps each account's exposure the same
+and a void lowers it, and refusing either on a closed account would strand the
+amount in its pending counters.
+
+### `resolve_entries`
+
+Resolves 10 to 1,000 entries, capped at 5,000 copied lines, with one outcome per
+item, as `post_entries` does for posts. Claims are taken in request-id order,
+authorizations locked in id order, and captures write gapless movements in item
+order under one `recorded_at` per account. A batch may not name one pending
+entry twice. It shares `resolve_entry`'s fingerprint, so either endpoint
+replays the other.
 
 ## Deferred decisions
 
