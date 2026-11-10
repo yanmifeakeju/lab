@@ -8,21 +8,21 @@
 -- authorizations, then tracked accounts. The posting routines lock no
 -- authorizations, so the extra step cannot form a cycle with them.
 --
--- Resolutions check neither account closure nor limits. A capture moves an
--- account's exposure from pending to posted without changing the sum the
--- limits bound, and a void lowers it. Refusing either on a closed account
--- would strand the amount in its pending counters.
+-- Resolutions check neither ledger or account closure nor limits. A capture
+-- moves an account's exposure from pending to posted without changing the sum
+-- the limits bound, and a void lowers it. Refusing either on a closed ledger
+-- or account would strand the amount in its pending counters.
 
 -- journal_resolution_fingerprint() identifies a resolution request by its
 -- content. Its 'operation' key keeps a resolution from ever hashing like a
--- post, so a key reused across the two is a conflict.
+-- post, so a key reused across the two is a conflict. STABLE for the same
+-- reason as journal_fingerprint().
 
 -- +goose StatementBegin
 CREATE OR REPLACE FUNCTION journal_resolution_fingerprint(
   p_ledger_slug  text,
   p_pending_ref  text,
-  p_action       text,
-  p_effective_at timestamp with time zone
+  p_action       text
 )
 RETURNS text
 LANGUAGE sql
@@ -37,11 +37,7 @@ AS $$
           'operation', 'resolve',
           'ledger_slug', p_ledger_slug,
           'pending_ref', p_pending_ref,
-          'action', p_action,
-          'effective_at_epoch', CASE
-            WHEN p_effective_at IS NULL THEN NULL
-            ELSE extract(epoch FROM p_effective_at)
-          END
+          'action', p_action
         )::text,
         'UTF8'
       )
@@ -126,7 +122,6 @@ END $$;
 -- fails the whole call on the first problem it finds.
 --
 --   LG001  ledger_not_found
---   LG002  ledger_closed
 --   LG020  idempotency_conflict
 --   LG031  entry_not_found
 --   LG032  entry_not_pending (the entry was posted immediately)
@@ -138,15 +133,13 @@ CREATE OR REPLACE FUNCTION resolve_entry(
   p_ledger_slug  text,
   p_request_id   text,
   p_pending_ref  text,
-  p_action       text,
-  p_effective_at timestamp with time zone
+  p_action       text
 )
 RETURNS TABLE (
   out_public_ref   text,
   out_request_id   text,
   out_kind         text,
   out_description  text,
-  out_effective_at timestamp with time zone,
   out_created_at   timestamp with time zone,
   out_pending_ref  text,
   out_state        text,
@@ -179,7 +172,7 @@ BEGIN
   END IF;
 
   v_fingerprint := journal_resolution_fingerprint(
-    p_ledger_slug, p_pending_ref, p_action, p_effective_at
+    p_ledger_slug, p_pending_ref, p_action
   );
 
   SELECT * INTO v_existing
@@ -188,10 +181,6 @@ BEGIN
     AND request_id = p_request_id;
 
   IF NOT FOUND THEN
-    IF v_ledger.is_closed THEN
-      RAISE EXCEPTION 'ledger_closed: %', p_ledger_slug USING ERRCODE = 'LG002';
-    END IF;
-
     -- Entries are immutable, so reading the pending entry needs no lock.
     SELECT * INTO v_pending
     FROM journal_entries
@@ -203,11 +192,10 @@ BEGIN
     END IF;
 
     INSERT INTO journal_entries
-      (public_ref, ledger_id, request_id, fingerprint, kind, description,
-       effective_at)
+      (public_ref, ledger_id, request_id, fingerprint, kind, description)
     VALUES
       (p_public_ref, v_ledger.id, p_request_id, v_fingerprint, v_pending.kind,
-       v_pending.description, coalesce(p_effective_at, now()))
+       v_pending.description)
     ON CONFLICT (ledger_id, request_id) DO NOTHING
     RETURNING * INTO v_entry;
 
@@ -226,8 +214,7 @@ BEGIN
 
     RETURN QUERY
     SELECT v_existing.public_ref, v_existing.request_id, v_existing.kind,
-           v_existing.description, v_existing.effective_at,
-           v_existing.created_at, p_pending_ref, auth.state, false
+           v_existing.description, v_existing.created_at, p_pending_ref, auth.state, false
     FROM authorizations auth
     WHERE auth.resolution_entry_id = v_existing.id;
     RETURN;
@@ -264,7 +251,7 @@ BEGIN
 
   RETURN QUERY
   SELECT v_entry.public_ref, v_entry.request_id, v_entry.kind,
-         v_entry.description, v_entry.effective_at, v_entry.created_at,
+         v_entry.description, v_entry.created_at,
          p_pending_ref,
          CASE WHEN p_action = 'capture' THEN 'captured' ELSE 'voided' END,
          true;
@@ -276,15 +263,14 @@ END $$;
 -- resolve_entry() what post_entries() is to post_entry(), and is separate for
 -- the same reason: a subtransaction per item would slow every backend once a
 -- batch passes 64 of them. Every check is a query, and rejected claims are
--- deleted before any lines are inserted.
+-- deleted before any lines are inserted. Entries have at most 5 lines, so a
+-- batch copies at most 5,000 and needs no line count of its own.
 --
 -- Whole-batch failures (transaction rollback):
 --   LG001  ledger_not_found
---   LG002  ledger_closed, unless every item is a replay
 --   LG020  idempotency_conflict (duplicate request id within the batch)
 --   LG021  invalid or empty batch
 --   LG025  batch_size_exceeded (more than 1,000 items)
---   LG026  batch_lines_exceeded (more than 5,000 copied lines)
 --   LG027  batch_too_small (fewer than 10 items)
 --   LG035  duplicate_pending_ref (two items name one pending entry)
 --
@@ -383,7 +369,6 @@ BEGIN
     public_ref       text NOT NULL,
     pending_ref      text NOT NULL,
     action           text NOT NULL,
-    effective_at     timestamp with time zone,
     fingerprint      text NOT NULL,
     status           text NOT NULL DEFAULT 'pending',
     error_code       text,
@@ -399,8 +384,7 @@ BEGIN
   DELETE FROM pg_temp.batch_resolutions_work;
 
   INSERT INTO pg_temp.batch_resolutions_work (
-    item_index, request_id, public_ref, pending_ref, action, effective_at,
-    fingerprint
+    item_index, request_id, public_ref, pending_ref, action, fingerprint
   )
   SELECT
     (item.ord - 1)::integer,
@@ -408,12 +392,10 @@ BEGIN
     item.val->>'public_ref',
     item.val->>'pending_ref',
     item.val->>'action',
-    (item.val->>'effective_at')::timestamp with time zone,
     journal_resolution_fingerprint(
       p_ledger_slug,
       item.val->>'pending_ref',
-      item.val->>'action',
-      (item.val->>'effective_at')::timestamp with time zone
+      item.val->>'action'
     )
   FROM jsonb_array_elements(p_items) WITH ORDINALITY AS item(val, ord);
 
@@ -436,20 +418,7 @@ BEGIN
   WHERE pending.ledger_id = v_ledger.id
     AND pending.public_ref = w.pending_ref;
 
-  SELECT count(*) INTO v_count
-  FROM journal_lines line
-  JOIN pg_temp.batch_resolutions_work w ON w.pending_entry_id = line.journal_entry_id;
-  IF v_count > 5000 THEN
-    RAISE EXCEPTION 'batch_lines_exceeded' USING ERRCODE = 'LG026';
-  END IF;
-
   PERFORM batch_classify_known_resolutions(v_ledger.id);
-
-  IF v_ledger.is_closed THEN
-    IF EXISTS (SELECT 1 FROM pg_temp.batch_resolutions_work WHERE status <> 'existing') THEN
-      RAISE EXCEPTION 'ledger_closed: %', p_ledger_slug USING ERRCODE = 'LG002';
-    END IF;
-  END IF;
 
   UPDATE pg_temp.batch_resolutions_work w
   SET status = 'rejected',
@@ -461,11 +430,10 @@ BEGIN
   -- Claims in request-id order, as post_entries() takes them.
   WITH inserted AS (
     INSERT INTO journal_entries (
-      public_ref, ledger_id, request_id, fingerprint, kind, description,
-      effective_at
+      public_ref, ledger_id, request_id, fingerprint, kind, description
     )
     SELECT w.public_ref, v_ledger.id, w.request_id, w.fingerprint, w.kind,
-           w.description, coalesce(w.effective_at, now())
+           w.description
     FROM pg_temp.batch_resolutions_work w
     WHERE w.status = 'pending'
     ORDER BY w.request_id COLLATE "C"

@@ -25,13 +25,11 @@ func TestStore_PostEntries_MixedOutcomes(t *testing.T) {
 	fixture := newPostEntryFixture(t)
 
 	// Pre-create an existing entry
-	effectiveAt := time.Date(2026, time.September, 18, 10, 0, 0, 0, time.UTC)
 	existingPost := fixture.mustPost(t, journal.PostInput{
 		LedgerSlug:  fixture.slug,
 		RequestID:   "pre_existing_1",
 		Kind:        "payment",
 		Description: "Pre-existing payment",
-		EffectiveAt: &effectiveAt,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
@@ -62,7 +60,6 @@ func TestStore_PostEntries_MixedOutcomes(t *testing.T) {
 				RequestID:   "pre_existing_1",
 				Kind:        "payment",
 				Description: "Pre-existing payment",
-				EffectiveAt: &effectiveAt,
 				Lines: []journal.LineInput{
 					{
 						DebitAccountReference:  fixture.platform.Cash.Reference,
@@ -750,12 +747,14 @@ func TestStore_PostEntries_WholeBatchFailures(t *testing.T) {
 		}
 	})
 
-	t.Run("batch lines exceeded fails whole batch with ErrBatchLinesExceeded", func(t *testing.T) {
+	t.Run("an entry over the line limit fails the whole batch", func(t *testing.T) {
 		fixture := newPostEntryFixture(t)
-		// 51 entries with 100 lines each = 5,100 lines (exceeds MaxBatchLines 5,000)
-		entries := make([]journal.BatchItemInput, 51)
+		entries := make([]journal.BatchItemInput, journal.MinBatchEntries)
 		for i := range entries {
-			lines := make([]journal.LineInput, 100)
+			lines := make([]journal.LineInput, 1)
+			if i == 3 {
+				lines = make([]journal.LineInput, journal.MaxEntryLines+1)
+			}
 			for j := range lines {
 				lines[j] = journal.LineInput{
 					DebitAccountReference:  fixture.platform.Cash.Reference,
@@ -775,8 +774,8 @@ func TestStore_PostEntries_WholeBatchFailures(t *testing.T) {
 			LedgerSlug: fixture.slug,
 			Entries:    entries,
 		})
-		if !errors.Is(err, journal.ErrBatchLinesExceeded) {
-			t.Errorf("err = %v, want ErrBatchLinesExceeded", err)
+		if !errors.Is(err, journal.ErrTooManyLines) {
+			t.Errorf("err = %v, want ErrTooManyLines", err)
 		}
 	})
 }
@@ -977,70 +976,6 @@ func TestStore_PostEntries_ConcurrentSharingAccounts(t *testing.T) {
 		if s != int64(i+1) {
 			t.Errorf("sequence[%d] = %d, want %d", i, s, i+1)
 		}
-	}
-}
-
-// TestStore_PostEntries_EffectiveAtMatchesStoredRow verifies that when effective_at is omitted,
-// the returned effective_at matches the stored row in journal_entries exactly, and that
-// replaying the entry returns the identical stored effective_at.
-func TestStore_PostEntries_EffectiveAtMatchesStoredRow(t *testing.T) {
-	fixture := newPostEntryFixture(t)
-
-	// Single entry via PostEntry
-	res, err := fixture.store.PostEntry(t.Context(), journal.PostInput{
-		LedgerSlug:  fixture.slug,
-		RequestID:   "eff_single",
-		Kind:        "payment",
-		Description: "Effective time test",
-		EffectiveAt: nil, // omitted
-		Lines: []journal.LineInput{
-			{
-				DebitAccountReference:  fixture.platform.Cash.Reference,
-				CreditAccountReference: fixture.payable.Reference,
-				Amount:                 1000,
-				Purpose:                "P",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("PostEntry failed: %v", err)
-	}
-
-	var storedEffectiveAt time.Time
-	err = fixture.tx.QueryRowContext(
-		t.Context(),
-		`SELECT effective_at FROM journal_entries WHERE public_ref = $1`,
-		res.Entry.Reference,
-	).Scan(&storedEffectiveAt)
-	if err != nil {
-		t.Fatalf("query stored effective_at: %v", err)
-	}
-
-	if !res.Entry.EffectiveAt.Equal(storedEffectiveAt) {
-		t.Errorf("PostEntry EffectiveAt = %v, want stored %v", res.Entry.EffectiveAt, storedEffectiveAt)
-	}
-
-	// Replay PostEntry
-	replayRes, err := fixture.store.PostEntry(t.Context(), journal.PostInput{
-		LedgerSlug:  fixture.slug,
-		RequestID:   "eff_single",
-		Kind:        "payment",
-		Description: "Effective time test",
-		EffectiveAt: nil,
-		Lines: []journal.LineInput{
-			{
-				DebitAccountReference:  fixture.platform.Cash.Reference,
-				CreditAccountReference: fixture.payable.Reference,
-				Amount:                 1000,
-				Purpose:                "P",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("PostEntry replay failed: %v", err)
-	}
-	if !replayRes.Entry.EffectiveAt.Equal(storedEffectiveAt) {
-		t.Errorf("PostEntry replay EffectiveAt = %v, want stored %v", replayRes.Entry.EffectiveAt, storedEffectiveAt)
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/oklog/ulid/v2"
 
@@ -15,7 +14,7 @@ import (
 // ResolveEntry captures or voids a pending entry, or returns the existing
 // resolution when the request is an idempotent retry.
 func (s *Store) ResolveEntry(ctx context.Context, input journal.ResolveInput) (journal.ResolveResult, error) {
-	const q = `SELECT * FROM resolve_entry($1, $2, $3, $4, $5, $6)`
+	const q = `SELECT * FROM resolve_entry($1, $2, $3, $4, $5)`
 
 	var (
 		r       journal.Resolution
@@ -30,13 +29,11 @@ func (s *Store) ResolveEntry(ctx context.Context, input journal.ResolveInput) (j
 		input.RequestID,
 		input.PendingReference,
 		string(input.Action),
-		input.EffectiveAt,
 	).Scan(
 		&r.Reference,
 		&r.RequestID,
 		&r.Kind,
 		&r.Description,
-		&r.EffectiveAt,
 		&r.CreatedAt,
 		&r.PendingReference,
 		&state,
@@ -45,17 +42,16 @@ func (s *Store) ResolveEntry(ctx context.Context, input journal.ResolveInput) (j
 	if err != nil {
 		return journal.ResolveResult{}, mapPostEntryError(err)
 	}
-	r.State = journal.State(state)
+	r.PendingState = journal.State(state)
 
 	return journal.ResolveResult{Resolution: r, Created: created}, nil
 }
 
 type resolveBatchItem struct {
-	PublicRef   string     `json:"public_ref"`
-	RequestID   string     `json:"request_id"`
-	PendingRef  string     `json:"pending_ref"`
-	Action      string     `json:"action"`
-	EffectiveAt *time.Time `json:"effective_at,omitempty"`
+	PublicRef  string `json:"public_ref"`
+	RequestID  string `json:"request_id"`
+	PendingRef string `json:"pending_ref"`
+	Action     string `json:"action"`
 }
 
 // ResolveEntries resolves a batch of pending entries in one database
@@ -66,11 +62,10 @@ func (s *Store) ResolveEntries(ctx context.Context, input journal.ResolveBatchIn
 	items := make([]resolveBatchItem, len(input.Items))
 	for i, item := range input.Items {
 		items[i] = resolveBatchItem{
-			PublicRef:   "jrn_" + ulid.Make().String(),
-			RequestID:   item.RequestID,
-			PendingRef:  item.PendingReference,
-			Action:      string(item.Action),
-			EffectiveAt: toMicroseconds(item.EffectiveAt),
+			PublicRef:  "jrn_" + ulid.Make().String(),
+			RequestID:  item.RequestID,
+			PendingRef: item.PendingReference,
+			Action:     string(item.Action),
 		}
 	}
 	encoded, err := json.Marshal(items)
@@ -114,7 +109,7 @@ func (s *Store) ResolveEntries(ctx context.Context, input journal.ResolveBatchIn
 		}
 		if state.Valid {
 			st := journal.State(state.String)
-			item.State = &st
+			item.PendingState = &st
 		}
 		if resolvedBy.Valid {
 			item.ResolvedBy = &resolvedBy.String

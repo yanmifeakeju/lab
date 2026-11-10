@@ -104,7 +104,6 @@ export const ledgerPostings = pgTable(
     // Written for the merchant's statement: the link's title as it was when
     // the payment was posted.
     description: text("description").notNull(),
-    effectiveAt: at("effective_at").notNull(),
     lines: jsonb("lines").$type<ReadonlyArray<PostingLine>>().notNull(),
     state: postingState("state").default("created").notNull(),
     // The first entry: posted, or the pending authorization.

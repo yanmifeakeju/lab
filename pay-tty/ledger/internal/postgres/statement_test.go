@@ -23,13 +23,11 @@ func TestStore_GetStatement_HappyPath(t *testing.T) {
 	// Create 2 payments for the payable account.
 	// Entry 1: 10,000 credit to payable, 200 fee debit from payable
 	desc1 := "Payment received"
-	eff1 := time.Date(2026, time.September, 10, 9, 15, 0, 0, time.UTC)
 	entry1 := fixture.mustPost(t, journal.PostInput{
 		LedgerSlug:  "ngn_ng",
 		RequestID:   "req_1",
 		Kind:        "payment",
 		Description: desc1,
-		EffectiveAt: &eff1,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
@@ -129,72 +127,6 @@ func TestStore_GetStatement_HappyPath(t *testing.T) {
 	}
 }
 
-// TestStore_GetStatement_TimelineStability verifies that recorded-time ordering
-// remains stable when a newly recorded entry carries an earlier effective_at value.
-func TestStore_GetStatement_TimelineStability(t *testing.T) {
-	fixture := newPostEntryFixture(t)
-	store := postgres.NewWithStatementMargin(fixture.tx, 0)
-
-	// Entry 1: effective Sept 15, posted first
-	eff1 := time.Date(2026, time.September, 15, 0, 0, 0, 0, time.UTC)
-	entry1 := fixture.mustPost(t, journal.PostInput{
-		LedgerSlug:  "ngn_ng",
-		RequestID:   "req_timeline_1",
-		Kind:        "payment",
-		Description: "Timeline entry 1",
-		EffectiveAt: &eff1,
-		Lines: []journal.LineInput{
-			{
-				DebitAccountReference:  fixture.platform.Cash.Reference,
-				CreditAccountReference: fixture.payable.Reference,
-				Amount:                 1_000,
-				Purpose:                "Timeline 1",
-			},
-		},
-	})
-
-	// Entry 2: effective Sept 1 (earlier effective time), posted second
-	eff2 := time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC)
-	entry2 := fixture.mustPost(t, journal.PostInput{
-		LedgerSlug:  "ngn_ng",
-		RequestID:   "req_timeline_2",
-		Kind:        "payment",
-		Description: "Timeline entry 2",
-		EffectiveAt: &eff2,
-		Lines: []journal.LineInput{
-			{
-				DebitAccountReference:  fixture.platform.Cash.Reference,
-				CreditAccountReference: fixture.payable.Reference,
-				Amount:                 2_000,
-				Purpose:                "Timeline 2",
-			},
-		},
-	})
-
-	res, err := store.GetStatement(t.Context(), statement.ListInput{
-		AccountReference: fixture.payable.Reference,
-		From:             new(entry1.Entry.CreatedAt.Add(-24 * time.Hour)),
-		To:               new(entry2.Entry.CreatedAt.Add(24 * time.Hour)),
-		Limit:            10,
-	})
-	if err != nil {
-		t.Fatalf("GetStatement() error = %v", err)
-	}
-
-	if len(res.Movements) != 2 {
-		t.Fatalf("len(Movements) = %d, want 2", len(res.Movements))
-	}
-
-	// Both entries share the test transaction's created_at, so posting order
-	// breaks the tie. entry1 must still come first despite its later effective_at.
-	if res.Movements[0].JournalReference != entry1.Entry.Reference {
-		t.Errorf("Movements[0] = %q, want entry1 %q", res.Movements[0].JournalReference, entry1.Entry.Reference)
-	}
-	if res.Movements[1].JournalReference != entry2.Entry.Reference {
-		t.Errorf("Movements[1] = %q, want entry2 %q", res.Movements[1].JournalReference, entry2.Entry.Reference)
-	}
-}
-
 // TestStore_GetStatement_BidirectionalPagination tests multi-page forward and
 // backward navigation, ensuring round-trip symmetry and exact boundary handling.
 func TestStore_GetStatement_BidirectionalPagination(t *testing.T) {
@@ -204,13 +136,11 @@ func TestStore_GetStatement_BidirectionalPagination(t *testing.T) {
 	// Create 5 entries (1 movement each).
 	var postedEntries []journal.PostResult
 	for i := 1; i <= 5; i++ {
-		eff := time.Date(2026, time.September, i, 12, 0, 0, 0, time.UTC)
 		res := fixture.mustPost(t, journal.PostInput{
 			LedgerSlug:  "ngn_ng",
 			RequestID:   "req_page_" + string(rune('0'+i)),
 			Kind:        "payment",
 			Description: "Pagination entry",
-			EffectiveAt: &eff,
 			Lines: []journal.LineInput{
 				{
 					DebitAccountReference:  fixture.platform.Cash.Reference,
@@ -412,13 +342,11 @@ func TestStore_GetStatement_ReconciliationIdentity(t *testing.T) {
 	store := postgres.NewWithStatementMargin(fixture.tx, 0)
 
 	// Entry 0: before period (creates opening balance of 20,000)
-	eff0 := time.Date(2026, time.September, 1, 10, 0, 0, 0, time.UTC)
 	fixture.mustPost(t, journal.PostInput{
 		LedgerSlug:  "ngn_ng",
 		RequestID:   "req_recon_id_0",
 		Kind:        "payment",
 		Description: "Opening credit",
-		EffectiveAt: &eff0,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
@@ -440,13 +368,11 @@ func TestStore_GetStatement_ReconciliationIdentity(t *testing.T) {
 	periodFrom := rec0.Add(1 * time.Millisecond)
 
 	// Entry 1: inside period (credit 10,000, debit 500 fee)
-	eff1 := time.Date(2026, time.September, 5, 10, 0, 0, 0, time.UTC)
 	fixture.mustPost(t, journal.PostInput{
 		LedgerSlug:  "ngn_ng",
 		RequestID:   "req_recon_id_1",
 		Kind:        "payment",
 		Description: "Period payment 1",
-		EffectiveAt: &eff1,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
@@ -464,13 +390,11 @@ func TestStore_GetStatement_ReconciliationIdentity(t *testing.T) {
 	})
 
 	// Entry 2: inside period (debit 5,000 withdrawal)
-	eff2 := time.Date(2026, time.September, 10, 10, 0, 0, 0, time.UTC)
 	fixture.mustPost(t, journal.PostInput{
 		LedgerSlug:  "ngn_ng",
 		RequestID:   "req_recon_id_2",
 		Kind:        "payment",
 		Description: "Period withdrawal 2",
-		EffectiveAt: &eff2,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.payable.Reference,

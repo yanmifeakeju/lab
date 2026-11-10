@@ -21,7 +21,7 @@
 --   LG020  idempotency_conflict (duplicate request_id within batch)
 --   LG021  no_lines (or empty/invalid batch)
 --   LG025  batch_size_exceeded (exceeds 1,000 entries)
---   LG026  batch_lines_exceeded (exceeds 5,000 lines total)
+--   LG026  too_many_lines (an entry with more than 5)
 --   LG027  batch_too_small (fewer than 10 entries)
 --
 --
@@ -68,10 +68,6 @@ BEGIN
         WHEN j.fingerprint = w.fingerprint THEN j.public_ref
         ELSE w.public_ref
       END,
-      effective_at = CASE
-        WHEN j.fingerprint = w.fingerprint THEN j.effective_at
-        ELSE w.effective_at
-      END,
       created_at = CASE
         WHEN j.fingerprint = w.fingerprint THEN j.created_at
         ELSE NULL
@@ -100,7 +96,6 @@ RETURNS TABLE (
   out_kind             text,
   out_state            text,
   out_description      text,
-  out_effective_at     timestamp with time zone,
   out_created_at       timestamp with time zone
 )
 LANGUAGE plpgsql
@@ -132,6 +127,16 @@ BEGIN
     RAISE EXCEPTION 'batch_size_exceeded' USING ERRCODE = 'LG025';
   END IF;
 
+  -- With at most 5 lines per entry, the 1,000-entry cap bounds the batch at
+  -- 5,000 lines. Checked before any work row or fingerprint is built.
+  IF EXISTS (
+    SELECT 1 FROM jsonb_array_elements(p_entries) AS entry(val)
+    WHERE jsonb_typeof(entry.val->'lines') = 'array'
+      AND jsonb_array_length(entry.val->'lines') > 5
+  ) THEN
+    RAISE EXCEPTION 'too_many_lines' USING ERRCODE = 'LG026';
+  END IF;
+
   SELECT * INTO v_ledger
   FROM ledgers
   WHERE slug = p_ledger_slug
@@ -148,7 +153,6 @@ BEGIN
     public_ref       text NOT NULL,
     kind             text NOT NULL,
     description      text NOT NULL,
-    effective_at     timestamp with time zone,
     pending          boolean NOT NULL,
     fingerprint      text NOT NULL,
     status           text NOT NULL DEFAULT 'pending',
@@ -167,7 +171,6 @@ BEGIN
     public_ref,
     kind,
     description,
-    effective_at,
     pending,
     fingerprint,
     lines
@@ -178,13 +181,11 @@ BEGIN
     entry.val->>'public_ref',
     entry.val->>'kind',
     entry.val->>'description',
-    (entry.val->>'effective_at')::timestamp with time zone,
     coalesce((entry.val->>'pending')::boolean, false),
     journal_fingerprint(
       p_ledger_slug,
       entry.val->>'kind',
       entry.val->>'description',
-      (entry.val->>'effective_at')::timestamp with time zone,
       entry.val->'lines',
       coalesce((entry.val->>'pending')::boolean, false)
     ),
@@ -213,14 +214,6 @@ BEGIN
     RAISE EXCEPTION 'no_lines' USING ERRCODE = 'LG021';
   END IF;
 
-  -- Check total lines limit across the entire batch (cap at 5,000 lines)
-  SELECT coalesce(sum(jsonb_array_length(bw.lines)), 0)
-  INTO v_count
-  FROM pg_temp.batch_entries_work bw;
-
-  IF v_count > 5000 THEN
-    RAISE EXCEPTION 'batch_lines_exceeded' USING ERRCODE = 'LG026';
-  END IF;
 
   -- 2. Classify keys that already exist before deciding whether a closed
   -- ledger is seeing only identical replays.
@@ -246,8 +239,7 @@ BEGIN
       request_id,
       fingerprint,
       kind,
-      description,
-      effective_at
+      description
     )
     SELECT
       w.public_ref,
@@ -255,19 +247,17 @@ BEGIN
       w.request_id,
       w.fingerprint,
       w.kind,
-      w.description,
-      coalesce(w.effective_at, now())
+      w.description
     FROM pg_temp.batch_entries_work w
     WHERE w.status = 'pending'
     ORDER BY w.request_id COLLATE "C"
     ON CONFLICT (ledger_id, request_id) DO NOTHING
-    RETURNING id, request_id, public_ref, effective_at, created_at
+    RETURNING id, request_id, public_ref, created_at
   )
   UPDATE pg_temp.batch_entries_work w
   SET status = 'claimed',
       entry_id = i.id,
       public_ref = i.public_ref,
-      effective_at = i.effective_at,
       created_at = i.created_at
   FROM inserted i
   WHERE w.request_id = i.request_id;
@@ -697,7 +687,6 @@ BEGIN
       ELSE coalesce(auth.state, 'posted')
     END AS out_state,
     w.description AS out_description,
-    w.effective_at AS out_effective_at,
     w.created_at AS out_created_at
   FROM pg_temp.batch_entries_work w
   LEFT JOIN authorizations auth

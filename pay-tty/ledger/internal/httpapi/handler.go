@@ -52,6 +52,9 @@ type Service interface {
 
 const msgUnknownLedger = "ledger must name an existing ledger"
 
+// tooManyLinesMessage matches the spec's maxItems message for lines.
+var tooManyLinesMessage = fmt.Sprintf("lines must not contain more than %d journal lines", journal.MaxEntryLines)
+
 type server struct {
 	service Service
 }
@@ -233,7 +236,6 @@ func (s *server) PostJournalEntry(
 		RequestID:   request.Params.IdempotencyKey,
 		Kind:        kind,
 		Description: description,
-		EffectiveAt: request.Body.EffectiveAt,
 		Lines:       lines,
 		Pending:     pending,
 	})
@@ -247,7 +249,6 @@ func (s *server) PostJournalEntry(
 		Kind:        result.Entry.Kind,
 		State:       api.EntryState(result.Entry.State),
 		Description: result.Entry.Description,
-		EffectiveAt: result.Entry.EffectiveAt,
 		CreatedAt:   result.Entry.CreatedAt,
 	}
 	if result.Created {
@@ -280,7 +281,6 @@ func (s *server) PostJournalEntriesBatch(
 		return postJournalEntriesBatchValidationResponse("entries", fmt.Sprintf("entries must not contain more than %d entries", journal.MaxBatchEntries)), nil
 	}
 
-	totalLines := 0
 	seenKeys := make(map[string]struct{}, len(request.Body.Entries))
 	batchEntries := make([]journal.BatchItemInput, len(request.Body.Entries))
 
@@ -302,6 +302,12 @@ func (s *server) PostJournalEntriesBatch(
 				"entry must contain at least 1 line",
 			), nil
 		}
+		if len(entry.Lines) > journal.MaxEntryLines {
+			return postJournalEntriesBatchValidationResponse(
+				fmt.Sprintf("entries[%d].lines", i),
+				tooManyLinesMessage,
+			), nil
+		}
 
 		kind := strings.TrimSpace(entry.Kind)
 		if kind == "" {
@@ -316,14 +322,6 @@ func (s *server) PostJournalEntriesBatch(
 			return postJournalEntriesBatchValidationResponse(
 				fmt.Sprintf("entries[%d].description", i),
 				"description must not be blank",
-			), nil
-		}
-
-		totalLines += len(entry.Lines)
-		if totalLines > journal.MaxBatchLines {
-			return postJournalEntriesBatchValidationResponse(
-				"entries",
-				fmt.Sprintf("batch exceeds maximum of %d lines", journal.MaxBatchLines),
 			), nil
 		}
 
@@ -356,7 +354,6 @@ func (s *server) PostJournalEntriesBatch(
 			RequestID:   key,
 			Kind:        kind,
 			Description: description,
-			EffectiveAt: entry.EffectiveAt,
 			Lines:       lines,
 			Pending:     pending,
 		}
@@ -424,8 +421,8 @@ func mapPostJournalEntriesBatchError(err error) api.PostJournalEntriesBatchRespo
 		return postJournalEntriesBatchValidationResponse("entries", batchTooSmallMessage())
 	case errors.Is(err, journal.ErrBatchSizeExceeded):
 		return postJournalEntriesBatchValidationResponse("entries", fmt.Sprintf("entries must not contain more than %d entries", journal.MaxBatchEntries))
-	case errors.Is(err, journal.ErrBatchLinesExceeded):
-		return postJournalEntriesBatchValidationResponse("entries", fmt.Sprintf("batch exceeds maximum of %d lines", journal.MaxBatchLines))
+	case errors.Is(err, journal.ErrTooManyLines):
+		return postJournalEntriesBatchValidationResponse("entries", tooManyLinesMessage)
 	case errors.Is(err, journal.ErrIdempotencyConflict):
 		return postJournalEntriesBatchValidationResponse("entries", "duplicate idempotency key within batch")
 	case errors.Is(err, journal.ErrNoSelfTransfer):
@@ -573,6 +570,8 @@ func mapPostJournalEntryError(err error) api.PostJournalEntryResponseObject {
 			"lines",
 			"lines must contain at least one journal line",
 		)
+	case errors.Is(err, journal.ErrTooManyLines):
+		return postJournalEntryValidationResponse("lines", tooManyLinesMessage)
 	case errors.Is(err, journal.ErrNoSelfTransfer):
 		return postJournalEntryValidationResponse(
 			"lines",

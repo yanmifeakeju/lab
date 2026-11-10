@@ -41,21 +41,15 @@ $$;
 -- through either endpoint is recognised as the same request. Both routines must
 -- hash identically or an entry posted through one would look new to the other.
 --
--- jsonb provides a stable object-key order and preserves line-array order. The
--- caller-supplied effective time is hashed before it is defaulted: otherwise
--- each retry that omitted the value would appear to contain new content.
+-- jsonb provides a stable object-key order and preserves line-array order.
 --
--- The pending key is added only for pending entries, so an immediate entry
--- hashes exactly as it did before pending entries existed.
---
--- STABLE, not IMMUTABLE, only because extract(epoch FROM timestamptz) is.
+-- STABLE, not IMMUTABLE, because convert_to() and jsonb_build_object() are.
 
 -- +goose StatementBegin
 CREATE OR REPLACE FUNCTION journal_fingerprint(
   p_ledger_slug  text,
   p_kind         text,
   p_description  text,
-  p_effective_at timestamp with time zone,
   p_lines        jsonb,
   p_pending      boolean
 )
@@ -68,22 +62,13 @@ AS $$
   SELECT encode(
     sha256(
       convert_to(
-        (
-          jsonb_build_object(
-            'operation', 'post',
-            'ledger_slug', p_ledger_slug,
-            'kind', p_kind,
-            'description', p_description,
-            'effective_at_epoch', CASE
-              WHEN p_effective_at IS NULL THEN NULL
-              ELSE extract(epoch FROM p_effective_at)
-            END,
-            'lines', p_lines
-          )
-          || CASE
-            WHEN p_pending THEN jsonb_build_object('pending', true)
-            ELSE '{}'::jsonb
-          END
+        jsonb_build_object(
+          'operation', 'post',
+          'ledger_slug', p_ledger_slug,
+          'kind', p_kind,
+          'description', p_description,
+          'lines', p_lines,
+          'pending', coalesce(p_pending, false)
         )::text,
         'UTF8'
       )
@@ -254,6 +239,7 @@ $$;
 --   LG020  idempotency_conflict
 --   LG021  no_lines
 --   LG022  account_not_found
+--   LG026  too_many_lines (more than 5)
 --   LG024  insufficient_funds
 
 -- +goose StatementBegin
@@ -263,7 +249,6 @@ CREATE OR REPLACE FUNCTION post_entry(
   p_request_id   text,
   p_kind         text,
   p_description  text,
-  p_effective_at timestamp with time zone,
   p_lines        jsonb,
   p_pending      boolean
 )
@@ -275,7 +260,6 @@ RETURNS TABLE (
   out_kind         text,
   out_state        text,
   out_description  text,
-  out_effective_at timestamp with time zone,
   out_created_at   timestamp with time zone,
   out_created      boolean
 )
@@ -300,6 +284,10 @@ BEGIN
     RAISE EXCEPTION 'no_lines' USING ERRCODE = 'LG021';
   END IF;
 
+  IF jsonb_array_length(p_lines) > 5 THEN
+    RAISE EXCEPTION 'too_many_lines' USING ERRCODE = 'LG026';
+  END IF;
+
   SELECT * INTO v_ledger
   FROM ledgers
   WHERE slug = p_ledger_slug
@@ -310,8 +298,7 @@ BEGIN
   END IF;
 
   v_fingerprint := journal_fingerprint(
-    p_ledger_slug, p_kind, p_description, p_effective_at, p_lines,
-    p_pending
+    p_ledger_slug, p_kind, p_description, p_lines, p_pending
   );
 
   -- Return successful retries even if the ledger or an account was closed
@@ -330,8 +317,7 @@ BEGIN
     SELECT v_existing.id, v_existing.public_ref, v_existing.ledger_id,
            v_existing.request_id, v_existing.kind,
            coalesce(auth.state, 'posted'), v_existing.description,
-           v_existing.effective_at, v_existing.created_at,
-           false
+           v_existing.created_at, false
     FROM (SELECT 1) AS one
     LEFT JOIN authorizations AS auth ON auth.entry_id = v_existing.id;
     RETURN;
@@ -346,11 +332,10 @@ BEGIN
   -- account locks never form a cycle. The loser of a concurrent first attempt
   -- waits here for the winner, then returns its entry.
   INSERT INTO journal_entries
-    (public_ref, ledger_id, request_id, fingerprint, kind, description,
-     effective_at)
+    (public_ref, ledger_id, request_id, fingerprint, kind, description)
   VALUES
     (p_public_ref, v_ledger.id, p_request_id, v_fingerprint, p_kind,
-     p_description, coalesce(p_effective_at, now()))
+     p_description)
   ON CONFLICT (ledger_id, request_id) DO NOTHING
   RETURNING * INTO v_entry;
 
@@ -368,8 +353,7 @@ BEGIN
     SELECT v_existing.id, v_existing.public_ref, v_existing.ledger_id,
            v_existing.request_id, v_existing.kind,
            coalesce(auth.state, 'posted'), v_existing.description,
-           v_existing.effective_at, v_existing.created_at,
-           false
+           v_existing.created_at, false
     FROM (SELECT 1) AS one
     LEFT JOIN authorizations AS auth ON auth.entry_id = v_existing.id;
     RETURN;
@@ -499,8 +483,7 @@ BEGIN
     RETURN QUERY
     SELECT v_entry.id, v_entry.public_ref, v_entry.ledger_id,
            v_entry.request_id, v_entry.kind, 'pending'::text,
-           v_entry.description, v_entry.effective_at,
-           v_entry.created_at, true;
+           v_entry.description, v_entry.created_at, true;
     RETURN;
   END IF;
 
@@ -509,7 +492,6 @@ BEGIN
   RETURN QUERY
   SELECT v_entry.id, v_entry.public_ref, v_entry.ledger_id,
          v_entry.request_id, v_entry.kind, 'posted'::text,
-         v_entry.description, v_entry.effective_at, v_entry.created_at,
-         true;
+         v_entry.description, v_entry.created_at, true;
 END $$;
 -- +goose StatementEnd

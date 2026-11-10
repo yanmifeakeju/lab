@@ -37,8 +37,8 @@ var (
 	// ErrBatchSizeExceeded is returned when a batch contains more entries than the maximum allowed.
 	ErrBatchSizeExceeded = errors.New("batch size exceeded")
 
-	// ErrBatchLinesExceeded is returned when a batch contains more total lines than the maximum allowed.
-	ErrBatchLinesExceeded = errors.New("batch lines exceeded")
+	// ErrTooManyLines is returned when an entry has more than MaxEntryLines lines.
+	ErrTooManyLines = errors.New("too many lines")
 
 	// ErrNoSelfTransfer is returned when a post entry line debits and credits
 	// the same account.
@@ -91,12 +91,13 @@ var (
 
 // ResolvedError reports the resolution that won a pending entry.
 type ResolvedError struct {
-	State               State
+	// PendingState is the state the winning resolution left.
+	PendingState        State
 	ResolutionReference string
 }
 
 func (e *ResolvedError) Error() string {
-	return fmt.Sprintf("%s: %s by %s", ErrEntryResolved, e.State, e.ResolutionReference)
+	return fmt.Sprintf("%s: %s by %s", ErrEntryResolved, e.PendingState, e.ResolutionReference)
 }
 
 func (e *ResolvedError) Is(target error) bool { return target == ErrEntryResolved }

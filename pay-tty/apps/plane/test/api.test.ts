@@ -1834,7 +1834,6 @@ void test("the relay posts a succeeded payment to the ledger, and the merchant s
         ledger: "ngn_ng",
         kind: "payment",
         description: `Payment received via ${title}`,
-        effective_at: entry.payload.effective_at,
         lines: [{
           debit_account_ref: "acct_test_cash",
           credit_account_ref: account,
@@ -1842,7 +1841,6 @@ void test("the relay posts a succeeded payment to the ledger, and the merchant s
           purpose: "payment",
         }],
       })
-      assert.equal(Date.parse(entry.payload.effective_at ?? ""), Date.parse(detail.payment.completed_at ?? ""))
 
       assert.equal(detail.payment.state, "settled")
       assert.equal(detail.payment.status, "succeeded")

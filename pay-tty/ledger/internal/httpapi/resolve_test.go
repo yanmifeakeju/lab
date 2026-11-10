@@ -91,6 +91,16 @@ func TestResolveEndpoints_Validation(t *testing.T) {
 			field: "items",
 		},
 		{
+			name: "resolve batch item with a removed field", path: "/entries/resolve/batch",
+			body: fmt.Sprintf(`{"ledger":"ngn_ng","items":[%s]}`, resolveItems(
+				`{"idempotency_key":"r_0","pending_ref":"jrn_01K5A2M8Q4XR7T3N9B6C1D0E00","action":"void","effective_at":"2026-11-07T00:00:00Z"}`)),
+			field: "items[0].effective_at",
+		},
+		{
+			name: "resolve with a removed field", path: "/entries/" + pendingRef + "/resolve", key: "k",
+			body: `{"ledger":"ngn_ng","action":"void","effective_at":"2026-11-07T00:00:00Z"}`, field: "effective_at",
+		},
+		{
 			name: "resolve unknown action", path: "/entries/" + pendingRef + "/resolve", key: "k",
 			body: `{"ledger":"ngn_ng","action":"refund"}`, field: "action",
 		},
@@ -121,7 +131,7 @@ func TestResolveJournalEntry_Responses(t *testing.T) {
 	created := time.Date(2026, time.November, 7, 9, 0, 0, 0, time.UTC)
 	resolution := journal.Resolution{
 		Reference: resolutionRef, RequestID: "cap", Kind: "payout", Description: "Payout",
-		EffectiveAt: created, CreatedAt: created, PendingReference: pendingRef, State: journal.StateCaptured,
+		CreatedAt: created, PendingReference: pendingRef, PendingState: journal.StateCaptured,
 	}
 
 	tests := []struct {
@@ -135,11 +145,10 @@ func TestResolveJournalEntry_Responses(t *testing.T) {
 		{name: "replay", result: journal.ResolveResult{Resolution: resolution}, wantStatus: http.StatusOK},
 		{name: "not found", err: fmt.Errorf("x: %w", journal.ErrEntryNotFound), wantStatus: http.StatusNotFound, wantCode: api.EntryNotFound},
 		{name: "not pending", err: fmt.Errorf("x: %w", journal.ErrEntryNotPending), wantStatus: http.StatusConflict, wantCode: api.EntryNotPending},
-		{name: "ledger closed", err: fmt.Errorf("x: %w", journal.ErrLedgerClosed), wantStatus: http.StatusConflict, wantCode: api.LedgerClosed},
 		{name: "conflict", err: fmt.Errorf("x: %w", journal.ErrIdempotencyConflict), wantStatus: http.StatusConflict, wantCode: api.IdempotencyConflict},
 		{
 			name:       "resolved",
-			err:        &journal.ResolvedError{State: journal.StateVoided, ResolutionReference: resolutionRef},
+			err:        &journal.ResolvedError{PendingState: journal.StateVoided, ResolutionReference: resolutionRef},
 			wantStatus: http.StatusConflict, wantCode: api.EntryResolved,
 		},
 	}
@@ -160,7 +169,7 @@ func TestResolveJournalEntry_Responses(t *testing.T) {
 				if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 					t.Fatal(err)
 				}
-				if got.JournalRef != resolutionRef || got.PendingRef != pendingRef || got.State != api.Captured || got.LedgerSlug != "ngn_ng" {
+				if got.JournalRef != resolutionRef || got.PendingRef != pendingRef || got.PendingState != api.Captured || got.LedgerSlug != "ngn_ng" {
 					t.Errorf("response = %+v", got)
 				}
 				return
@@ -190,10 +199,10 @@ func TestResolveJournalEntriesBatch_HappyPath(t *testing.T) {
 	winner := resolutionRef
 	ref := resolutionRef
 	results := []journal.ResolveBatchItemResult{
-		{RequestID: "r_0", PendingReference: pendingRef, Status: journal.BatchItemCreated, JournalRef: &ref, State: &captured},
+		{RequestID: "r_0", PendingReference: pendingRef, Status: journal.BatchItemCreated, JournalRef: &ref, PendingState: &captured},
 		{
 			RequestID: "r_1", PendingReference: "jrn_01K5A2M8Q4XR7T3N9B6C1D0E01", Status: journal.BatchItemRejected,
-			State: &voided, ResolvedBy: &winner,
+			PendingState: &voided, ResolvedBy: &winner,
 			Error: &journal.BatchItemError{Code: "entry_resolved", Message: "Entry is already voided."},
 		},
 	}
@@ -205,13 +214,13 @@ func TestResolveJournalEntriesBatch_HappyPath(t *testing.T) {
 		if i > 0 {
 			ref = fmt.Sprintf("jrn_01K5A2M8Q4XR7T3N9B6C1D0E%02d", i)
 		}
-		items[i] = fmt.Sprintf(`{"idempotency_key":"r_%d","pending_ref":%q,"action":"capture","effective_at":"2026-11-07T00:00:00+01:00"}`, i, ref)
+		items[i] = fmt.Sprintf(`{"idempotency_key":"r_%d","pending_ref":%q,"action":"capture"}`, i, ref)
 	}
 	rec := serve(t, service, http.MethodPost, "/entries/resolve/batch", "", fmt.Sprintf(`{"ledger":"ngn_ng","items":[%s]}`, strings.Join(items, ",")))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
 	}
-	if len(service.rbatchInput.Items) != journal.MinBatchEntries || service.rbatchInput.Items[0].EffectiveAt == nil {
+	if len(service.rbatchInput.Items) != journal.MinBatchEntries {
 		t.Errorf("service input = %+v", service.rbatchInput)
 	}
 

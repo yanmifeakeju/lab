@@ -7,7 +7,6 @@ CREATE TABLE "journal_entries" (
 	"fingerprint" text NOT NULL,
 	"kind" text NOT NULL,
 	"description" text NOT NULL,
-	"effective_at" timestamp with time zone NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "journal_entries_public_ref_unique" UNIQUE ("public_ref"),
 	CONSTRAINT "journal_entries_public_ref_valid" CHECK ("journal_entries"."public_ref" ~ '^jrn_[0-7][0-9A-HJKMNP-TV-Z]{25}$'),
@@ -24,8 +23,6 @@ CREATE TABLE "journal_entries" (
 
 ALTER TABLE "journal_entries" ADD CONSTRAINT "journal_entries_ledger_id_ledgers_id_fk" FOREIGN KEY ("ledger_id") REFERENCES "public"."ledgers"("id") ON DELETE no action ON UPDATE no action;
 
-CREATE INDEX "journal_entries_ledger_effective_idx" ON "journal_entries" USING btree ("ledger_id", "effective_at" DESC, "id" DESC);
-
 ALTER TABLE "accounts" ADD CONSTRAINT "accounts_id_ledger_id_unique" UNIQUE ("id", "ledger_id");
 
 CREATE TABLE "journal_lines" (
@@ -38,7 +35,8 @@ CREATE TABLE "journal_lines" (
 	"amount" bigint NOT NULL,
 	"effect" text NOT NULL,
 	"purpose" text NOT NULL,
-	CONSTRAINT "journal_lines_line_number_positive" CHECK ("journal_lines"."line_number" > 0),
+	-- At most 5 lines per entry, so a batch's work follows from its item count.
+	CONSTRAINT "journal_lines_line_number_range" CHECK ("journal_lines"."line_number" BETWEEN 1 AND 5),
 	CONSTRAINT "journal_lines_amount_positive" CHECK ("journal_lines"."amount" > 0),
 	CONSTRAINT "journal_lines_effect_valid" CHECK ("journal_lines"."effect" in ('pending', 'posted', 'pending_posted', 'pending_voided')),
 	CONSTRAINT "journal_lines_purpose_not_blank" CHECK ("journal_lines"."purpose" ~ '\S'),

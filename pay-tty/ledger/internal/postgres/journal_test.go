@@ -25,7 +25,6 @@ func TestStore_PostEntry(t *testing.T) {
 	fixture := newPostEntryFixture(t)
 
 	description := "Record merchant payment"
-	effectiveAt := time.Date(2026, time.August, 20, 10, 30, 0, 0, time.UTC)
 	const amount int64 = 12_500
 
 	result := fixture.mustPost(t, journal.PostInput{
@@ -33,7 +32,6 @@ func TestStore_PostEntry(t *testing.T) {
 		RequestID:   "request_1",
 		Kind:        "payment",
 		Description: description,
-		EffectiveAt: &effectiveAt,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
@@ -53,7 +51,6 @@ func TestStore_PostEntry(t *testing.T) {
 		RequestID:   "request_1",
 		Kind:        "payment",
 		Description: description,
-		EffectiveAt: effectiveAt,
 	})
 	assertJournalLines(t, fixture.tx, result.Entry.Reference, []journalLineRow{
 		{
@@ -83,14 +80,12 @@ func TestStore_PostEntry_MultipleLines(t *testing.T) {
 	fixture := newPostEntryFixture(t)
 
 	description := "Payment received"
-	effectiveAt := time.Date(2026, time.August, 20, 10, 30, 0, 0, time.UTC)
 
 	result := fixture.mustPost(t, journal.PostInput{
 		LedgerSlug:  "ngn_ng",
 		RequestID:   "request_1",
 		Kind:        "payment",
 		Description: description,
-		EffectiveAt: &effectiveAt,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
@@ -136,101 +131,6 @@ func TestStore_PostEntry_MultipleLines(t *testing.T) {
 	if got := readAccountBalances(t, fixture.tx, fixture.platform.Cash.ID); got != (accountBalances{}) {
 		t.Errorf("cash balances = %+v, want empty", got)
 	}
-	if got := readAccountBalances(t, fixture.tx, fixture.payable.ID); got != (accountBalances{DebitsPosted: 200, CreditsPosted: 10_000}) {
-		t.Errorf("payable balances = %+v, want DebitsPosted=200 CreditsPosted=10000", got)
-	}
-	if got := readAccountBalances(t, fixture.tx, fixture.platform.FeeRevenue.ID); got != (accountBalances{}) {
-		t.Errorf("fee revenue balances = %+v, want empty", got)
-	}
-}
-
-// TestStore_PostEntry_DefaultsEffectiveAt verifies that a database-generated
-// effective time remains stable when an otherwise identical request is retried.
-func TestStore_PostEntry_DefaultsEffectiveAt(t *testing.T) {
-	fixture := newPostEntryFixture(t)
-
-	description := "Payment received"
-
-	posted1 := fixture.mustPost(t, journal.PostInput{
-		LedgerSlug:  "ngn_ng",
-		RequestID:   "request_1",
-		Kind:        "payment",
-		Description: description,
-		Lines: []journal.LineInput{
-			{
-				DebitAccountReference:  fixture.platform.Cash.Reference,
-				CreditAccountReference: fixture.payable.Reference,
-				Amount:                 10_000,
-				Purpose:                "Card payment",
-			},
-			{
-				DebitAccountReference:  fixture.payable.Reference,
-				CreditAccountReference: fixture.platform.FeeRevenue.Reference,
-				Amount:                 200,
-				Purpose:                "Processing fee",
-			},
-		},
-	})
-
-	if !posted1.Created {
-		t.Error("PostEntry() Created = false, want true")
-	}
-
-	posted2 := fixture.mustPost(t, journal.PostInput{
-		LedgerSlug:  "ngn_ng",
-		RequestID:   "request_1",
-		Kind:        "payment",
-		Description: description,
-		Lines: []journal.LineInput{
-			{
-				DebitAccountReference:  fixture.platform.Cash.Reference,
-				CreditAccountReference: fixture.payable.Reference,
-				Amount:                 10_000,
-				Purpose:                "Card payment",
-			},
-			{
-				DebitAccountReference:  fixture.payable.Reference,
-				CreditAccountReference: fixture.platform.FeeRevenue.Reference,
-				Amount:                 200,
-				Purpose:                "Processing fee",
-			},
-		},
-	})
-
-	if posted2.Created {
-		t.Error("PostEntry() Created = true, want false")
-	}
-
-	if !posted1.Entry.EffectiveAt.Equal(posted2.Entry.EffectiveAt) {
-		t.Error("PostEntry() Created = true, want false")
-	}
-
-	wantLines := []journalLineRow{
-		{
-			LedgerID:        fixture.ledgerID,
-			DebitAccountID:  fixture.platform.Cash.ID,
-			CreditAccountID: fixture.payable.ID,
-			Amount:          10_000,
-			LineNumber:      1,
-			Effect:          "posted",
-			Purpose:         "Card payment",
-		},
-		{
-			LedgerID:        fixture.ledgerID,
-			DebitAccountID:  fixture.payable.ID,
-			CreditAccountID: fixture.platform.FeeRevenue.ID,
-			Amount:          200,
-			LineNumber:      2,
-			Effect:          "posted",
-			Purpose:         "Processing fee",
-		},
-	}
-	assertJournalLines(t, fixture.tx, posted1.Entry.Reference, wantLines)
-
-	if got := readAccountBalances(t, fixture.tx, fixture.platform.Cash.ID); got != (accountBalances{}) {
-		t.Errorf("cash balances = %+v, want empty", got)
-	}
-
 	if got := readAccountBalances(t, fixture.tx, fixture.payable.ID); got != (accountBalances{DebitsPosted: 200, CreditsPosted: 10_000}) {
 		t.Errorf("payable balances = %+v, want DebitsPosted=200 CreditsPosted=10000", got)
 	}
@@ -446,14 +346,6 @@ func TestStore_PostEntry_IdempotencyConflict(t *testing.T) {
 			},
 		},
 		{
-			name: "effective_time",
-			mutate: func(_ *testing.T, _ postEntryFixture, input *journal.PostInput) {
-				eff := *input.EffectiveAt
-				eff = eff.Add(-2 * time.Hour)
-				input.EffectiveAt = &eff
-			},
-		},
-		{
 			name: "kind",
 			mutate: func(_ *testing.T, _ postEntryFixture, input *journal.PostInput) {
 				input.Kind = "transfer"
@@ -490,12 +382,10 @@ func TestStore_PostEntry_IdempotencyConflict(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fixture := newPostEntryFixture(t)
 			description := "Payment received idempotent"
-			effectiveAt := time.Date(2026, time.August, 20, 10, 30, 0, 0, time.UTC)
 			input := journal.PostInput{
 				LedgerSlug:  "ngn_ng",
 				RequestID:   "request_1",
 				Kind:        "payment",
-				EffectiveAt: &effectiveAt,
 				Description: description,
 				Lines: []journal.LineInput{
 					{
@@ -633,12 +523,10 @@ func TestStore_PostEntry_RetryAfterClosure(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fixture := newPostEntryFixture(t)
 			description := "Payment received"
-			effectiveAt := time.Date(2026, time.August, 20, 10, 30, 0, 0, time.UTC)
 			input := journal.PostInput{
 				LedgerSlug:  fixture.slug,
 				RequestID:   "request_1",
 				Kind:        "payment",
-				EffectiveAt: &effectiveAt,
 				Description: description,
 				Lines: []journal.LineInput{
 					{
@@ -940,12 +828,10 @@ func TestStore_PostEntry_InvalidInputRollsBack(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			fixture := newPostEntryFixture(t)
 			description := "Payment received idempotent"
-			effectiveAt := time.Date(2026, time.August, 20, 10, 30, 0, 0, time.UTC)
 			input := journal.PostInput{
 				LedgerSlug:  "ngn_ng",
 				RequestID:   "request_1",
 				Kind:        "payment",
-				EffectiveAt: &effectiveAt,
 				Description: description,
 				Lines: []journal.LineInput{
 					{
@@ -1004,13 +890,11 @@ func TestStore_PostEntry_InvalidInputRollsBack(t *testing.T) {
 func TestStore_PostEntry_UnresolvedLineRollsBackEntireEntry(t *testing.T) {
 	fixture := newPostEntryFixture(t)
 
-	effectiveAt := time.Date(2026, time.August, 20, 10, 30, 0, 0, time.UTC)
 	input := journal.PostInput{
 		LedgerSlug:  "ngn_ng",
 		RequestID:   "request_1",
 		Kind:        "payment",
 		Description: "Payment received",
-		EffectiveAt: &effectiveAt,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
@@ -1352,7 +1236,6 @@ type postedEntryExpectation struct {
 	RequestID   string
 	Kind        string
 	Description string
-	EffectiveAt time.Time
 }
 
 func assertPostedEntry(t *testing.T, tx *sql.Tx, got journal.Entry, want postedEntryExpectation) {
@@ -1372,9 +1255,6 @@ func assertPostedEntry(t *testing.T, tx *sql.Tx, got journal.Entry, want postedE
 	}
 	if got.Description != want.Description {
 		t.Errorf("entry Description = %q, want %q", got.Description, want.Description)
-	}
-	if !got.EffectiveAt.Equal(want.EffectiveAt) {
-		t.Errorf("entry EffectiveAt = %v, want %v", got.EffectiveAt, want.EffectiveAt)
 	}
 	if got.CreatedAt.IsZero() {
 		t.Error("entry CreatedAt is zero, want database timestamp")
@@ -1579,7 +1459,6 @@ func TestStore_PostEntry_AccountMovements(t *testing.T) {
 	fixture := newPostEntryFixture(t)
 
 	description := "Payment and processing fee"
-	effectiveAt := time.Date(2026, time.September, 15, 10, 0, 0, 0, time.UTC)
 	const (
 		grossAmount int64 = 10_000
 		feeAmount   int64 = 200
@@ -1590,7 +1469,6 @@ func TestStore_PostEntry_AccountMovements(t *testing.T) {
 		RequestID:   "req_movements_1",
 		Kind:        "payment",
 		Description: description,
-		EffectiveAt: &effectiveAt,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
@@ -1734,13 +1612,11 @@ func TestStore_PostEntry_ReconciliationIdentity(t *testing.T) {
 	}
 
 	for i, op := range operations {
-		eff := time.Date(2026, time.September, 15+i, 12, 0, 0, 0, time.UTC)
 		fixture.mustPost(t, journal.PostInput{
 			LedgerSlug:  "ngn_ng",
 			RequestID:   fmt.Sprintf("req_recon_%d", i+1),
 			Kind:        "payment",
 			Description: op.desc,
-			EffectiveAt: &eff,
 			Lines:       op.lines,
 		})
 
@@ -1779,13 +1655,11 @@ func TestStore_PostEntry_SequenceGaplessAfterRollback(t *testing.T) {
 	fixture := newCommittedPostEntryFixture(t)
 
 	// Posting 1: succeeds (sequence 1)
-	eff1 := time.Date(2026, time.September, 15, 10, 0, 0, 0, time.UTC)
 	fixture.mustPostCommitted(t, t.Context(), journal.PostInput{
 		LedgerSlug:  fixture.slug,
 		RequestID:   "req_gapless_1",
 		Kind:        "payment",
 		Description: "First successful payment",
-		EffectiveAt: &eff1,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
@@ -1797,7 +1671,6 @@ func TestStore_PostEntry_SequenceGaplessAfterRollback(t *testing.T) {
 	})
 
 	// Posting 2: attempts to debit 10,000 (balance is 5,000) -> fails with insufficient funds!
-	eff2 := time.Date(2026, time.September, 15, 11, 0, 0, 0, time.UTC)
 	tx2, err := testDB.BeginTx(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("begin tx2: %v", err)
@@ -1808,7 +1681,6 @@ func TestStore_PostEntry_SequenceGaplessAfterRollback(t *testing.T) {
 		RequestID:   "req_gapless_2",
 		Kind:        "payment",
 		Description: "Failing debit payment",
-		EffectiveAt: &eff2,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.payable.Reference,
@@ -1824,13 +1696,11 @@ func TestStore_PostEntry_SequenceGaplessAfterRollback(t *testing.T) {
 	_ = tx2.Rollback()
 
 	// Posting 3: succeeds (must receive sequence 2, NOT 3!)
-	eff3 := time.Date(2026, time.September, 15, 12, 0, 0, 0, time.UTC)
 	fixture.mustPostCommitted(t, t.Context(), journal.PostInput{
 		LedgerSlug:  fixture.slug,
 		RequestID:   "req_gapless_3",
 		Kind:        "payment",
 		Description: "Second successful payment",
-		EffectiveAt: &eff3,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,
@@ -1958,4 +1828,37 @@ func TestStore_PostEntry_TrackedPlatformAccount(t *testing.T) {
 	if balanceAfter != 25_000 {
 		t.Errorf("movement balance_after = %d, want 25000", balanceAfter)
 	}
+}
+
+// TestStore_PostEntry_LineLimit accepts an entry at the line limit and refuses
+// one over it before anything is written.
+func TestStore_PostEntry_LineLimit(t *testing.T) {
+	f := newPostEntryFixture(t)
+	lines := func(n int) []journal.LineInput {
+		out := make([]journal.LineInput, n)
+		for i := range out {
+			out[i] = journal.LineInput{
+				DebitAccountReference: f.platform.Cash.Reference, CreditAccountReference: f.payable.Reference,
+				Amount: 1, Purpose: "Card payment",
+			}
+		}
+		return out
+	}
+
+	f.mustPost(t, journal.PostInput{
+		LedgerSlug: f.slug, RequestID: "at_limit", Kind: "payment", Description: "At the limit",
+		Lines: lines(journal.MaxEntryLines),
+	})
+
+	err := runWithRollbackSavepoint(t, f.tx, func() error {
+		_, err := f.store.PostEntry(t.Context(), journal.PostInput{
+			LedgerSlug: f.slug, RequestID: "over_limit", Kind: "payment", Description: "Over the limit",
+			Lines: lines(journal.MaxEntryLines + 1),
+		})
+		return err
+	})
+	if !errors.Is(err, journal.ErrTooManyLines) {
+		t.Errorf("over the limit error = %v, want too many lines", err)
+	}
+	assertNoJournalEntry(t, f.tx, f.ledgerID, "over_limit")
 }

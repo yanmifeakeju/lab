@@ -893,16 +893,11 @@ const make = Effect.gen(function* () {
     const cash = found[0]?.cash ?? null
     const payable = found[0]?.payable ?? null
     const title = found[0]?.title ?? null
-    const completedAt = payment.completedAt
 
     if (cash === null || payable === null || title === null) {
       return yield* Effect.die(
         new Error(`no cash or payable account, or no link, for payment ${payment.id} in ${payment.ledger}`),
       )
-    }
-
-    if (completedAt === null) {
-      return yield* Effect.die(new Error(`succeeded payment ${payment.id} has no completion time`))
     }
 
     yield* database.use((db) =>
@@ -916,8 +911,6 @@ const make = Effect.gen(function* () {
         // and stays well inside the ledger's 500: a refused posting leaves the
         // queue for good. Links can't be edited, so this is the title paid under.
         description: `Payment received via ${title}`,
-        // To the millisecond, as it is sent.
-        effectiveAt: completedAt,
         lines: [
           {
             debit_account_ref: cash,

@@ -258,8 +258,8 @@ func TestPostJournalEntriesBatch_DomainErrors(t *testing.T) {
 			wantCode:   api.ErrorCode("validation_error"),
 		},
 		{
-			name:       "batch lines exceeded returns 400",
-			serviceErr: journal.ErrBatchLinesExceeded,
+			name:       "too many lines returns 400",
+			serviceErr: journal.ErrTooManyLines,
 			wantStatus: http.StatusBadRequest,
 			wantCode:   api.ErrorCode("validation_error"),
 		},

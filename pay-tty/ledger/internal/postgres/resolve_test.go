@@ -115,7 +115,7 @@ func TestStore_PendingHold_Capture(t *testing.T) {
 
 	capture := f.mustResolve(t, "capture_1", hold.Entry.Reference, journal.ActionCapture)
 	r := capture.Resolution
-	if !capture.Created || r.State != journal.StateCaptured || r.PendingReference != hold.Entry.Reference {
+	if !capture.Created || r.PendingState != journal.StateCaptured || r.PendingReference != hold.Entry.Reference {
 		t.Errorf("capture = %+v (created %t)", r, capture.Created)
 	}
 	if r.Kind != "payout" || r.Description != "Payout to GTBank 6789" {
@@ -157,7 +157,7 @@ func TestStore_PendingHold_Capture(t *testing.T) {
 		t.Errorf("hold replay = (created %t, state %q)", replay.Created, replay.Entry.State)
 	}
 	again := f.mustResolve(t, "capture_1", hold.Entry.Reference, journal.ActionCapture)
-	if again.Created || again.Resolution.Reference != r.Reference || again.Resolution.State != journal.StateCaptured {
+	if again.Created || again.Resolution.Reference != r.Reference || again.Resolution.PendingState != journal.StateCaptured {
 		t.Errorf("capture replay = %+v (created %t)", again.Resolution, again.Created)
 	}
 }
@@ -168,8 +168,8 @@ func TestStore_PendingHold_Void(t *testing.T) {
 
 	hold := f.hold(t, "hold_1", 4_000)
 	void := f.mustResolve(t, "void_1", hold.Entry.Reference, journal.ActionVoid)
-	if void.Resolution.State != journal.StateVoided {
-		t.Errorf("void state = %q", void.Resolution.State)
+	if void.Resolution.PendingState != journal.StateVoided {
+		t.Errorf("void state = %q", void.Resolution.PendingState)
 	}
 	assertJournalLines(t, f.tx, void.Resolution.Reference, []journalLineRow{{
 		LedgerID: f.ledgerID, Amount: 4_000, DebitAccountID: f.payable.ID,
@@ -281,34 +281,8 @@ func TestStore_ResolveEntry_Errors(t *testing.T) {
 	if !errors.As(err, &resolved) || !errors.Is(err, journal.ErrEntryResolved) {
 		t.Fatalf("second resolution error = %v, want entry resolved", err)
 	}
-	if resolved.State != journal.StateVoided || resolved.ResolutionReference != void.Resolution.Reference {
+	if resolved.PendingState != journal.StateVoided || resolved.ResolutionReference != void.Resolution.Reference {
 		t.Errorf("winner = %+v, want voided by %s", resolved, void.Resolution.Reference)
-	}
-}
-
-// TestJournalFingerprint_ImmediateUnchanged verifies the pending keys leave an
-// immediate entry's fingerprint exactly as the original formula computed it.
-func TestJournalFingerprint_ImmediateUnchanged(t *testing.T) {
-	tx := newTestTx(t)
-	var same bool
-	err := tx.QueryRowContext(t.Context(), `
-		WITH args AS (
-			SELECT 'ngn_ng'::text AS slug, 'payment'::text AS kind, 'Paid'::text AS description,
-			       '2026-08-20T10:30:00Z'::timestamptz AS effective_at,
-			       '[{"amount": 1, "purpose": "p"}]'::jsonb AS lines
-		)
-		SELECT journal_fingerprint(slug, kind, description, effective_at, lines, false)
-		     = encode(sha256(convert_to(jsonb_build_object(
-		         'operation', 'post', 'ledger_slug', slug, 'kind', kind,
-		         'description', description,
-		         'effective_at_epoch', extract(epoch FROM effective_at),
-		         'lines', lines)::text, 'UTF8')), 'hex')
-		FROM args`).Scan(&same)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !same {
-		t.Error("immediate fingerprint changed")
 	}
 }
 
@@ -450,7 +424,7 @@ func TestStore_ResolveEntry_ConcurrentCaptureAndVoid(t *testing.T) {
 		tx2, journal.ResolveInput{LedgerSlug: f.slug, RequestID: "void", PendingReference: hold.Entry.Reference, Action: journal.ActionVoid},
 	)
 	var resolved *journal.ResolvedError
-	if !errors.As(err, &resolved) || resolved.State != journal.StateCaptured {
+	if !errors.As(err, &resolved) || resolved.PendingState != journal.StateCaptured {
 		t.Fatalf("void after capture error = %v, want entry resolved (captured)", err)
 	}
 
@@ -506,5 +480,20 @@ func TestStore_PostEntry_PendingIsPartOfTheRequest(t *testing.T) {
 	})
 	if !errors.Is(err, journal.ErrIdempotencyConflict) {
 		t.Errorf("immediate retry of a pending key error = %v, want idempotency conflict", err)
+	}
+}
+
+// TestStore_ResolveEntry_ClosedLedger captures a hold after its ledger closes.
+func TestStore_ResolveEntry_ClosedLedger(t *testing.T) {
+	f := newPostEntryFixture(t)
+	f.fund(t, 10_000)
+	hold := f.hold(t, "hold_1", 1_000)
+	if _, err := f.tx.ExecContext(t.Context(), `UPDATE ledgers SET is_closed = true WHERE id = $1`, f.ledgerID); err != nil {
+		t.Fatal(err)
+	}
+
+	f.mustResolve(t, "cap", hold.Entry.Reference, journal.ActionCapture)
+	if got := readAccountBalances(t, f.tx, f.payable.ID); got != (accountBalances{DebitsPosted: 1_000, CreditsPosted: 10_000}) {
+		t.Errorf("payable = %+v", got)
 	}
 }

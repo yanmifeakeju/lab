@@ -30,7 +30,6 @@ func TestStore_PostEntry_ConcurrentIdempotentRetry(t *testing.T) {
 	fixture := newCommittedPostEntryFixture(t)
 
 	description := "Payment retry"
-	effectiveAt := time.Date(2026, time.August, 20, 10, 30, 0, 0, time.UTC)
 	const (
 		amount int64 = 50_000
 		fee    int64 = 500
@@ -40,7 +39,6 @@ func TestStore_PostEntry_ConcurrentIdempotentRetry(t *testing.T) {
 		RequestID:   "request_1",
 		Kind:        "payment",
 		Description: description,
-		EffectiveAt: &effectiveAt,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  fixture.platform.Cash.Reference,

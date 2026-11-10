@@ -102,7 +102,6 @@ export const posting = () => {
       kind: payload.kind,
       state: "posted",
       description: payload.description,
-      effective_at: payload.effective_at ?? "2026-01-01T00:00:00Z",
       created_at: "2026-01-01T00:00:00Z",
     }
 

@@ -23,7 +23,6 @@ type journalEntryRow struct {
 	Kind        string
 	State       string
 	Description string
-	EffectiveAt time.Time
 	CreatedAt   time.Time
 }
 
@@ -34,7 +33,6 @@ func (r journalEntryRow) entry() journal.Entry {
 		Kind:        r.Kind,
 		State:       journal.State(r.State),
 		Description: r.Description,
-		EffectiveAt: r.EffectiveAt,
 		CreatedAt:   r.CreatedAt,
 	}
 }
@@ -53,7 +51,7 @@ func (s *Store) PostEntry(ctx context.Context, input journal.PostInput) (journal
 		row     journalEntryRow
 		created bool
 	)
-	const q = `SELECT * FROM post_entry($1, $2, $3, $4, $5, $6, $7::jsonb, $8)`
+	const q = `SELECT * FROM post_entry($1, $2, $3, $4, $5, $6::jsonb, $7)`
 
 	journalReference := "jrn_" + ulid.Make().String()
 	entryLines := make([]postEntryLine, len(input.Lines))
@@ -78,7 +76,6 @@ func (s *Store) PostEntry(ctx context.Context, input journal.PostInput) (journal
 		input.RequestID,
 		input.Kind,
 		input.Description,
-		input.EffectiveAt,
 		string(encodedLines),
 		input.Pending,
 	).Scan(
@@ -89,7 +86,6 @@ func (s *Store) PostEntry(ctx context.Context, input journal.PostInput) (journal
 		&row.Kind,
 		&row.State,
 		&row.Description,
-		&row.EffectiveAt,
 		&row.CreatedAt,
 		&created,
 	)
@@ -105,7 +101,6 @@ type postBatchEntryItem struct {
 	RequestID   string          `json:"request_id"`
 	Kind        string          `json:"kind"`
 	Description string          `json:"description"`
-	EffectiveAt *time.Time      `json:"effective_at,omitempty"`
 	Lines       []postEntryLine `json:"lines"`
 	Pending     bool            `json:"pending"`
 }
@@ -131,7 +126,6 @@ func (s *Store) PostEntries(ctx context.Context, input journal.BatchInput) (jour
 			RequestID:   entry.RequestID,
 			Kind:        entry.Kind,
 			Description: entry.Description,
-			EffectiveAt: toMicroseconds(entry.EffectiveAt),
 			Lines:       lines,
 			Pending:     entry.Pending,
 		}
@@ -218,7 +212,7 @@ func mapPostEntryError(err error) error {
 		case "LG027":
 			return fmt.Errorf("%w: %s", journal.ErrBatchTooSmall, pgErr.Message)
 		case "LG026":
-			return fmt.Errorf("%w: %s", journal.ErrBatchLinesExceeded, pgErr.Message)
+			return fmt.Errorf("%w: %s", journal.ErrTooManyLines, pgErr.Message)
 		case "LG022":
 			return fmt.Errorf("%w: %s", journal.ErrAccountNotFound, pgErr.Message)
 		case "LG024":
@@ -236,7 +230,7 @@ func mapPostEntryError(err error) error {
 				return fmt.Errorf("decode entry_resolved detail %q: %w", pgErr.Detail, err)
 			}
 			return &journal.ResolvedError{
-				State:               journal.State(winner.State),
+				PendingState:        journal.State(winner.State),
 				ResolutionReference: winner.ResolutionRef,
 			}
 		case "LG035":
@@ -252,6 +246,8 @@ func mapPostEntryError(err error) error {
 				return fmt.Errorf("%w: %s", journal.ErrInsufficientFunds, pgErr.Message)
 			case "journal_lines_no_self_transfer":
 				return fmt.Errorf("%w: %s", journal.ErrNoSelfTransfer, pgErr.Message)
+			case "journal_lines_line_number_range":
+				return fmt.Errorf("%w: %s", journal.ErrTooManyLines, pgErr.Message)
 			case "journal_lines_amount_positive":
 				return fmt.Errorf("%w: %s", journal.ErrNonPositiveAmount, pgErr.Message)
 			case "journal_entries_description_not_blank":

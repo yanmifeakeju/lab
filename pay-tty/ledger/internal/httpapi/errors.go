@@ -180,7 +180,13 @@ func schemaValidationDetails(schemaErr *openapi3.SchemaError, location api.Valid
 	if schemaErr.SchemaField == "properties" {
 		fields := unknownFields(schemaErr)
 		details := make([]api.ValidationErrorDetail, 0, len(fields))
-		for _, field := range fields {
+		// A nested object names its fields from the request root.
+		prefix := ""
+		if path := schemaErr.JSONPointer(); len(path) > 0 {
+			prefix = formatFieldPath(path) + "."
+		}
+		for _, name := range fields {
+			field := prefix + name
 			details = append(details, api.ValidationErrorDetail{
 				Location: location,
 				Field:    field,

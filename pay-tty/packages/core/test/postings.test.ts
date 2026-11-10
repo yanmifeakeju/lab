@@ -82,7 +82,6 @@ const asPosting = (row: typeof ledgerPostings.$inferSelect) =>
     ledger: Ledger.Slug.make(row.ledger),
     kind: row.kind,
     description: row.description,
-    effectiveAt: row.effectiveAt,
     lines: row.lines.map((line) => new LedgerPostings.Line(line)),
   })
 
@@ -123,7 +122,6 @@ const entry = (payload: Payload, journalRef: string, createdAt = "2026-10-26T14:
     kind: payload.kind,
     state: "posted",
     description: payload.description,
-    effective_at: payload.effective_at ?? createdAt,
     created_at: createdAt,
   },
 })
@@ -273,7 +271,6 @@ void test("a succeeded payment commits with one posting of its amount from cash 
         assert.equal(posting.ledger, link.ledger)
         assert.equal(posting.kind, "payment")
         assert.equal(posting.description, `Payment received via ${link.title}`)
-        assert.deepEqual(posting.effectiveAt, payment.completedAt)
         assert.deepEqual(posting.lines, [
           { debit_account_ref: "acct_test_cash", credit_account_ref: accountRef, amount: "2500000", purpose: "payment" },
         ])
@@ -343,7 +340,6 @@ void test("the database keeps a posting in its payment's ledger, one per payment
                 paymentId: existing.paymentId,
                 kind: existing.kind,
                 description: existing.description,
-                effectiveAt: existing.effectiveAt,
                 lines: existing.lines,
                 ...row,
               }),
@@ -425,7 +421,6 @@ void test("the posting goes to the ledger under its own key with the stored entr
             ledger: row.ledger,
             kind: "payment",
             description: row.description,
-            effective_at: payment.completedAt?.toISOString(),
             lines: [{ debit_account_ref: "acct_test_cash", credit_account_ref: accountRef, amount: 2_500_000, purpose: "payment" }],
           },
         }])

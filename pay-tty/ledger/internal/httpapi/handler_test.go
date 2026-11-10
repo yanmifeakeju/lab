@@ -222,10 +222,14 @@ func TestCreatePayableAccountValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 		},
 		{
-			name:       "unknown fields are ignored",
-			target:     "/accounts",
-			body:       `{"ledger":"ngn_ng","external_id":"merchant_1","name":"Acme Ltd","another":true,"extra":true}`,
-			wantStatus: http.StatusCreated,
+			name:   "unknown fields are refused",
+			target: "/accounts",
+			body:   `{"ledger":"ngn_ng","external_id":"merchant_1","name":"Acme Ltd","another":true,"extra":true}`,
+			wantDetails: []api.ValidationErrorDetail{
+				{Location: api.Body, Field: "another", Code: api.UnknownField, Message: "another is not allowed"},
+				{Location: api.Body, Field: "extra", Code: api.UnknownField, Message: "extra is not allowed"},
+			},
+			wantStatus: http.StatusBadRequest,
 		},
 		{
 			name:   "invalid ledger slug shape",
@@ -810,6 +814,51 @@ func TestPostJournalEntryValidation(t *testing.T) {
 			},
 		},
 		{
+			name: "removed effective_at",
+			body: `{
+				"ledger":"ngn_ng",
+				"kind":"payment",
+				"description":"Payment received",
+				"effective_at":"2026-09-08T10:30:00Z",
+				"lines":[{"debit_account_ref":"acct_cash","credit_account_ref":"acct_payable","amount":1,"purpose":"Card payment"}]
+			}`,
+			key: "payment_123",
+			wantDetails: []api.ValidationErrorDetail{
+				{Location: api.Body, Field: "effective_at", Code: api.UnknownField, Message: "effective_at is not allowed"},
+			},
+		},
+		{
+			name: "unknown field on a line",
+			body: `{
+				"ledger":"ngn_ng",
+				"kind":"payment",
+				"description":"Payment received",
+				"lines":[{"debit_account_ref":"acct_cash","credit_account_ref":"acct_payable","amount":1,"purpose":"Card payment","memo":"x"}]
+			}`,
+			key: "payment_123",
+			wantDetails: []api.ValidationErrorDetail{
+				{Location: api.Body, Field: "lines[0].memo", Code: api.UnknownField, Message: "lines[0].memo is not allowed"},
+			},
+		},
+		{
+			name: "too many lines",
+			body: fmt.Sprintf(`{
+				"ledger":"ngn_ng",
+				"kind":"payment",
+				"description":"Payment received",
+				"lines":[%s]
+			}`, strings.TrimSuffix(strings.Repeat(`{"debit_account_ref":"acct_cash","credit_account_ref":"acct_payable","amount":1,"purpose":"Card payment"},`, journal.MaxEntryLines+1), ",")),
+			key: "payment_123",
+			wantDetails: []api.ValidationErrorDetail{
+				{
+					Location: api.Body,
+					Field:    "lines",
+					Code:     api.InvalidValue,
+					Message:  "lines must not contain more than 5 journal lines",
+				},
+			},
+		},
+		{
 			name: "invalid ledger slug shape",
 			body: `{
 				"ledger":"bad__slug",
@@ -1072,8 +1121,7 @@ func TestPostJournalEntryAcceptsClientDefinedKind(t *testing.T) {
 }
 
 func TestPostJournalEntryResponses(t *testing.T) {
-	effectiveAt := time.Date(2026, time.September, 8, 10, 30, 0, 0, time.UTC)
-	createdAt := effectiveAt.Add(time.Second)
+	createdAt := time.Date(2026, time.September, 8, 10, 30, 1, 0, time.UTC)
 	description := "Payment received"
 
 	wantInput := journal.PostInput{
@@ -1081,7 +1129,6 @@ func TestPostJournalEntryResponses(t *testing.T) {
 		RequestID:   "payment_123",
 		Kind:        "payment",
 		Description: description,
-		EffectiveAt: &effectiveAt,
 		Lines: []journal.LineInput{
 			{
 				DebitAccountReference:  "acct_cash",
@@ -1096,7 +1143,6 @@ func TestPostJournalEntryResponses(t *testing.T) {
 		Kind:        "payment",
 		State:       journal.StatePosted,
 		Description: description,
-		EffectiveAt: effectiveAt,
 		CreatedAt:   createdAt,
 	}
 
@@ -1244,7 +1290,6 @@ func TestPostJournalEntryResponses(t *testing.T) {
 					"ledger":"ngn_ng",
 					"kind":"payment",
 					"description":"  Payment received  ",
-					"effective_at":"2026-09-08T10:30:00Z",
 					"lines":[{
 						"debit_account_ref":"acct_cash",
 						"credit_account_ref":"acct_payable",
@@ -1306,8 +1351,8 @@ func TestPostJournalEntryResponses(t *testing.T) {
 				if got.Description != description {
 					t.Errorf("description = %v, want %q", got.Description, description)
 				}
-				if !got.EffectiveAt.Equal(effectiveAt) || !got.CreatedAt.Equal(createdAt) {
-					t.Errorf("response timestamps = (%v, %v), want (%v, %v)", got.EffectiveAt, got.CreatedAt, effectiveAt, createdAt)
+				if !got.CreatedAt.Equal(createdAt) {
+					t.Errorf("created_at = %v, want %v", got.CreatedAt, createdAt)
 				}
 			}
 		})

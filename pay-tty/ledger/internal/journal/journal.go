@@ -30,9 +30,6 @@ type Entry struct {
 	State State
 	// Description provides a human-readable explanation of why the entry occurred.
 	Description string
-	// EffectiveAt is the business date and time at which the financial effect applies, if provided.
-	// Otherwise, it equals the posting time.
-	EffectiveAt time.Time
 	// CreatedAt is the database timestamp recording when the entry was created.
 	CreatedAt time.Time
 }
@@ -52,7 +49,6 @@ type PostInput struct {
 	RequestID   string
 	Kind        string
 	Description string
-	EffectiveAt *time.Time
 	Lines       []LineInput
 	Pending     bool
 }
@@ -86,7 +82,6 @@ type BatchItemInput struct {
 	RequestID   string
 	Kind        string
 	Description string
-	EffectiveAt *time.Time
 	Lines       []LineInput
 	Pending     bool
 }
@@ -99,7 +94,9 @@ type BatchItemInput struct {
 const (
 	MinBatchEntries = 10
 	MaxBatchEntries = 1000
-	MaxBatchLines   = 5000
+	// MaxEntryLines bounds every entry, so a batch's work follows from its
+	// item count: 1,000 entries copy or write at most 5,000 lines.
+	MaxEntryLines = 5
 )
 
 // BatchInput contains the parameters required to post a batch of journal entries.
@@ -137,7 +134,6 @@ type ResolveInput struct {
 	RequestID        string
 	PendingReference string
 	Action           Action
-	EffectiveAt      *time.Time
 }
 
 // Resolution is a posted entry that settled a pending one. It copies the
@@ -147,11 +143,10 @@ type Resolution struct {
 	RequestID        string
 	Kind             string
 	Description      string
-	EffectiveAt      time.Time
 	CreatedAt        time.Time
 	PendingReference string
-	// State is the pending entry's state after this resolution.
-	State State
+	// PendingState is the pending entry's state after this resolution.
+	PendingState State
 }
 
 // ResolveResult contains the outcome of a resolution.
@@ -166,7 +161,6 @@ type ResolveBatchItemInput struct {
 	RequestID        string
 	PendingReference string
 	Action           Action
-	EffectiveAt      *time.Time
 }
 
 // ResolveBatchInput contains the parameters required to resolve a batch.
@@ -182,9 +176,9 @@ type ResolveBatchItemResult struct {
 	Status           BatchItemStatus
 	// JournalRef is this item's resolution; nil when rejected.
 	JournalRef *string
-	// State is the pending entry's state: after this resolution, or the one
+	// PendingState is the pending entry's state: after this resolution, or the one
 	// that won when the item was rejected as entry_resolved.
-	State *State
+	PendingState *State
 	// ResolvedBy is the winning resolution of an entry_resolved rejection.
 	ResolvedBy *string
 	Error      *BatchItemError

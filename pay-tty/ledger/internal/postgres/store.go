@@ -32,15 +32,3 @@ func timePtr(t sql.NullTime) *time.Time {
 	}
 	return &t.Time
 }
-
-// toMicroseconds truncates a time sent inside a JSON payload. Postgres rounds
-// sub-microsecond text to the nearest microsecond, while a time sent as a
-// parameter is truncated; without this the same request would fingerprint
-// differently through the single and batch routines.
-func toMicroseconds(t *time.Time) *time.Time {
-	if t == nil {
-		return nil
-	}
-	truncated := t.Truncate(time.Microsecond)
-	return &truncated
-}

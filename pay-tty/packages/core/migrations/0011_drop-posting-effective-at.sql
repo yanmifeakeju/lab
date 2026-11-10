@@ -1,0 +1,1 @@
+ALTER TABLE "ledger_postings" DROP COLUMN "effective_at";

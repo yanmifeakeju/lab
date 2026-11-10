@@ -20,7 +20,6 @@ func (s *server) ResolveJournalEntry(
 		RequestID:        request.Params.IdempotencyKey,
 		PendingReference: request.JournalRef,
 		Action:           journal.Action(request.Body.Action),
-		EffectiveAt:      request.Body.EffectiveAt,
 	})
 	if err != nil {
 		return mapResolveJournalEntryError(err), nil
@@ -28,14 +27,13 @@ func (s *server) ResolveJournalEntry(
 
 	r := result.Resolution
 	response := api.ResolveJournalEntryResponse{
-		JournalRef:  r.Reference,
-		PendingRef:  r.PendingReference,
-		LedgerSlug:  request.Body.Ledger,
-		Kind:        r.Kind,
-		State:       api.EntryState(r.State),
-		Description: r.Description,
-		EffectiveAt: r.EffectiveAt,
-		CreatedAt:   r.CreatedAt,
+		JournalRef:   r.Reference,
+		PendingRef:   r.PendingReference,
+		LedgerSlug:   request.Body.Ledger,
+		Kind:         r.Kind,
+		PendingState: api.EntryState(r.PendingState),
+		Description:  r.Description,
+		CreatedAt:    r.CreatedAt,
 	}
 	if result.Created {
 		return api.ResolveJournalEntry201JSONResponse(response), nil
@@ -49,9 +47,9 @@ func mapResolveJournalEntryError(err error) api.ResolveJournalEntryResponseObjec
 	}
 
 	if resolved, ok := errors.AsType[*journal.ResolvedError](err); ok {
-		state := api.EntryState(resolved.State)
+		state := api.EntryState(resolved.PendingState)
 		winner := resolved.ResolutionReference
-		response := conflict(fmt.Sprintf("Entry is already %s.", resolved.State), api.EntryResolved)
+		response := conflict(fmt.Sprintf("Entry is already %s.", resolved.PendingState), api.EntryResolved)
 		response.PendingState = &state
 		response.ResolvedBy = &winner
 		return response
@@ -74,8 +72,6 @@ func mapResolveJournalEntryError(err error) api.ResolveJournalEntryResponseObjec
 		}
 	case errors.Is(err, journal.ErrEntryNotPending):
 		return conflict("Entry was posted immediately and has nothing to resolve.", api.EntryNotPending)
-	case errors.Is(err, journal.ErrLedgerClosed):
-		return conflict("Ledger is closed.", api.LedgerClosed)
 	case errors.Is(err, journal.ErrIdempotencyConflict):
 		return conflict("Idempotency key was previously used with different content.", api.IdempotencyConflict)
 	default:
@@ -128,7 +124,6 @@ func (s *server) ResolveJournalEntriesBatch(
 			RequestID:        item.IdempotencyKey,
 			PendingReference: item.PendingRef,
 			Action:           journal.Action(item.Action),
-			EffectiveAt:      item.EffectiveAt,
 		}
 	}
 
@@ -147,8 +142,8 @@ func (s *server) ResolveJournalEntriesBatch(
 			errInfo = &api.BatchEntryError{Code: api.ErrorCode(r.Error.Code), Message: r.Error.Message}
 		}
 		var state *api.EntryState
-		if r.State != nil {
-			st := api.EntryState(*r.State)
+		if r.PendingState != nil {
+			st := api.EntryState(*r.PendingState)
 			state = &st
 		}
 		results[i] = api.BatchResolveEntryResult{
@@ -172,11 +167,6 @@ func mapResolveBatchError(err error) api.ResolveJournalEntriesBatchResponseObjec
 			Message: "Ledger not found.",
 			Error:   api.ErrorInfo{Code: api.LedgerNotFound},
 		}
-	case errors.Is(err, journal.ErrLedgerClosed):
-		return api.ResolveJournalEntriesBatch409JSONResponse{
-			Message: "Ledger is closed.",
-			Error:   api.ErrorInfo{Code: api.LedgerClosed},
-		}
 	case errors.Is(err, journal.ErrBatchTooSmall), errors.Is(err, journal.ErrNoLines):
 		return resolveBatchValidationResponse("items", fmt.Sprintf(
 			"items must contain at least %d items; resolve fewer than that one at a time instead",
@@ -185,10 +175,6 @@ func mapResolveBatchError(err error) api.ResolveJournalEntriesBatchResponseObjec
 	case errors.Is(err, journal.ErrBatchSizeExceeded):
 		return resolveBatchValidationResponse("items", fmt.Sprintf(
 			"items must not contain more than %d items", journal.MaxBatchEntries,
-		))
-	case errors.Is(err, journal.ErrBatchLinesExceeded):
-		return resolveBatchValidationResponse("items", fmt.Sprintf(
-			"batch exceeds maximum of %d lines", journal.MaxBatchLines,
 		))
 	case errors.Is(err, journal.ErrIdempotencyConflict):
 		return resolveBatchValidationResponse("items", "duplicate idempotency key within batch")

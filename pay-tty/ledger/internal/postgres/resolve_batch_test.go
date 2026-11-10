@@ -49,7 +49,7 @@ func TestStore_ResolveEntries_CapturesForOneAccount(t *testing.T) {
 		t.Fatalf("ResolveEntries() error = %v", err)
 	}
 	for i, r := range result.Results {
-		if r.Status != journal.BatchItemCreated || r.JournalRef == nil || r.State == nil || *r.State != journal.StateCaptured || r.PendingReference != refs[i] {
+		if r.Status != journal.BatchItemCreated || r.JournalRef == nil || r.PendingState == nil || *r.PendingState != journal.StateCaptured || r.PendingReference != refs[i] {
 			t.Errorf("result %d = %+v", i, r)
 		}
 	}
@@ -134,7 +134,7 @@ func TestStore_ResolveEntries_MixedOutcomes(t *testing.T) {
 		}
 	}
 	first := result.Results[0]
-	if first.State == nil || *first.State != journal.StateVoided || first.ResolvedBy == nil || *first.ResolvedBy != won.Resolution.Reference {
+	if first.PendingState == nil || *first.PendingState != journal.StateVoided || first.ResolvedBy == nil || *first.ResolvedBy != won.Resolution.Reference {
 		t.Errorf("entry_resolved item = %+v, want voided by %s", first, won.Resolution.Reference)
 	}
 
@@ -169,7 +169,7 @@ func TestStore_ResolveEntries_ReplaysAcrossEndpoints(t *testing.T) {
 		t.Fatalf("replayed ResolveEntries() error = %v", err)
 	}
 	for i, r := range again.Results {
-		if r.Status != journal.BatchItemExisting || *r.JournalRef != *first.Results[i].JournalRef || *r.State != journal.StateCaptured {
+		if r.Status != journal.BatchItemExisting || *r.JournalRef != *first.Results[i].JournalRef || *r.PendingState != journal.StateCaptured {
 			t.Errorf("replay %d = %+v", i, r)
 		}
 	}
@@ -188,22 +188,6 @@ func TestStore_ResolveEntries_WholeBatchFailures(t *testing.T) {
 	f.fund(t, 1_000_000)
 	refs := f.holds(t, 11, 1)
 
-	// Ten holds of 501 lines each copy 5,010 lines.
-	wide := make([]string, 10)
-	for i := range wide {
-		lines := make([]journal.LineInput, 501)
-		for j := range lines {
-			lines[j] = journal.LineInput{
-				DebitAccountReference: f.payable.Reference, CreditAccountReference: f.platform.Cash.Reference,
-				Amount: 1, Purpose: "payout",
-			}
-		}
-		wide[i] = f.mustPost(t, journal.PostInput{
-			LedgerSlug: f.slug, RequestID: fmt.Sprintf("wide_%d", i), Kind: "payout", Description: "Wide",
-			Lines: lines, Pending: true,
-		}).Entry.Reference
-	}
-
 	tooMany := make([]string, journal.MaxBatchEntries+1)
 	for i := range tooMany {
 		tooMany[i] = fmt.Sprintf("jrn_%026d", i)
@@ -220,7 +204,6 @@ func TestStore_ResolveEntries_WholeBatchFailures(t *testing.T) {
 	}{
 		"too small":         {f.slug, captureItems("k", refs[:9]), journal.ErrBatchTooSmall},
 		"too large":         {f.slug, captureItems("k", tooMany), journal.ErrBatchSizeExceeded},
-		"too many lines":    {f.slug, captureItems("k", wide), journal.ErrBatchLinesExceeded},
 		"duplicate key":     {f.slug, dupKey, journal.ErrIdempotencyConflict},
 		"duplicate pending": {f.slug, dupRef, journal.ErrDuplicatePendingReference},
 		"unknown ledger":    {"usd_us", captureItems("k", refs[:10]), journal.ErrLedgerNotFound},
@@ -233,16 +216,29 @@ func TestStore_ResolveEntries_WholeBatchFailures(t *testing.T) {
 			t.Errorf("%s: error = %v, want %v", name, err, tc.want)
 		}
 	}
+}
 
+// TestStore_ResolveEntries_ClosedLedger resolves holds after their ledger
+// closes, so closing never strands an amount in the pending counters.
+func TestStore_ResolveEntries_ClosedLedger(t *testing.T) {
+	f := newPostEntryFixture(t)
+	f.fund(t, 10_000)
+	refs := f.holds(t, 10, 100)
 	if _, err := f.tx.ExecContext(t.Context(), `UPDATE ledgers SET is_closed = true WHERE id = $1`, f.ledgerID); err != nil {
 		t.Fatal(err)
 	}
-	err := runWithRollbackSavepoint(t, f.tx, func() error {
-		_, err := f.store.ResolveEntries(t.Context(), journal.ResolveBatchInput{LedgerSlug: f.slug, Items: captureItems("k", refs[:10])})
-		return err
-	})
-	if !errors.Is(err, journal.ErrLedgerClosed) {
-		t.Errorf("closed ledger error = %v, want ledger closed", err)
+
+	result, err := f.store.ResolveEntries(t.Context(), journal.ResolveBatchInput{LedgerSlug: f.slug, Items: captureItems("k", refs)})
+	if err != nil {
+		t.Fatalf("ResolveEntries() error = %v", err)
+	}
+	for i, r := range result.Results {
+		if r.Status != journal.BatchItemCreated {
+			t.Errorf("item %d = %+v, want created", i, r)
+		}
+	}
+	if got := readAccountBalances(t, f.tx, f.payable.ID); got != (accountBalances{DebitsPosted: 1_000, CreditsPosted: 10_000}) {
+		t.Errorf("payable = %+v", got)
 	}
 }
 

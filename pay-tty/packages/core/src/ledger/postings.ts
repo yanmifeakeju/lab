@@ -45,7 +45,6 @@ export class Posting extends Schema.Class<Posting>("LedgerPostings.Posting")({
   ledger: Ledger.Slug,
   kind: Schema.String,
   description: Schema.String,
-  effectiveAt: Schema.Date,
   lines: Schema.Array(Line),
 }) {}
 
@@ -146,7 +145,6 @@ const make = Effect.gen(function* () {
             ledger: Ledger.Slug.make(row.ledger),
             kind: row.kind,
             description: row.description,
-            effectiveAt: row.effectiveAt,
             lines: row.lines.map((line) => new Line(line)),
           }),
       ),
@@ -208,7 +206,6 @@ const make = Effect.gen(function* () {
             ledger: posting.ledger,
             kind: posting.kind,
             description: posting.description,
-            effective_at: posting.effectiveAt.toISOString(),
             // Exact: stored amounts never pass the safe integers.
             lines: posting.lines.map((line) => ({
               debit_account_ref: line.debit_account_ref,
