@@ -390,10 +390,10 @@ export const fakeLedger = (
     resolutions,
     reads,
     statements,
-    // Configured here, so the tests need no LEDGER_BASE_URL.
+    // Configured here, so the tests need no LEDGER_URL.
     layer: LedgerClient.layer.pipe(
       Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),
-      Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LEDGER_BASE_URL: "http://ledger.test" }))),
+      Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LEDGER_URL: "http://ledger.test" }))),
       Layer.orDie,
     ),
   }

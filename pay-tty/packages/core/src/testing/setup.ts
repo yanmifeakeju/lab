@@ -8,7 +8,7 @@ import { type Database, layerUrl } from "../database/client.ts"
 
 const migrationsFolder = new URL("../../migrations", import.meta.url).pathname
 
-// Seeds Nigeria's default ledger and its shared platform accounts, matching scripts/seed.sh.
+// Seeds Nigeria's default ledger and its shared platform accounts, matching the root scripts/db/seed.sh.
 const seed = `
   INSERT INTO ledgers (slug, currency, scale, country_code, is_country_default) VALUES
     ('ngn_ng', 'NGN', 2, 'NG', true);

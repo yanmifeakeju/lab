@@ -16,19 +16,21 @@ const same = (given: string, expected: string) => {
 }
 
 /**
- * SIM_API_KEY and SIM_WEBHOOK_SECRET. The API key travels with every call, so
- * one equal to the webhook secret could sign callbacks; that's refused.
+ * The API key and the webhook secret, from the settings each side names them
+ * by. The API key travels with every call, so one equal to the webhook secret
+ * could sign callbacks; that's refused.
  */
-export const keys = Effect.gen(function* () {
-  const apiKey = yield* Config.Redacted("SIM_API_KEY")
-  const webhookSecret = yield* Config.Redacted("SIM_WEBHOOK_SECRET")
+export const keys = (names: { readonly apiKey: string; readonly webhookSecret: string }) =>
+  Effect.gen(function* () {
+    const apiKey = yield* Config.Redacted(names.apiKey)
+    const webhookSecret = yield* Config.Redacted(names.webhookSecret)
 
-  if (Redacted.value(apiKey) === Redacted.value(webhookSecret)) {
-    return yield* Effect.die(new Error("SIM_API_KEY and SIM_WEBHOOK_SECRET must differ"))
-  }
+    if (Redacted.value(apiKey) === Redacted.value(webhookSecret)) {
+      return yield* Effect.die(new Error(`${names.apiKey} and ${names.webhookSecret} must differ`))
+    }
 
-  return { apiKey, webhookSecret }
-})
+    return { apiKey, webhookSecret }
+  })
 
 /** The `Authorization` header value an API call carries. */
 export const bearer = (secret: Redacted.Redacted) => `Bearer ${Redacted.value(secret)}`

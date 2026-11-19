@@ -106,12 +106,12 @@ export const withDatabase = <A, E, R>(schema: Schema<A, E, R>, server: string = 
   )
 
 /**
- * A package's node:test global setup. It touches no database: it points
- * DATABASE_URL and SIM_DATABASE_URL at nothing, so no config-based layer
- * reaches dev data.
+ * A package's node:test global setup. It touches no database: it points the
+ * database settings, unprefixed or prefixed, at nothing, so no config-based
+ * layer reaches dev data.
  */
 export const globalSetup = () => {
-  for (const key of ["DATABASE_URL", "SIM_DATABASE_URL"]) {
+  for (const key of ["DATABASE_URL", "PLANE_DATABASE_URL", "SIM_DATABASE_URL"]) {
     // oxlint-disable-next-line effecttsgo/process-env
     process.env[key] = unassigned
   }

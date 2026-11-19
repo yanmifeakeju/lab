@@ -9,10 +9,12 @@
   "tasks": {
     "dev": {
       "cache": false,
-      "persistent": true
+      "persistent": true,
+      "passThroughEnv": ["PLANE_*", "SIM_*", "TUI_*"]
     },
     "start": {
-      "cache": false
+      "cache": false,
+      "passThroughEnv": ["PLANE_*", "SIM_*", "TUI_*"]
     },
     "test": {
       "dependsOn": ["^test"],

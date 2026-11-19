@@ -128,13 +128,13 @@ export const run = (options: Options, every: Duration.Duration = reportEvery, ma
   return loop(0)
 }
 
-/** The reporter from PLANE_CALLBACK_URL, SIM_WEBHOOK_SECRET and SIM_PAYOUT_DELAY, for as long as the layer lives. */
+/** The reporter from PLANE_CALLBACK_URL, WEBHOOK_SECRET and PAYOUT_DELAY, for as long as the layer lives. */
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const options: Options = {
-      delay: yield* Config.Duration("SIM_PAYOUT_DELAY").pipe(Config.withDefault(defaultDelay)),
+      delay: yield* Config.Duration("PAYOUT_DELAY").pipe(Config.withDefault(defaultDelay)),
       callbackUrl: new URL(yield* Config.String("PLANE_CALLBACK_URL")),
-      secret: yield* Config.Redacted("SIM_WEBHOOK_SECRET"),
+      secret: yield* Config.Redacted("WEBHOOK_SECRET"),
     }
 
     yield* Effect.forkScoped(run(options))

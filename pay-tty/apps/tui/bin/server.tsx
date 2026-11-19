@@ -1,20 +1,23 @@
 import { createServer } from "@opentui/ssh"
-import { Config, Effect, Layer, ManagedRuntime, Option } from "effect"
+import { Config, ConfigProvider, Effect, Layer, ManagedRuntime, Option } from "effect"
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient"
 
 import { connect, pay } from "../src/connection.tsx"
 import { payCommand } from "../src/pay-command.ts"
 import { Plane } from "../src/plane.ts"
 
-const runtime = ManagedRuntime.make(Plane.layer.pipe(Layer.provide(FetchHttpClient.layer)))
+// Every setting is read from the environment as TUI_<name>.
+const ConfigLive = ConfigProvider.layer(ConfigProvider.nested(ConfigProvider.fromEnv(), "TUI"))
+
+const runtime = ManagedRuntime.make(Plane.layer.pipe(Layer.provide(FetchHttpClient.layer), Layer.provideMerge(ConfigLive)))
 
 const config = await runtime.runPromise(
   Config.all({
-    host: Config.String("TUI_HOST").pipe(Config.withDefault("127.0.0.1")),
-    port: Config.Port("TUI_PORT").pipe(Config.withDefault(2222)),
-    hostKey: Config.String("TUI_HOST_KEY_PATH").pipe(Config.withDefault(".data/host_key")),
-    publicHost: Config.String("TUI_PUBLIC_HOST").pipe(Config.withDefault("localhost")),
-    publicPort: Config.Port("TUI_PUBLIC_PORT").pipe(Config.option),
+    host: Config.String("HOST").pipe(Config.withDefault("127.0.0.1")),
+    port: Config.Port("PORT").pipe(Config.withDefault(2222)),
+    hostKey: Config.String("HOST_KEY_PATH").pipe(Config.withDefault(".data/host_key")),
+    publicHost: Config.String("PUBLIC_HOST").pipe(Config.withDefault("localhost")),
+    publicPort: Config.Port("PUBLIC_PORT").pipe(Config.option),
   }),
 )
 

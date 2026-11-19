@@ -33,7 +33,7 @@ const refusals = new Set([400, 409, 422])
  */
 export const make = Effect.gen(function* () {
   const base = yield* Config.String("SIM_URL")
-  const { apiKey, webhookSecret } = yield* Signature.keys
+  const { apiKey, webhookSecret } = yield* Signature.keys({ apiKey: "SIM_API_KEY", webhookSecret: "SIM_WEBHOOK_SECRET" })
   const client = yield* HttpClient.HttpClient
 
   const call = (method: "GET" | "POST", path: string, body: string) =>

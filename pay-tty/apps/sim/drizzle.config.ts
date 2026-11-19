@@ -1,5 +1,13 @@
 import { defineConfig } from "drizzle-kit"
 
+// drizzle-kit loads no .env itself. The repository's one, if present, fills
+// what the environment doesn't already set.
+try {
+  process.loadEnvFile("../../.env")
+} catch {
+  // None here, as in a container: the environment carries everything.
+}
+
 export default defineConfig({
   dialect: "postgresql",
   schema: "./src/*/sql.ts",

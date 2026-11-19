@@ -14,13 +14,8 @@ set -euo pipefail
 
 cd /app
 
-DATABASE_URL=$LEDGER_DATABASE_URL ledger/scripts/seed.sh
-
-(
-	cd packages/core
-	DATABASE_URL=$PLANE_DATABASE_URL pnpm exec drizzle-kit migrate
-	DATABASE_URL=$PLANE_DATABASE_URL scripts/seed.sh
-)
+(cd packages/core && pnpm exec drizzle-kit migrate)
+scripts/db/seed.sh
 
 # Here rather than in postgres-init.sh, so a volume created before the sim
 # existed gets it too. Only the sim service connects to it. The password is
@@ -35,4 +30,4 @@ psql "$POSTGRES_ADMIN_URL" -X -v ON_ERROR_STOP=1 -q -v sim_password="$SIM_DB_PAS
 SQL
 
 cd apps/sim
-SIM_DATABASE_URL=$SIM_DATABASE_URL pnpm exec drizzle-kit migrate
+pnpm exec drizzle-kit migrate

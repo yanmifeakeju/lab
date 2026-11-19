@@ -66,12 +66,12 @@ export interface Interface {
 export class Service extends Context.Service<Service, Interface>()("Token") {}
 
 /**
- * Reads `PLANE_TOKEN_KEYS`, comma-separated `<key id>:<base64url secret>`
- * entries, and `PLANE_TOKEN_SIGNING_KEY_ID`, which must name one of them.
+ * Reads `TOKEN_KEYS`, comma-separated `<key id>:<base64url secret>`
+ * entries, and `TOKEN_SIGNING_KEY_ID`, which must name one of them.
  */
 export const keysFromConfig = Effect.gen(function* () {
-  const entries = Redacted.value(yield* Config.Redacted("PLANE_TOKEN_KEYS"))
-  const signingId = yield* Config.String("PLANE_TOKEN_SIGNING_KEY_ID")
+  const entries = Redacted.value(yield* Config.Redacted("TOKEN_KEYS"))
+  const signingId = yield* Config.String("TOKEN_SIGNING_KEY_ID")
 
   const verifying = yield* Effect.forEach(entries.split(","), (entry) => {
     const [id = "", encoded = "", ...rest] = entry.trim().split(":")
@@ -79,25 +79,25 @@ export const keysFromConfig = Effect.gen(function* () {
 
     // Re-encoding catches characters the decoder would skip over.
     if (rest.length > 0 || Result.isFailure(secret) || Encoding.encodeBase64Url(secret.success) !== encoded) {
-      return Effect.fail(new KeyConfigError({ message: `PLANE_TOKEN_KEYS: key "${id}" is not <id>:<base64url secret>` }))
+      return Effect.fail(new KeyConfigError({ message: `TOKEN_KEYS: key "${id}" is not <id>:<base64url secret>` }))
     }
 
     return Schema.decodeEffect(Key)({ id, secret: secret.success }).pipe(
       Effect.mapError(() =>
-        new KeyConfigError({ message: `PLANE_TOKEN_KEYS: key "${id}" needs an id of [A-Za-z0-9_-] and a secret of at least 32 bytes` }),
+        new KeyConfigError({ message: `TOKEN_KEYS: key "${id}" needs an id of [A-Za-z0-9_-] and a secret of at least 32 bytes` }),
       ),
     )
   })
 
   if (new Set(verifying.map((key) => key.id)).size !== verifying.length) {
-    return yield* new KeyConfigError({ message: "PLANE_TOKEN_KEYS: key ids must be unique" })
+    return yield* new KeyConfigError({ message: "TOKEN_KEYS: key ids must be unique" })
   }
 
   const signing = verifying.find((key) => key.id === signingId)
 
   if (signing === undefined) {
     return yield* new KeyConfigError({
-      message: `PLANE_TOKEN_SIGNING_KEY_ID: "${signingId}" is not in PLANE_TOKEN_KEYS`,
+      message: `TOKEN_SIGNING_KEY_ID: "${signingId}" is not in TOKEN_KEYS`,
     })
   }
 

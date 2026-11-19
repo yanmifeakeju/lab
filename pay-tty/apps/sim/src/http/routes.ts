@@ -77,11 +77,11 @@ const ServerError = HttpRouter.middleware(
   { global: true },
 )
 
-/** The provider's API, authorized by SIM_API_KEY as a bearer token, finalises after SIM_PAYOUT_DELAY. */
+/** The provider's API, authorized by API_KEY as a bearer token, finalises after PAYOUT_DELAY. */
 export const routes = Layer.unwrap(
   Effect.gen(function* () {
-    const secret = yield* Config.Redacted("SIM_API_KEY")
-    const delay = yield* Config.Duration("SIM_PAYOUT_DELAY").pipe(Config.withDefault(defaultDelay))
+    const secret = yield* Config.Redacted("API_KEY")
+    const delay = yield* Config.Duration("PAYOUT_DELAY").pipe(Config.withDefault(defaultDelay))
     const database = yield* SimDatabase
 
     const handle = (handler: (request: HttpServerRequest.HttpServerRequest) => Effect.Effect<HttpServerResponse.HttpServerResponse, never, SimDatabase>) =>

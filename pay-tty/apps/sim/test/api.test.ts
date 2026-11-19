@@ -25,7 +25,7 @@ const webhookSecret = Redacted.make("sim-test-webhook-secret")
 // Longer than any test waits, so a transfer is final only once a test says so.
 const config = (extra: Record<string, string> = {}) =>
   ConfigProvider.layerAdd(
-    ConfigProvider.fromEnvRecord({ SIM_API_KEY: Redacted.value(apiKey), SIM_PAYOUT_DELAY: "48 hours", ...extra }),
+    ConfigProvider.fromEnvRecord({ API_KEY: Redacted.value(apiKey), PAYOUT_DELAY: "48 hours", ...extra }),
     { asPrimary: true },
   )
 

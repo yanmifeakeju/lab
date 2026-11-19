@@ -163,7 +163,7 @@ const fakeLedger = (
     layer: LedgerPostings.layer.pipe(
       Layer.provide(LedgerClient.layer),
       Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),
-      Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LEDGER_BASE_URL: "http://ledger.test" }))),
+      Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LEDGER_URL: "http://ledger.test" }))),
       Layer.orDie,
     ),
   }

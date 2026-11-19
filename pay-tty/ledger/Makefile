@@ -38,14 +38,13 @@ run:
 start: build-api
 	$(API_BIN)
 
+# Recreates, migrates and seeds the database in this directory's DATABASE_URL.
 db-reset:
 	@set -eu; \
 	if [ -z "$${DATABASE_URL:-}" ] && [ -f .env ]; then \
 		set -a; . ./.env; set +a; \
 	fi; \
-	./scripts/database.sh --reset; \
-	$(MAKE) migrate-up; \
-	./scripts/seed.sh
+	LEDGER_DATABASE_URL="$$DATABASE_URL" ../scripts/db/reset.sh ledger
 
 migrate-up:
 	DATABASE_URL="$(DB_URL)" go run ./cmd/migrate up

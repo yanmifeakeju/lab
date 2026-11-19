@@ -7,7 +7,7 @@ import { Payouts } from "@pay-tty/core/payouts";
 import { PayoutDispatcher } from "@pay-tty/core/payouts/dispatcher";
 import { SimProvider } from "@pay-tty/core/payouts/providers/sim";
 import { Principal } from "@pay-tty/core/principal";
-import { Effect, Layer } from "effect";
+import { ConfigProvider, Effect, Layer } from "effect";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 
 import { AuthenticationLive } from "../src/api/middleware/authentication.ts";
@@ -18,7 +18,7 @@ const DomainLive = Layer.mergeAll(Principal.layer, Business.layer, Payments.laye
   Layer.provide(Catalog.layer),
 );
 
-// The ledger service's HTTP API, at LEDGER_BASE_URL over fetch.
+// The ledger service's HTTP API, at LEDGER_URL over fetch.
 const LedgerClientLive = LedgerClient.layer.pipe(Layer.provide(FetchHttpClient.layer));
 
 // v1 pays out through the simulated provider at SIM_URL; nothing reaches a bank.
@@ -36,6 +36,9 @@ const RuntimeLive = Layer.mergeAll(
   Layer.provideMerge(DatabaseLayer),
 );
 
+// Every setting is read from the environment as PLANE_<name>.
+const ConfigLive = ConfigProvider.layer(ConfigProvider.nested(ConfigProvider.fromEnv(), "PLANE"));
+
 NodeRuntime.runMain(
-  Layer.launch(Plane).pipe(Effect.provide(RuntimeLive)),
+  Layer.launch(Plane).pipe(Effect.provide(Layer.provideMerge(RuntimeLive, ConfigLive))),
 );

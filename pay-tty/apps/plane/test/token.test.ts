@@ -78,8 +78,8 @@ const encoded = Encoding.encodeBase64Url(secret())
 
 void test("reads keys from config", () =>
   fromConfig({
-    PLANE_TOKEN_KEYS: `old:${encoded}, new:${Encoding.encodeBase64Url(secret())}`,
-    PLANE_TOKEN_SIGNING_KEY_ID: "new",
+    TOKEN_KEYS: `old:${encoded}, new:${Encoding.encodeBase64Url(secret())}`,
+    TOKEN_SIGNING_KEY_ID: "new",
   }).then((exit) => {
     assert.ok(Exit.isSuccess(exit))
     assert.equal(exit.value.signing.id, "new")
@@ -88,13 +88,13 @@ void test("reads keys from config", () =>
 
 void test("refuses key config it can't trust", () =>
   Promise.all([
-    fromConfig({ PLANE_TOKEN_SIGNING_KEY_ID: "a" }),
-    fromConfig({ PLANE_TOKEN_KEYS: `a:${encoded}` }),
-    fromConfig({ PLANE_TOKEN_KEYS: `a:${encoded}`, PLANE_TOKEN_SIGNING_KEY_ID: "b" }),
-    fromConfig({ PLANE_TOKEN_KEYS: `a:${Encoding.encodeBase64Url(new Uint8Array(31))}`, PLANE_TOKEN_SIGNING_KEY_ID: "a" }),
-    fromConfig({ PLANE_TOKEN_KEYS: `a:${encoded}!`, PLANE_TOKEN_SIGNING_KEY_ID: "a" }),
-    fromConfig({ PLANE_TOKEN_KEYS: `a:${encoded},a:${encoded}`, PLANE_TOKEN_SIGNING_KEY_ID: "a" }),
-    fromConfig({ PLANE_TOKEN_KEYS: `a b:${encoded}`, PLANE_TOKEN_SIGNING_KEY_ID: "a b" }),
+    fromConfig({ TOKEN_SIGNING_KEY_ID: "a" }),
+    fromConfig({ TOKEN_KEYS: `a:${encoded}` }),
+    fromConfig({ TOKEN_KEYS: `a:${encoded}`, TOKEN_SIGNING_KEY_ID: "b" }),
+    fromConfig({ TOKEN_KEYS: `a:${Encoding.encodeBase64Url(new Uint8Array(31))}`, TOKEN_SIGNING_KEY_ID: "a" }),
+    fromConfig({ TOKEN_KEYS: `a:${encoded}!`, TOKEN_SIGNING_KEY_ID: "a" }),
+    fromConfig({ TOKEN_KEYS: `a:${encoded},a:${encoded}`, TOKEN_SIGNING_KEY_ID: "a" }),
+    fromConfig({ TOKEN_KEYS: `a b:${encoded}`, TOKEN_SIGNING_KEY_ID: "a b" }),
   ]).then((exits) => {
     for (const exit of exits) {
       assert.ok(Exit.isFailure(exit))

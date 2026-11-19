@@ -22,9 +22,3 @@ No real money moves. Payments and payouts are simulated.
 ssh paytty.akeju.me                 # set up a business and create a payment link
 ssh <share_token>@paytty.akeju.me   # pay it as a customer
 ```
-
-## Payouts locally
-
-Payouts go to a simulated provider, `apps/sim`, with its own database. Create
-and migrate it once with `pnpm --filter @pay-tty/sim db:setup` (it reads
-`apps/sim/.env`); `pnpm dev` then runs it beside plane.

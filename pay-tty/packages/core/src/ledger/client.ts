@@ -8,7 +8,7 @@ export type Client = ReturnType<typeof createClient>
 export class Service extends Context.Service<Service, Client>()("LedgerClient") {}
 
 const make = Effect.gen(function* () {
-  const baseUrl = yield* Config.String("LEDGER_BASE_URL")
+  const baseUrl = yield* Config.String("LEDGER_URL")
 
   const httpClient = yield* HttpClient.HttpClient
 

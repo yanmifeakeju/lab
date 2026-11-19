@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun --watch bin/server.tsx",
-    "start": "bun bin/server.tsx",
+    "dev": "bun --env-file=../../.env --watch bin/server.tsx",
+    "start": "bun --env-file=../../.env bin/server.tsx",
     "test": "bun test",
     "typecheck": "tsc --project tsconfig.json",
     "lint": "oxlint . --deny-warnings"

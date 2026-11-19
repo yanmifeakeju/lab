@@ -7,7 +7,7 @@ export type Client = ReturnType<typeof createClient>
 export class Service extends Context.Service<Service, Client>()("Plane") {}
 
 const make = Effect.gen(function* () {
-  const baseUrl = yield* Config.String("PLANE_BASE_URL")
+  const baseUrl = yield* Config.String("PLANE_URL")
 
   const httpClient = yield* HttpClient.HttpClient
 
