@@ -14,8 +14,8 @@ export class Entry extends Schema.Class<Entry>("Catalog.Entry")({
 
 export interface Interface {
   /**
-   * The ledger a new business from this country opens its account in, read
-   * when asked rather than at startup.
+   * Returns the default ledger for new businesses in `countryCode`, queried on
+   * demand rather than cached at startup.
    */
   readonly findCountryDefault: (countryCode: string) => Effect.Effect<Entry | undefined>
 }

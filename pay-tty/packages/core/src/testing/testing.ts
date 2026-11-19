@@ -1,35 +1,28 @@
+import { Testing as Pool } from "@pay-tty/database/testing"
 import { and, eq, sql } from "drizzle-orm"
-import { Data, Effect, Exit } from "effect"
+import { Duration, Effect } from "effect"
 import { ulid } from "ulid"
 
 import { businesses } from "../business/sql.ts"
 import { Database } from "../database/client.ts"
-import { ledgers } from "../ledger/sql.ts"
+import { ledgerPostings, ledgers } from "../ledger/sql.ts"
 import { paymentLinks, payments } from "../payments/sql.ts"
-
-class Discarded<A, E> extends Data.TaggedError("Testing.Discarded")<{
-  readonly exit: Exit.Exit<A, E>
-}> {}
+import { payouts } from "../payouts/sql.ts"
 
 /**
- * Runs the effect in a transaction that is always rolled back, so a test
- * leaves nothing behind. Transactions opened inside it join it.
+ * Runs `effect` in a transaction on plane's database that always rolls back.
+ * Nested transactions join it.
  */
 export const rolledBack = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const database = yield* Database
 
-    return yield* database
-      .transaction(
-        Effect.flatMap(Effect.exit(effect), (exit) => Effect.fail(new Discarded({ exit }))),
-      )
-      .pipe(Effect.catchTag("Testing.Discarded", (discarded) => discarded.exit))
+    return yield* Pool.rolledBack(database, effect)
   })
 
 /**
- * Runs the effect behind a savepoint inside `rolledBack` and returns its exit.
- * A statement that fails aborts the whole transaction; rolling back to the
- * savepoint lets the test carry on.
+ * Runs `effect` inside a savepoint and rolls back to it, returning the Exit so
+ * a test can inspect statement failures without aborting the outer transaction.
  */
 export const attempt = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
@@ -45,7 +38,6 @@ export const attempt = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     return exit
   })
 
-/** Adds a catalog ledger, as the seed script does. */
 export const addLedger = (
   slug: string,
   currency: string,
@@ -58,7 +50,7 @@ export const addLedger = (
     yield* database.use((db) => db.insert(ledgers).values({ slug, currency, scale, countryCode }))
   })
 
-/** Makes the ledger its country's default for new businesses, in place of any other. */
+/** Sets `slug` as its country's default ledger, replacing any existing default. */
 export const makeCountryDefault = (slug: string) =>
   Effect.gen(function* () {
     const database = yield* Database
@@ -86,7 +78,6 @@ export const makeCountryDefault = (slug: string) =>
     )
   })
 
-/** Leaves the country with no default ledger, so new businesses there fail. */
 export const clearCountryDefault = (countryCode: string) =>
   Effect.gen(function* () {
     const database = yield* Database
@@ -100,8 +91,8 @@ export const clearCountryDefault = (countryCode: string) =>
   })
 
 /**
- * Gives the business a payable account and activates it, as opening one in
- * the ledger does, without asking the ledger. Returns the account's ref.
+ * Assigns a synthetic payable account reference to `businessId` and marks the
+ * business `active` without calling the ledger service.
  */
 export const openAccount = (businessId: string) =>
   Effect.gen(function* () {
@@ -118,7 +109,6 @@ export const openAccount = (businessId: string) =>
     return accountRef
   })
 
-/** Deactivates the link, as a merchant will once that exists. */
 export const deactivateLink = (id: string) =>
   Effect.gen(function* () {
     const database = yield* Database
@@ -126,7 +116,7 @@ export const deactivateLink = (id: string) =>
     yield* database.use((db) => db.update(paymentLinks).set({ deactivatedAt: sql`now()` }).where(eq(paymentLinks.id, id)))
   })
 
-/** Moves a pending payment's window into the past, so it is due to expire. */
+/** Backdates a pending payment's window so it is past `expires_at`. */
 export const lapsePayment = (id: string) =>
   Effect.gen(function* () {
     const database = yield* Database
@@ -136,6 +126,41 @@ export const lapsePayment = (id: string) =>
         .update(payments)
         .set({ createdAt: sql`now() - interval '31 minutes'`, expiresAt: sql`now() - interval '1 minute'` })
         .where(eq(payments.id, id)),
+    )
+  })
+
+/** Backdates a payout's `created_at` and `expires_at` by `age`. */
+export const createdAgo = (id: string, age: Duration.Duration) =>
+  Effect.gen(function* () {
+    const database = yield* Database
+
+    yield* database.use((db) =>
+      db
+        .update(payouts)
+        .set({
+          createdAt: sql`${payouts.createdAt} - make_interval(secs => ${Duration.toSeconds(age)})`,
+          expiresAt: sql`${payouts.expiresAt} - make_interval(secs => ${Duration.toSeconds(age)})`,
+        })
+        .where(eq(payouts.id, id)),
+    )
+  })
+
+/**
+ * Marks a confirmed payout's hold `pending` and transitions the payout to
+ * `held` without calling the ledger service.
+ */
+export const holdRecorded = (id: string) =>
+  Effect.gen(function* () {
+    const database = yield* Database
+
+    yield* database.use((db) =>
+      db
+        .update(ledgerPostings)
+        .set({ state: "pending", journalRef: `jrn_${ulid()}`, recordedAt: sql`now()` })
+        .where(and(eq(ledgerPostings.payoutId, id), eq(ledgerPostings.state, "created"))),
+    )
+    yield* database.use((db) =>
+      db.update(payouts).set({ status: "held" }).where(and(eq(payouts.id, id), eq(payouts.status, "requested"))),
     )
   })
 

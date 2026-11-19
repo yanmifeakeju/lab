@@ -85,6 +85,14 @@ export class Conflict extends Schema.Error<Conflict>("ConflictResponse")(
       "link_inactive",
       "payment_expired",
       "not_pending",
+      "payouts_automatic",
+      "payouts_unavailable",
+      "no_payout_account",
+      "payout_ledger_mismatch",
+      "payout_drafts_full",
+      "payout_expired",
+      "payout_rules_changed",
+      "payout_cancelled",
     ]) }),
   },
   { httpApiStatus: 409 },
@@ -114,3 +122,28 @@ export const businessRequired = new Conflict({
   message: "Create a business first.",
   error: { code: "business_required" },
 })
+
+// The route needs the business's ledger account, and it isn't open yet.
+export const accountNotOpened = new Conflict({
+  message: "Open the business's account first.",
+  error: { code: "account_not_opened" },
+})
+
+/** A request refused for one field's value, which the service, not the schema, checked. */
+export const invalidField = (
+  location: ValidationErrorDetail["location"],
+  field: string,
+  message: string,
+  summary = "The request is invalid.",
+) =>
+  new InvalidRequestError({
+    message: summary,
+    error: new ValidationError({
+      code: "validation_error",
+      details: [new ValidationErrorDetail({ location, field, code: "invalid_value", message })],
+    }),
+  })
+
+/** A page cursor the list can't read, named for what it pages through. */
+export const invalidCursor = (noun: string) =>
+  invalidField("query", "before", `Invalid ${noun} cursor.`, `Invalid ${noun} cursor.`)

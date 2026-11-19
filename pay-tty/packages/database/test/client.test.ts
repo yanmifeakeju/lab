@@ -1,31 +1,52 @@
 import assert from "node:assert/strict"
-import { test } from "node:test"
+import { after, test } from "node:test"
 
-import { eq, sql } from "drizzle-orm"
-import { Cause, Deferred, Effect, Exit, Fiber, Schema } from "effect"
+import { sql } from "drizzle-orm"
+import { Cause, Context, Deferred, Effect, Exit, Fiber, Layer, ManagedRuntime, type Redacted, Schema } from "effect"
 
-import { Database } from "../src/database/client.ts"
-import { createId } from "../src/database/ids.ts"
-import { principals } from "../src/principal/sql.ts"
-import { runtime } from "./runtime.ts"
+import { connect, type Interface } from "../src/client.ts"
+import { Testing } from "../src/testing.ts"
+
+// The transaction wrapper against a one-table schema of its own.
+
+class Database extends Context.Service<Database, Interface>()("Database") {}
+
+const schema: Testing.Schema<Database> = {
+  prefix: "pay_tty_t_database_",
+  migrations: { migrationsFolder: new URL("./migrations", import.meta.url).pathname },
+  seed: "",
+  layer: (url: Redacted.Redacted) => Layer.effect(Database)(connect(url)),
+}
+
+const db = await Testing.withDatabase(schema)
+
+const runtime = ManagedRuntime.make(db.layer)
+
+// Close the pool, then drop, even if closing fails.
+after(() => runtime.dispose().finally(() => db.drop()))
 
 class Boom extends Schema.TaggedError<Boom>()("Boom", {}) {}
+
+// Unique within this file's database.
+let ids = 0
+
+const newId = () => `row_${(ids += 1)}`
 
 const insert = (id: string) =>
   Effect.gen(function* () {
     const database = yield* Database
 
-    yield* database.use((db) => db.insert(principals).values({ id, issuer: "database-test", subject: id }))
+    yield* database.use((client) => client.execute(sql`insert into rows (id) values (${id})`))
   })
 
-// Read on the pool, outside any transaction: only committed rows are visible.
+// Queries the pool outside any open transaction so only committed rows are visible.
 const committed = (id: string) =>
   Effect.gen(function* () {
     const database = yield* Database
 
-    const rows = yield* database.use((db) => db.select().from(principals).where(eq(principals.id, id)))
+    const result = yield* database.use((client) => client.execute(sql`select 1 from rows where id = ${id}`))
 
-    return rows.length === 1
+    return result.rows.length === 1
   })
 
 const transaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -38,8 +59,8 @@ const transaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 void test("commits the transaction's writes when it succeeds", () =>
   runtime.runPromise(
     Effect.gen(function* () {
-      const first = createId("prn")
-      const second = createId("prn")
+      const first = newId()
+      const second = newId()
 
       yield* transaction(Effect.andThen(insert(first), insert(second)))
 
@@ -51,7 +72,7 @@ void test("commits the transaction's writes when it succeeds", () =>
 void test("rolls back and surfaces a typed failure unchanged", () =>
   runtime.runPromise(
     Effect.gen(function* () {
-      const id = createId("prn")
+      const id = newId()
 
       const exit = yield* Effect.exit(transaction(Effect.andThen(insert(id), Effect.fail(new Boom()))))
 
@@ -63,7 +84,7 @@ void test("rolls back and surfaces a typed failure unchanged", () =>
 void test("rolls back on a defect", () =>
   runtime.runPromise(
     Effect.gen(function* () {
-      const id = createId("prn")
+      const id = newId()
 
       const exit = yield* Effect.exit(transaction(Effect.andThen(insert(id), Effect.die("defect"))))
 
@@ -75,7 +96,7 @@ void test("rolls back on a defect", () =>
 void test("rolls back when interrupted", () =>
   runtime.runPromise(
     Effect.gen(function* () {
-      const id = createId("prn")
+      const id = newId()
       const inserted = yield* Deferred.make<void>()
 
       const fiber = yield* Effect.forkChild(
@@ -85,8 +106,7 @@ void test("rolls back when interrupted", () =>
       yield* Deferred.await(inserted)
       yield* Fiber.interrupt(fiber)
 
-      // Waits on the open transaction's row lock, then succeeds only if that
-      // transaction rolled back rather than committing the same key.
+      // Succeeds only if the interrupted transaction rolled back and released its primary-key lock.
       yield* insert(id)
     }),
   ))
@@ -94,8 +114,8 @@ void test("rolls back when interrupted", () =>
 void test("a nested transaction joins the outer one", () =>
   runtime.runPromise(
     Effect.gen(function* () {
-      const outer = createId("prn")
-      const inner = createId("prn")
+      const outer = newId()
+      const inner = newId()
 
       const exit = yield* Effect.exit(
         transaction(
@@ -110,48 +130,7 @@ void test("a nested transaction joins the outer one", () =>
 
       assert.ok(Exit.isFailure(exit))
       assert.equal(yield* committed(outer), false)
-      // Had the inner call committed on its own, its row would survive.
       assert.equal(yield* committed(inner), false)
-    }),
-  ))
-
-// What a separate connection commits mid-transaction shows up in the next
-// query at read committed, and never at repeatable read.
-void test("repeatable read gives every query in the transaction one snapshot", () =>
-  runtime.runPromise(
-    Effect.gen(function* () {
-      const database = yield* Database
-
-      const seen = (isolationLevel: "read committed" | "repeatable read") =>
-        Effect.gen(function* () {
-          const id = createId("prn")
-          const read = yield* Deferred.make<void>()
-          const written = yield* Deferred.make<void>()
-
-          const reader = yield* Effect.forkChild(
-            database.transaction(
-              Effect.gen(function* () {
-                const level = yield* database.use((db) => db.execute(sql`show transaction_isolation`))
-                const before = yield* committed(id)
-
-                yield* Deferred.succeed(read, undefined)
-                yield* Deferred.await(written)
-
-                return [level.rows[0]?.["transaction_isolation"], before, yield* committed(id)]
-              }),
-              { isolationLevel },
-            ),
-          )
-
-          yield* Deferred.await(read)
-          yield* insert(id)
-          yield* Deferred.succeed(written, undefined)
-
-          return yield* Fiber.join(reader)
-        })
-
-      assert.deepEqual(yield* seen("read committed"), ["read committed", false, true])
-      assert.deepEqual(yield* seen("repeatable read"), ["repeatable read", false, false])
     }),
   ))
 
@@ -159,7 +138,7 @@ void test("interruption waits for the body's finalizers and the rollback", () =>
   runtime.runPromise(
     Effect.gen(function* () {
       const database = yield* Database
-      const id = createId("prn")
+      const id = newId()
       const inserted = yield* Deferred.make<void>()
       const gate = yield* Deferred.make<void>()
       const interrupted = yield* Deferred.make<void>()
@@ -179,24 +158,42 @@ void test("interruption waits for the body's finalizers and the rollback", () =>
         yield* Effect.forkChild(Fiber.interrupt(fiber).pipe(Effect.andThen(Deferred.succeed(interrupted, undefined))))
         yield* Effect.sleep("200 millis")
 
-        // The body's finalizer is still blocked, so interruption can't be done.
+        // Interruption waits while the body's finalizer is blocked on `gate`.
         assert.equal(yield* Deferred.isDone(interrupted), false)
 
         yield* Deferred.succeed(gate, undefined)
         yield* Deferred.await(interrupted)
 
-        // Interruption has returned, so the rollback has released the row: an
-        // insert that refuses to wait for a lock gets the same key.
+        // Once interruption completes, the rollback has finished and the row lock is released.
         yield* transaction(
           Effect.andThen(
-            database.use((db) => db.execute(sql`set local lock_timeout = '1ms'`)),
+            database.use((client) => client.execute(sql`set local lock_timeout = '1ms'`)),
             insert(id),
           ),
         )
       }).pipe(
-        // Never leave the body blocked if an assertion fails.
         Effect.ensuring(Deferred.succeed(gate, undefined)),
       )
     }),
   ))
 
+void test("a pool on another database never joins this pool's transaction, nor this one its", () =>
+  runtime.runPromise(
+    Effect.gen(function* () {
+      const other = yield* Effect.promise(() => Testing.withDatabase(schema))
+
+      const nameOn = (database: Interface) =>
+        Effect.map(database.use((client) => client.execute<{ name: string }>(sql`select current_database() as name`)), (result) => result.rows[0]?.name)
+
+      yield* Effect.gen(function* () {
+        const ours = yield* Database
+        // Built as the first was, from the same layer.
+        const theirs = Context.get(yield* Layer.build(other.layer), Database)
+        const names = [yield* nameOn(ours), yield* nameOn(theirs)]
+
+        assert.notEqual(names[0], names[1])
+        assert.deepEqual(yield* ours.transaction(Effect.all([nameOn(ours), nameOn(theirs)])), names)
+        assert.deepEqual(yield* theirs.transaction(Effect.all([nameOn(ours), nameOn(theirs)])), names)
+      }).pipe(Effect.scoped, Effect.ensuring(Effect.promise(() => other.drop())))
+    }),
+  ))

@@ -1,3 +1,4 @@
+import { Common } from "@pay-tty/core/common"
 import { Payments } from "@pay-tty/core/payments"
 import { Schema } from "effect"
 import * as HttpApiEndpoint from "effect/unstable/httpapi/HttpApiEndpoint"
@@ -90,7 +91,7 @@ export const pay = HttpApiGroup.make("pay")
     // Pending until an outcome is simulated or it expires.
     HttpApiEndpoint.post("startPayment", "/pay/payment_links/:share_token/payments", {
       params: link,
-      headers: { "idempotency-key": Payments.IdempotencyKey },
+      headers: { "idempotency-key": Common.IdempotencyKey },
       payload: StartPaymentRequest,
       success: [StartedPayment, Payment],
       error: [NotFound, Conflict],

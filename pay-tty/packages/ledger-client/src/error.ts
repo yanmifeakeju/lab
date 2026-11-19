@@ -5,10 +5,11 @@ import * as Schema from "effect/Schema"
 
 import type {
   ErrorResponse,
+  ResolveConflictResponse,
   ValidationErrorResponse,
 } from "./generated.ts"
 
-export type ApiErrorResponse = ErrorResponse | ValidationErrorResponse
+export type ApiErrorResponse = ErrorResponse | ValidationErrorResponse | ResolveConflictResponse
 
 export type ClientError =
   | ApiErrorResponse

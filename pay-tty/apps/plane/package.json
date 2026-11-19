@@ -8,7 +8,7 @@
     "start": "node --env-file-if-exists=.env bin/api.ts",
     "openapi": "node bin/openapi.ts > openapi.json",
     "openapi:check": "node bin/openapi.ts | diff -u openapi.json -",
-    "test": "node --env-file-if-exists=.env --test --test-global-setup=node_modules/@pay-tty/core/src/testing/setup.ts test/*.test.ts",
+    "test": "node --env-file-if-exists=.env --test --test-global-setup=test/setup.ts test/*.test.ts",
     "typecheck": "tsc --project tsconfig.json",
     "lint": "oxlint . --deny-warnings",
     "clean": "node -e \"import('node:fs').then(({ rmSync }) => rmSync('dist', { recursive: true, force: true }))\"",
@@ -22,6 +22,8 @@
     "jose": "^6.2.12"
   },
   "devDependencies": {
+    "@pay-tty/database": "workspace:*",
+    "drizzle-orm": "^0.45.3",
     "ulid": "^3.0.2"
   }
 }

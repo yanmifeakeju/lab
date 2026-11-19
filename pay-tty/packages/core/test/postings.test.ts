@@ -3,7 +3,7 @@ import { test } from "node:test"
 
 import { PostJournalEntryRequestJson } from "@pay-tty/ledger-client"
 import { and, eq, inArray, sql } from "drizzle-orm"
-import { Cause, ConfigProvider, DateTime, Deferred, Duration, Effect, Exit, Fiber, Layer, Predicate, Schema } from "effect"
+import { Cause, ConfigProvider, DateTime, Deferred, Duration, Effect, Exit, Fiber, Layer, Logger, LogLevel, Predicate, Schema } from "effect"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientError from "effect/unstable/http/HttpClientError"
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
@@ -11,16 +11,20 @@ import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse"
 import { ulid } from "ulid"
 
 import { Business } from "../src/business/business.ts"
-import { Database, layer as DatabaseLayer } from "../src/database/client.ts"
+import { Common } from "../src/common/schemas.ts"
+import { Database } from "../src/database/client.ts"
 import { LedgerClient } from "../src/ledger/client.ts"
+import { RelayNudge } from "../src/ledger/nudge.ts"
 import { LedgerPostings } from "../src/ledger/postings.ts"
 import { Ledger } from "../src/ledger/slug.ts"
 import { ledgerPostings, platformAccounts } from "../src/ledger/sql.ts"
 import { Payments } from "../src/payments/payments.ts"
 import { payments as paymentRows } from "../src/payments/sql.ts"
+import { Payouts } from "../src/payouts/payouts.ts"
+import { payouts as payoutRows } from "../src/payouts/sql.ts"
 import { Principal } from "../src/principal/principal.ts"
 import { Testing } from "../src/testing/testing.ts"
-import { runtime } from "./runtime.ts"
+import { database as databaseLayer, runtime } from "./runtime.ts"
 
 const createBusiness = () =>
   Effect.gen(function* () {
@@ -34,7 +38,7 @@ const createBusiness = () =>
     return { business, accountRef }
   })
 
-const key = () => Payments.IdempotencyKey.make(`key_${ulid()}`)
+const key = () => Common.IdempotencyKey.make(`key_${ulid()}`)
 
 const fixed = new Payments.Details({
   title: "Logo design",
@@ -76,16 +80,9 @@ const postingOf = (paymentId: string) =>
     return posting
   })
 
-const asPosting = (row: typeof ledgerPostings.$inferSelect) =>
-  new LedgerPostings.Posting({
-    id: LedgerPostings.ID.make(row.id),
-    ledger: Ledger.Slug.make(row.ledger),
-    kind: row.kind,
-    description: row.description,
-    lines: row.lines.map((line) => new LedgerPostings.Line(line)),
-  })
+const asPosting = LedgerPostings.postingOf
 
-// The constraint a failed query violated; pg's error is the cause Drizzle wraps.
+// Extracts the violated PostgreSQL constraint name from a failed Drizzle query.
 const violated = <A, E>(exit: Exit.Exit<A, E>) => {
   if (Exit.isSuccess(exit)) {
     return undefined
@@ -113,7 +110,6 @@ type Reply = Answer | "unreachable"
 
 const isAnswer = (reply: Reply | Effect.Effect<Reply>): reply is Reply => !Effect.isEffect(reply)
 
-// The ledger's answer to a posting: the same entry for a replay of a key.
 const entry = (payload: Payload, journalRef: string, createdAt = "2026-10-26T14:02:00Z"): Answer => ({
   status: 201,
   body: {
@@ -131,8 +127,7 @@ const refusal = (status: number, code: string): Reply => ({
   body: { message: "The ledger could not complete the request.", error: { code } },
 })
 
-// The ledger service, faked at the HTTP boundary so the client and its
-// decoding still run.
+// Stubs the ledger service at the `HttpClient` layer so the generated client and schema decoders still execute.
 const fakeLedger = (reply: (sent: Sent) => Reply | Effect.Effect<Reply>) => {
   const sent: Array<Sent> = []
 
@@ -171,7 +166,7 @@ const fakeLedger = (reply: (sent: Sent) => Reply | Effect.Effect<Reply>) => {
   return { sent, layer }
 }
 
-// Leases the row to a pass of the test's own, as a claim does.
+// Acquires a 1-minute lease on posting `id` and returns its `ClaimID`.
 const leased = (id: string) =>
   Effect.gen(function* () {
     const database = yield* Database
@@ -194,7 +189,7 @@ const send = (row: typeof ledgerPostings.$inferSelect, claim?: LedgerPostings.Cl
     return yield* postings.send(claim ?? (yield* leased(row.id)), asPosting(row))
   })
 
-// Whether each row's lease has ended, by the database's clock, and who held it.
+// Returns `claimId` and whether `claimed_until <= now()` for each posting ID.
 const leasesOf = (ids: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const database = yield* Database
@@ -213,8 +208,7 @@ const leasesOf = (ids: ReadonlyArray<string>) =>
     return new Map(rows.map((row) => [row.id, row]))
   })
 
-// The database, with every statement after the first `ok` failing as a lost
-// connection would.
+// Wraps `Database` so every statement after the first `ok` calls dies with a connection error.
 const failingAfter = (ok: number) =>
   Layer.effect(Database)(
     Effect.gen(function* () {
@@ -228,8 +222,7 @@ const failingAfter = (ok: number) =>
     }),
   )
 
-// The database, with the first statement held until `go` and then run to the
-// end whatever its caller does, as a query already sent would be.
+// Wraps `Database` so the first statement blocks on `go` and runs to completion regardless of caller interruption.
 const heldFirst = (sent: Deferred.Deferred<void>, go: Deferred.Deferred<void>, done: Deferred.Deferred<void>) =>
   Layer.effect(Database)(
     Effect.gen(function* () {
@@ -346,7 +339,7 @@ void test("the database keeps a posting in its payment's ledger, one per payment
             ),
           )
 
-        // Stands in for refunds and payouts, which aren't causes yet.
+        // Stands in for refunds, which aren't causes yet.
         const unpaid = { paymentId: null }
 
         assert.equal(violated(yield* insert({ paymentId: unposted.id, ledger: other })), "ledger_postings_payment_ledger_fk")
@@ -364,12 +357,13 @@ void test("the database keeps a posting in its payment's ledger, one per payment
         const rejected: ReadonlyArray<readonly [string, Partial<typeof ledgerPostings.$inferInsert>]> = [
           ["created with a journal entry", { journalRef: "jrn_1", recordedAt: at }],
           ["created with an error", { errorCode: "account_closed" }],
-          ["pending without its authorization", { state: "pending" }],
-          ["pending already resolved", { state: "pending", journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2" }],
+          ["pending without its authorization", { state: "pending", pending: true }],
+          ["pending already resolved", { state: "pending", pending: true, journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2" }],
           ["posted without a journal entry", { state: "posted" }],
           ["posted with an error", { state: "posted", journalRef: "jrn_1", recordedAt: at, errorCode: "account_closed" }],
-          ["voided without its resolution", { state: "voided", journalRef: "jrn_1", recordedAt: at }],
-          ["expired without its resolution", { state: "expired", journalRef: "jrn_1", recordedAt: at }],
+          ["voided without its resolution", { state: "voided", pending: true, journalRef: "jrn_1", recordedAt: at, resolution: "void" }],
+          ["posted immediately with a resolution", { state: "posted", journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2" }],
+          ["captured without its resolution", { state: "posted", journalRef: "jrn_1", recordedAt: at, pending: true, resolution: "capture" }],
           ["refused without an error", { state: "refused" }],
           ["refused with a resolution", { state: "refused", errorCode: "account_closed", journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2" }],
         ]
@@ -378,14 +372,37 @@ void test("the database keeps a posting in its payment's ledger, one per payment
           assert.equal(violated(yield* update(values)), "ledger_postings_state_shape", reason)
         }
 
+        // Plane decides a hold's resolution before it is sent, and only a hold's.
+        const undecided: ReadonlyArray<readonly [string, Partial<typeof ledgerPostings.$inferInsert>]> = [
+          ["decided before the hold is recorded", { pending: true, resolution: "capture" }],
+          ["decided for an entry posted at once", { state: "posted", journalRef: "jrn_1", recordedAt: at, resolution: "capture" }],
+          ["captured undecided", { state: "posted", pending: true, journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2" }],
+          ["voided undecided", { state: "voided", pending: true, journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2" }],
+        ]
+
+        for (const [reason, values] of undecided) {
+          assert.equal(violated(yield* update(values)), "ledger_postings_resolution_shape", reason)
+        }
+
         assert.equal(violated(yield* update({ state: "posted", journalRef: "jrn_1" })), "ledger_postings_recorded_with_journal")
         assert.equal(violated(yield* update({ state: "refused", errorCode: "account_closed", recordedAt: at })), "ledger_postings_recorded_with_journal")
 
+        // Only a hold is ever pending or voided.
+        assert.equal(violated(yield* update({ state: "pending", journalRef: "jrn_1", recordedAt: at })), "ledger_postings_pending_states")
+        assert.equal(
+          violated(yield* update({ state: "voided", journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2" })),
+          "ledger_postings_pending_states",
+        )
+
         for (const values of [
           { state: "posted", journalRef: "jrn_1", recordedAt: at },
-          { state: "pending", journalRef: "jrn_1", recordedAt: at },
-          { state: "voided", journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2" },
-          { state: "refused", errorCode: "account_closed" },
+          { state: "pending", pending: true, journalRef: "jrn_1", recordedAt: at },
+          { state: "pending", pending: true, journalRef: "jrn_1", recordedAt: at, resolution: "void" },
+          { state: "posted", pending: true, journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2", resolution: "capture" },
+          { state: "voided", pending: true, journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2", resolution: "void" },
+          // The ledger's word wins over what plane asked.
+          { state: "voided", pending: true, journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2", resolution: "capture" },
+          { state: "refused", pending: false, errorCode: "account_closed", resolution: null },
         ] as const) {
           assert.ok(Exit.isSuccess(yield* update(values)), values.state)
         }
@@ -421,6 +438,7 @@ void test("the posting goes to the ledger under its own key with the stored entr
             ledger: row.ledger,
             kind: "payment",
             description: row.description,
+            pending: false,
             lines: [{ debit_account_ref: "acct_test_cash", credit_account_ref: accountRef, amount: 2_500_000, purpose: "payment" }],
           },
         }])
@@ -921,7 +939,7 @@ void test("the relay holds no connection or lock while the ledger answers", () =
         )
 
         return [recorded[0]?.state, Exit.isSuccess(lockable)] as const
-      }).pipe(Effect.provide(DatabaseLayer), Effect.orDie)
+      }).pipe(Effect.provide(databaseLayer), Effect.orDie)
 
       const checks: Array<readonly [string | undefined, boolean]> = []
 
@@ -1046,5 +1064,98 @@ void test("settling, settled and attention agree across rows, filters and totals
           assert.ok(Predicate.isTagged(yield* Effect.flip(service.getPayment(businessId, id)), "Payments.PaymentNotFoundError"))
         }
       }),
+    ),
+  ))
+
+// Every statement the service sends, as SQL text.
+const recording = (statements: Array<string>) =>
+  Layer.effect(Database)(
+    Effect.gen(function* () {
+      const database = yield* Database
+
+      return Database.of({
+        use: (query) =>
+          database.use((db) => {
+            const built = query(db)
+
+            if (Predicate.hasProperty(built, "toSQL") && Predicate.isFunction(built.toSQL)) {
+              const compiled: unknown = built.toSQL()
+
+              if (Predicate.hasProperty(compiled, "sql") && Predicate.isString(compiled.sql)) {
+                statements.push(compiled.sql)
+              }
+            }
+
+            return built
+          }),
+        transaction: database.transaction,
+      })
+    }),
+  )
+
+// Each message logged, with its level.
+const logged = (lines: Array<readonly [LogLevel.LogLevel, unknown]>) =>
+  Logger.layer([Logger.make(({ logLevel, message }) => {
+    lines.push([logLevel, message])
+  })])
+
+void test("a refusal's log level and payout update follow the posting's cause, not its kind", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const { business } = yield* createBusiness()
+        const payments = yield* postingOf((yield* paid(yield* linkOf(business.id))).id)
+        const service = yield* Payouts.Service
+        const ledger = Ledger.Slug.make("ngn_ng")
+        const account = { bankCode: "058", accountNumber: "0123456789" }
+
+        yield* service.changeSettings(business.id, ledger, new Payouts.Change({ mode: "manual", destination: account }))
+
+        const draft = yield* service.create(business.id, ledger, 2_500_000n)
+        const { payout } = yield* service.confirm(business.id, draft.id)
+        const database = yield* Database
+
+        const [payouts] = yield* database.use((db) =>
+          db.select().from(ledgerPostings).where(eq(ledgerPostings.payoutId, payout.id)),
+        )
+
+        assert.ok(payouts !== undefined)
+
+        const sendLogged = (posting: LedgerPostings.Posting) =>
+          Effect.gen(function* () {
+            const statements: Array<string> = []
+            const lines: Array<readonly [LogLevel.LogLevel, unknown]> = []
+            const broke = fakeLedger(() => refusal(409, "insufficient_funds"))
+
+            const outcome = yield* Effect.gen(function* () {
+              const postings = yield* LedgerPostings.Service
+
+              return yield* postings.send(yield* leased(posting.id), posting)
+            }).pipe(Effect.provide(Layer.mergeAll(broke.layer.pipe(Layer.provide(recording(statements))), logged(lines))))
+
+            return { outcome, statements, levels: lines.map(([level]) => level) }
+          })
+
+        // A payment's refusal is a fault, and touches no payout.
+        const payment = yield* sendLogged(asPosting(payments))
+
+        assert.equal(payment.outcome, "refused")
+        assert.deepEqual(payment.levels, ["Error"])
+        assert.ok(payment.statements.length > 0)
+        assert.ok(payment.statements.every((statement) => !statement.includes(`update "payouts"`)), "no payout update")
+
+        // A payout's, under any kind, is the hold doing its job.
+        const hold = yield* sendLogged(asPosting({ ...payouts, kind: "payout_scheduled" }))
+
+        assert.equal(hold.outcome, "refused")
+        assert.deepEqual(hold.levels, ["Info"])
+        assert.ok(hold.statements.some((statement) => statement.includes(`update "payouts"`)))
+
+        const [rejected] = yield* database.use((db) => db.select().from(payoutRows).where(eq(payoutRows.id, payout.id)))
+
+        assert.equal(rejected?.status, "rejected")
+      }).pipe(
+        Effect.provide(Payouts.layer.pipe(Layer.provide(RelayNudge.layer))),
+      ),
     ),
   ))

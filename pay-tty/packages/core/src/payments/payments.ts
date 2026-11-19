@@ -1,21 +1,21 @@
 import { and, desc, eq, gt, lte, type SQL, sql } from "drizzle-orm"
-import { Context, DateTime, Effect, Encoding, Layer, Option, Result, Schema } from "effect"
-
+import { Context, Duration, Effect, Encoding, Layer, Result, Schema } from "effect"
 import { Business } from "../business/business.ts"
 import { businesses } from "../business/sql.ts"
 import { Database } from "../database/client.ts"
+import { IdempotencyKey, isOneLine } from "../common/schemas.ts"
+import { fromNow, maxAmount } from "@pay-tty/database/columns"
 import { createId } from "../database/ids.ts"
+import { cursorAt, pages } from "@pay-tty/database/pages"
 import { Currency } from "../ledger/currency.ts"
 import { Ledger } from "../ledger/slug.ts"
 import { ledgerPostings, ledgers, platformAccounts } from "../ledger/sql.ts"
-import { maxAmount, paymentLinks, payments, paymentStatuses } from "./sql.ts"
+import { paymentLinks, payments, paymentStatuses } from "./sql.ts"
 
-export { maxAmount } from "./sql.ts"
-
-/** How long a payment stays pending before it expires. */
+/** TTL in minutes for a pending payment before it expires. */
 export const paymentWindowMinutes = 30
 
-/** How many of a business's links a listing returns, newest first. */
+/** Maximum payment links returned per business listing, ordered newest first. */
 export const linkListLimit = 100
 
 export const paymentPageSize = 50
@@ -27,32 +27,17 @@ export const ID = Schema.String.pipe(
 
 export type ID = typeof ID.Type
 
-/** Printable ASCII without spaces, so it travels in a header unchanged. */
-export const IdempotencyKey = Schema.String.check(
-  Schema.isPattern(/^[!-~]{1,255}$/).annotate({ expected: "1 to 255 printable ASCII characters without spaces" }),
-).pipe(Schema.brand("Payments.IdempotencyKey"))
-
-export type IdempotencyKey = typeof IdempotencyKey.Type
-
-/** Minor units at the link's scale. */
+/** Positive amount in minor units of the link's ledger. */
 export const Amount = Schema.BigInt.check(
   Schema.isGreaterThanBigInt(0n),
   Schema.isLessThanOrEqualToBigInt(maxAmount),
 )
 
-/**
- * No control characters or Unicode line and paragraph separators, so the text
- * stays one line wherever it lands.
- */
-export const isOneLine = Schema.isPattern(/^[^\p{Cc}\u2028\u2029]*$/u).annotate({
-  expected: "a single line without control characters",
-})
-
 export const Title = Schema.NonEmptyString.check(Schema.isTrimmed(), Schema.isMaxLength(255), isOneLine)
 
 export const Description = Schema.NonEmptyString.check(Schema.isTrimmed(), Schema.isMaxLength(500))
 
-/** One whole unit of the currency: the least a link or payment takes. */
+/** Minimum allowed amount for a currency (`10^scale`, i.e., one major unit). */
 export const minimumAmount = (scale: number) => 10n ** BigInt(scale)
 
 export class Fixed extends Schema.Class<Fixed>("Payments.Fixed")({
@@ -66,7 +51,7 @@ export interface Bounds {
   readonly maximumAmount: bigint | null
 }
 
-/** The setting that breaks the bounds and why, or undefined when they hold. */
+/** Validates customer-chosen pricing bounds; returns the violated field and message, or undefined. */
 export const boundsViolation = (
   bounds: Bounds,
 ): { readonly setting: "suggested" | "maximum"; readonly message: string } | undefined => {
@@ -87,7 +72,6 @@ export const boundsViolation = (
   return undefined
 }
 
-// Every setting may be unset: the payer then chooses any amount.
 export class CustomerChooses extends Schema.Class<CustomerChooses>("Payments.CustomerChooses")(
   Schema.Struct({
     mode: Schema.tag("customer_chooses"),
@@ -109,7 +93,7 @@ export const Pricing = Schema.Union([Fixed, CustomerChooses])
 
 export type Pricing = typeof Pricing.Type
 
-/** What a merchant submits; a repeat is compared with it field by field. */
+/** Input payload for creating a payment link; compared field-by-field on idempotent retries. */
 export class Details extends Schema.Class<Details>("Payments.Details")({
   title: Title,
   description: Schema.NullOr(Description),
@@ -122,18 +106,17 @@ export class Link extends Schema.Class<Link>("Payments.Link")({
   title: Schema.String,
   description: Schema.NullOr(Schema.String),
   ledger: Ledger.Slug,
-  /** The ledger's, as are the payments'. */
   currencyCode: Currency.Code,
   scale: Schema.Int,
   pricing: Pricing,
-  /** Opaque and unguessable; the public link is served by it. */
+  /** Unguessable token used to address the link publicly. */
   shareToken: Schema.String,
-  /** Null while the link takes payments. */
+  /** Null while the link accepts new payments. */
   deactivatedAt: Schema.NullOr(Schema.Date),
   createdAt: Schema.Date,
 }) {}
 
-/** A link as its customers see it, with the name of the business it pays. */
+/** Public view of a payment link paired with the merchant's business name. */
 export class Payable extends Schema.Class<Payable>("Payments.Payable")({
   link: Link,
   businessName: Schema.String,
@@ -150,15 +133,14 @@ export const Status = Schema.Literals(paymentStatuses)
 
 export type Status = typeof Status.Type
 
-/** What a simulated payment can end in; expiry is the clock's, not a choice. */
+/** Terminal outcomes reported by payment simulation (`expired` is clock-driven). */
 export const Outcome = Schema.Literals(["succeeded", "failed", "cancelled"])
 
 export type Outcome = typeof Outcome.Type
 
 /**
- * Where a payment stands for its merchant: its effective status until it
- * succeeds, then how its posting to the ledger is going. Worked out when read,
- * never stored.
+ * Merchant-facing payment state, derived at query time from `payments.status`,
+ * `expires_at`, and `ledger_postings.state`.
  */
 export const State = Schema.Literals(["pending", "expired", "failed", "cancelled", "settling", "settled", "attention"])
 
@@ -175,7 +157,7 @@ export class Payment extends Schema.Class<Payment>("Payments.Payment")({
   status: Status,
   createdAt: Schema.Date,
   expiresAt: Schema.Date,
-  /** When it left pending; null while pending. */
+  /** Timestamp when `status` left `pending`, or null while pending. */
   completedAt: Schema.NullOr(Schema.Date),
 }) {}
 
@@ -190,28 +172,28 @@ export const Source = Schema.Union([
 export class PaymentSummary extends Schema.Class<PaymentSummary>("Payments.PaymentSummary")({
   ...Payment.fields,
   state: State,
-  /** When the ledger posted the payment; null until it is settled. */
+  /** Timestamp when the ledger posted the entry, or null until settled. */
   settledAt: Schema.NullOr(Schema.Date),
-  /** The ledger's journal entry for it, once there is one. */
+  /** Ledger journal entry reference, once recorded. */
   journalRef: Schema.NullOr(Schema.String),
   source: Source,
 }) {}
 
 export class Paid extends Schema.TaggedClass<Paid>("Payments.Paid")("paid", { at: Schema.Date }) {}
 
-/** The ledger posted the payment to the merchant's account. */
+/** Event recorded when the ledger posts the payment to the merchant's account. */
 export class Settled extends Schema.TaggedClass<Settled>("Payments.Settled")("settled", {
   at: Schema.Date,
   journalRef: Schema.String,
 }) {}
 
-/** The ledger won't take the payment's posting, as of its last attempt. */
+/** Event recorded when the ledger permanently rejects the payment's posting. */
 export class Refused extends Schema.TaggedClass<Refused>("Payments.Refused")("refused", {
   at: Schema.Date,
   errorCode: Schema.String,
 }) {}
 
-/** What happened to a payment, oldest first. */
+/** Chronological timeline event for a payment. */
 export const Event = Schema.Union([Paid, Settled, Refused])
 
 export type Event = typeof Event.Type
@@ -223,21 +205,7 @@ export class PaymentDetail extends Schema.Class<PaymentDetail>("Payments.Payment
 
 export class CursorError extends Schema.TaggedError<CursorError>()("Payments.CursorError", {}) {}
 
-// Postgres emits the timestamp, including microseconds. Validate before using it
-// in a timestamp cast so malformed cursors are request errors, not SQL defects.
-const cursorValue = Schema.fromJsonString(Schema.Struct({
-  at: Schema.String.check(
-    Schema.isPattern(/^(?!0000)\d{4}-\d{2}-\d{2} (?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,6})?[+-](?:0\d|1[0-5])(?::[0-5]\d)?$/),
-    Schema.makeFilter((at) => {
-      const date = DateTime.make(at)
-      const day = DateTime.make(at.slice(0, 10) + "T00:00:00Z")
-
-      return Option.isSome(date) && Option.isSome(day) &&
-        DateTime.formatIsoDate(day.value) === at.slice(0, 10)
-    }),
-  ),
-  id: PaymentID,
-}))
+const cursors = pages(PaymentID)
 
 export interface Filter {
   readonly linkId: ID | null
@@ -245,8 +213,8 @@ export interface Filter {
 }
 
 /**
- * What a link's payments, or a business's, came to. A pending payment past its
- * window counts as expired, whether or not anything has marked it yet.
+ * Aggregated payment counts and totals for a link or business. Pending
+ * payments past `expires_at` are counted as `expired`.
  */
 export class Stats extends Schema.Class<Stats>("Payments.Stats")({
   succeeded: Schema.Int,
@@ -254,15 +222,15 @@ export class Stats extends Schema.Class<Stats>("Payments.Stats")({
   cancelled: Schema.Int,
   expired: Schema.Int,
   pending: Schema.Int,
-  /** Succeeded payments by how their posting stands; together, `succeeded`. */
+  /** Breakdown of `succeeded` payments by ledger posting state (`settling + settled + attention = succeeded`). */
   settling: Schema.Int,
   settled: Schema.Int,
   attention: Schema.Int,
-  /** The sum of settled payments, in minor units at the link's scale. */
+  /** Sum of `settled` payment amounts in minor units. */
   collected: Schema.BigInt,
-  /** The sum of payments still settling. */
+  /** Sum of `settling` payment amounts in minor units. */
   settlingAmount: Schema.BigInt,
-  /** When the latest succeeded payment completed. */
+  /** Completion timestamp of the most recent `succeeded` payment. */
   lastPaidAt: Schema.NullOr(Schema.Date),
 }) {}
 
@@ -278,9 +246,9 @@ export class Summary extends Schema.Class<Summary>("Payments.Summary")({
 }) {}
 
 export class Overview extends Schema.Class<Overview>("Payments.Overview")({
-  /** The newest `linkListLimit` links. */
+  /** Up to `linkListLimit` links, ordered newest first. */
   links: Schema.Array(Summary),
-  /** Counts and totals over every link, listed or not. */
+  /** Total counts and payment stats across all links of the business. */
   linkCount: Schema.Int,
   activeLinkCount: Schema.Int,
   totals: Stats,
@@ -288,62 +256,62 @@ export class Overview extends Schema.Class<Overview>("Payments.Overview")({
 
 export interface Started {
   readonly payment: Payment
-  /** False when the key had already started this payment. */
+  /** False when returned from an idempotent retry. */
   readonly created: boolean
 }
 
 export interface Created {
   readonly link: Link
-  /** False when the key had already created this link. */
+  /** False when returned from an idempotent retry. */
   readonly created: boolean
 }
 
-/** The key already created a link with other details; that link is unchanged. */
+/** Idempotency key was already used for this business with different link details. */
 export class ConflictError extends Schema.TaggedError<ConflictError>()(
   "Payments.ConflictError",
   { businessId: Business.ID, existing: ID },
 ) {}
 
-/** The business's account isn't open yet, so it can't take payments. */
+/** The business's payable account is not yet open. */
 export class InactiveBusinessError extends Schema.TaggedError<InactiveBusinessError>()(
   "Payments.InactiveBusinessError",
   { businessId: Business.ID },
 ) {}
 
-/** No link has this share token. */
+/** No payment link matches the given share token or ID. */
 export class LinkNotFoundError extends Schema.TaggedError<LinkNotFoundError>()("Payments.LinkNotFoundError", {}) {}
 
-/** The link was deactivated, so it starts no new payments. */
+/** The payment link has been deactivated and no longer accepts new payments. */
 export class LinkInactiveError extends Schema.TaggedError<LinkInactiveError>()(
   "Payments.LinkInactiveError",
   { id: ID },
 ) {}
 
-/** The requested amount doesn't fit the link's pricing. */
+/** Requested payment amount violates the link's pricing rules. */
 export class AmountError extends Schema.TaggedError<AmountError>()("Payments.AmountError", {
   reason: Schema.Literals(["required", "unexpected", "below_currency_minimum", "below_minimum", "above_maximum"]),
   message: Schema.String,
 }) {}
 
-/** A pricing setting is below one whole unit of the ledger's currency. */
+/** A pricing field is below one whole unit (`10^scale`) of the ledger's currency. */
 export class DetailsError extends Schema.TaggedError<DetailsError>()("Payments.DetailsError", {
   field: Schema.Literals(["amount", "suggestedAmount", "minimumAmount", "maximumAmount"]),
   message: Schema.String,
 }) {}
 
-/** The key already started a payment for another amount; that payment is unchanged. */
+/** Idempotency key was already used on this link for a different amount. */
 export class PaymentConflictError extends Schema.TaggedError<PaymentConflictError>()(
   "Payments.PaymentConflictError",
   { linkId: ID, existing: PaymentID },
 ) {}
 
-/** The link, or the business when the link is null, has no payment with this ID. */
+/** No payment with `id` exists for the specified link or business. */
 export class PaymentNotFoundError extends Schema.TaggedError<PaymentNotFoundError>()(
   "Payments.PaymentNotFoundError",
   { linkId: Schema.NullOr(ID), id: Schema.String },
 ) {}
 
-/** The payment already left pending, as it now stands. */
+/** Payment is no longer `pending` and cannot be simulated. */
 export class PaymentClosedError extends Schema.TaggedError<PaymentClosedError>()(
   "Payments.PaymentClosedError",
   { payment: Payment },
@@ -351,23 +319,21 @@ export class PaymentClosedError extends Schema.TaggedError<PaymentClosedError>()
 
 export interface Interface {
   /**
-   * Saves a link in the business's primary ledger, once its account there is
-   * open. Idempotent per business and key: a repeat with the same details
-   * returns the saved link as first created, and one with other details
-   * conflicts.
+   * Creates a payment link in the business's primary ledger. Idempotent per
+   * `(businessId, idempotencyKey)` when `details` match; returns `ConflictError`
+   * if `details` differ.
    */
   readonly createLink: (
     businessId: Business.ID,
     idempotencyKey: IdempotencyKey,
     details: Details,
   ) => Effect.Effect<Created, Business.NotFoundError | InactiveBusinessError | DetailsError | ConflictError>
-  /** The link behind a share token, deactivated or not. */
+  /** Looks up a payment link by `shareToken` (whether active or deactivated). */
   readonly findLink: (shareToken: string) => Effect.Effect<Payable, LinkNotFoundError>
   /**
-   * Starts a pending payment that expires after `paymentWindowMinutes`.
-   * Idempotent per link and key: a repeat with the same amount returns that
-   * payment, even once the link is deactivated. The amount is null for a
-   * fixed-price link, which charges its own.
+   * Starts a pending payment expiring after `paymentWindowMinutes`. Idempotent
+   * per `(link, idempotencyKey)` when `amount` matches, even if the link was
+   * subsequently deactivated. `amount` must be null for fixed-price links.
    */
   readonly startPayment: (
     shareToken: string,
@@ -378,23 +344,23 @@ export interface Interface {
     LinkNotFoundError | LinkInactiveError | AmountError | PaymentConflictError
   >
   /**
-   * Ends a pending payment of the link with the outcome a simulated provider
-   * reported. A payment past its expiry is expired instead, and refused. A
-   * success commits with its ledger posting, for the relay to send.
+   * Resolves a pending payment with `outcome`. If the payment has passed
+   * `expires_at`, marks it `expired` and fails with `PaymentClosedError`. On
+   * `succeeded`, inserts a `ledger_postings` row in the same transaction.
    */
   readonly simulate: (
     shareToken: string,
     paymentId: string,
     outcome: Outcome,
   ) => Effect.Effect<Payment, LinkNotFoundError | PaymentNotFoundError | PaymentClosedError>
-  /** The business's links with what each collected, and its totals. */
+  /** Lists the business's links with per-link and overall stats. */
   readonly listLinks: (businessId: Business.ID) => Effect.Effect<Overview>
-  /** The business's payments, newest first, with their states and filtered totals. */
+  /** Lists a page of the business's payments, newest first, with filtered stats. */
   readonly listPayments: (
     businessId: Business.ID,
     filter: Filter & { readonly before: Cursor | null },
   ) => Effect.Effect<PaymentPage, LinkNotFoundError | CursorError>
-  /** One of the business's payments, with what has happened to it. */
+  /** Retrieves a single payment and its event timeline. */
   readonly getPayment: (businessId: Business.ID, id: string) => Effect.Effect<PaymentDetail, PaymentNotFoundError>
 }
 
@@ -402,7 +368,6 @@ export class Service extends Context.Service<Service, Interface>()("Payments") {
 
 type Row = typeof paymentLinks.$inferSelect
 
-// A link or payment with the currency and scale of its ledger.
 const inLedger = { currency: ledgers.currency, scale: ledgers.scale }
 
 const linkColumns = { link: paymentLinks, ...inLedger }
@@ -488,9 +453,8 @@ const statusCondition = (status: Status): SQL => {
 
 const effectiveStatus = sql<Status>`case when ${isStatus("pending")} and ${due} then 'expired' else ${payments.status} end`
 
-// Over payments left-joined to their posting. A succeeded payment without one,
-// or whose posting the ledger won't take, needs the merchant's attention. Null
-// where a link has no payment.
+// Derives merchant-facing state across `payments` left-joined to `ledger_postings`.
+// Succeeded payments with a missing or `refused` posting surface as `attention`.
 const state = sql<State>`case
   when ${isStatus("succeeded")} then case
     when ${ledgerPostings.state} in ('created', 'pending') then 'settling'
@@ -502,11 +466,9 @@ end`
 
 const inState = (value: State) => sql`(${state}) = ${value}`
 
-// As text: a sum can pass what a JavaScript number holds exactly.
+// Cast to text so sums exceeding `MAX_SAFE_INTEGER` decode into `bigint` without precision loss.
 const summed = (condition: SQL) => sql<string>`coalesce(sum(${payments.amount}) filter (where ${condition}), 0)::text`
 
-// Over the payments, and their postings, joined to the links selected; a link
-// without any has none.
 const statsColumns = {
   succeeded: counted(isStatus("succeeded")),
   failed: counted(isStatus("failed")),
@@ -530,13 +492,11 @@ type StatsRow = {
 const statsOf = (row: StatsRow) =>
   new Stats({ ...row, collected: BigInt(row.collected), settlingAmount: BigInt(row.settlingAmount) })
 
-// A payment as its merchant lists it, joined to its ledger, link and posting.
 const summaryColumns = {
   ...paymentColumns,
   status: effectiveStatus,
   state,
   title: paymentLinks.title,
-  // Null without a posting.
   postingState: ledgerPostings.state,
   journalRef: ledgerPostings.journalRef,
   recordedAt: ledgerPostings.recordedAt,
@@ -561,10 +521,11 @@ const summaryOf = ({ status, state, title, postingState, journalRef, recordedAt,
     source: { kind: "link", id: ID.make(row.payment.linkId), title },
   })
 
-// Every query sees the same committed state, so rows and totals agree.
+// Read-only `REPEATABLE READ` snapshot so paginated rows and aggregate totals
+// observe the same committed state and `now()` timestamp.
 const snapshot = { isolationLevel: "repeatable read", accessMode: "read only" } as const
 
-/** The currency and scale amounts are in. */
+/** Currency code and minor-unit scale. */
 export interface Unit {
   readonly currencyCode: string
   readonly scale: number
@@ -574,8 +535,7 @@ const leastText = (unit: Unit) =>
   `must be at least ${Currency.format(minimumAmount(unit.scale), unit.scale, unit.currencyCode)}`
 
 /**
- * The amount a payment of this pricing charges, or why the request can't have
- * it. No amount is below one whole unit; a link's minimum only raises that.
+ * Resolves and validates the payment amount for `pricing` and `requested`.
  */
 export const amountFor = (
   pricing: Pricing,
@@ -607,7 +567,7 @@ export const amountFor = (
   return Result.succeed(requested)
 }
 
-// The first setting below one whole unit, if any.
+// Returns a `DetailsError` for the first pricing field below `minimumAmount(unit.scale)`, if any.
 const belowUnit = (pricing: Pricing, unit: Unit): DetailsError | undefined => {
   const settings = pricing.mode === "fixed"
     ? [["amount", pricing.amount] as const]
@@ -643,8 +603,7 @@ const columnsOf = (pricing: Pricing) =>
         maximumAmount: pricing.maximumAmount,
       }
 
-// The submitted details only: the ledger comes from the server, and a repeat
-// is answered with what was saved, whatever the business's ledger is now.
+// Compares caller-supplied link fields for idempotency checks.
 const sameDetails = (row: Row, details: Details) => {
   const pricing = columnsOf(details.pricing)
 
@@ -659,8 +618,8 @@ const sameDetails = (row: Row, details: Details) => {
   )
 }
 
-// Customers use it as their SSH user name, which OpenSSH refuses when it
-// starts with "-", so a token never does.
+// Generates a 43-char base64url token that never begins with `-` (OpenSSH
+// rejects usernames starting with `-`).
 const shareToken = (): string => {
   const token = Encoding.encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)))
 
@@ -689,7 +648,6 @@ const make = Effect.gen(function* () {
       return yield* new Business.NotFoundError({ id: businessId })
     }
 
-    // A link would take payments the ledger has no account to credit.
     if (owner.status !== "active") {
       return yield* new InactiveBusinessError({ businessId })
     }
@@ -701,8 +659,7 @@ const make = Effect.gen(function* () {
       return yield* below
     }
 
-    // A concurrent insert with the same key waits on the unique index, and
-    // whichever commits first is the link both return.
+    // `ON CONFLICT DO NOTHING` on `(business_id, idempotency_key)` serializes concurrent creates.
     const inserted = yield* database.use((db) =>
       db
         .insert(paymentLinks)
@@ -724,7 +681,6 @@ const make = Effect.gen(function* () {
       return { link: fromRow({ link: inserted[0], currency: owner.currency, scale: owner.scale }), created: true }
     }
 
-    // In the ledger it was saved in, which need not be the primary one now.
     const existing = yield* database.use((db) =>
       db
         .select(linkColumns)
@@ -765,7 +721,7 @@ const make = Effect.gen(function* () {
     return new Payable({ link: fromRow(row), businessName: row.businessName })
   })
 
-  // A pending payment whose window has passed becomes expired, as of its expiry.
+  // Transitions a pending payment past `expires_at` to `expired` with `completed_at = expires_at`.
   const expireIfDue = (id: string) =>
     database.use((db) =>
       db
@@ -784,7 +740,6 @@ const make = Effect.gen(function* () {
         .where(and(eq(payments.linkId, linkId), eq(payments.idempotencyKey, idempotencyKey))),
     )
 
-  // The payment a key already started, if the repeat asks for the same one.
   const repeated = Effect.fnUntraced(function* (row: PaymentRow, amount: bigint) {
     if (row.payment.amount !== amount) {
       return yield* new PaymentConflictError({
@@ -805,7 +760,7 @@ const make = Effect.gen(function* () {
   ) {
     return yield* database.transaction(
       Effect.gen(function* () {
-        // Shared, so a deactivation waits until this payment is saved.
+        // Take a `FOR SHARE` lock on the link so concurrent deactivation waits until this payment commits.
         const found = yield* database.use((db) =>
           db
             .select(linkColumns)
@@ -837,8 +792,6 @@ const make = Effect.gen(function* () {
           return yield* new LinkInactiveError({ id: ID.make(row.id) })
         }
 
-        // A concurrent start with the same key waits on the unique index, and
-        // whichever commits first is the payment both return.
         const inserted = yield* database.use((db) =>
           db
             .insert(payments)
@@ -849,7 +802,7 @@ const make = Effect.gen(function* () {
               idempotencyKey,
               amount,
               ledger: row.ledger,
-              expiresAt: sql`now() + make_interval(mins => ${paymentWindowMinutes})`,
+              expiresAt: fromNow(Duration.minutes(paymentWindowMinutes)),
             })
             .onConflictDoNothing({ target: [payments.linkId, payments.idempotencyKey] })
             .returning(),
@@ -870,9 +823,7 @@ const make = Effect.gen(function* () {
     )
   })
 
-  // Records the money a succeeded payment brought in: from the ledger's cash
-  // into the business's payable account. The cash account is seeded and only
-  // an active business has links, so a missing one is a defect.
+  // Enqueues a `ledger_postings` entry debiting `cash` and crediting the business's payable account.
   const post = Effect.fnUntraced(function* (payment: typeof payments.$inferSelect) {
     const found = yield* database.use((db) =>
       db
@@ -907,9 +858,6 @@ const make = Effect.gen(function* () {
         ledger: payment.ledger,
         paymentId: payment.id,
         kind: "payment",
-        // A Title is one line of at most 255 characters, so this is never blank
-        // and stays well inside the ledger's 500: a refused posting leaves the
-        // queue for good. Links can't be edited, so this is the title paid under.
         description: `Payment received via ${title}`,
         lines: [
           {
@@ -923,8 +871,8 @@ const make = Effect.gen(function* () {
     )
   })
 
-  // Each step is one statement that only moves a pending payment, so two
-  // outcomes reported at once can't both land, and an expiry always commits.
+  // Atomically transitions a non-expired `pending` payment to `outcome` and
+  // enqueues its ledger posting on `succeeded`.
   const simulate = Effect.fn("Payments.simulate")(function* (
     shareToken: string,
     paymentId: string,
@@ -959,7 +907,6 @@ const make = Effect.gen(function* () {
       }),
     )
 
-    // A payment is always in its link's ledger.
     const ledger = { currency: link.currencyCode, scale: link.scale }
 
     if (ended !== undefined) {
@@ -1021,7 +968,6 @@ const make = Effect.gen(function* () {
 
     const row = totals[0]
 
-    // An aggregate without group by always returns its one row.
     if (row === undefined) {
       return yield* Effect.die(new Error(`no link totals for ${businessId}`))
     }
@@ -1057,13 +1003,7 @@ const make = Effect.gen(function* () {
       }
     }
 
-    const cursor = before === null
-      ? null
-      : yield* Effect.gen(function* () {
-          const decoded = yield* Effect.fromResult(Encoding.decodeBase64UrlString(before))
-
-          return yield* Schema.decodeEffect(cursorValue)(decoded)
-        }).pipe(Effect.mapError(() => new CursorError()))
+    const position = before === null ? null : yield* cursors.decode(before).pipe(Effect.mapError(() => new CursorError()))
 
     const where = and(
       eq(payments.businessId, businessId),
@@ -1071,29 +1011,19 @@ const make = Effect.gen(function* () {
       filter.state === null ? undefined : inState(filter.state),
     )
 
-    // One snapshot gives rows and totals the same clock for effective expiry,
-    // and the same postings while the relay settles them.
     return yield* database.transaction(
       Effect.gen(function* () {
         const listed = yield* database.use((db) =>
           db
             .select({
               ...summaryColumns,
-              // Stable across DateStyle settings, with every microsecond retained.
-              at: sql<string>`to_char(${payments.createdAt} at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') || '+00'`,
+              at: cursorAt(payments.createdAt),
             })
             .from(payments)
             .innerJoin(ledgers, eq(ledgers.slug, payments.ledger))
             .innerJoin(paymentLinks, eq(paymentLinks.id, payments.linkId))
             .leftJoin(ledgerPostings, postingOf)
-            .where(
-              and(
-                where,
-                cursor === null
-                  ? undefined
-                  : sql`(${payments.createdAt}, ${payments.id}) < (${cursor.at}::timestamptz, ${cursor.id})`,
-              ),
-            )
+            .where(and(where, cursors.before(payments.createdAt, payments.id, position)))
             .orderBy(desc(payments.createdAt), desc(payments.id))
             .limit(paymentPageSize + 1),
         )
@@ -1108,23 +1038,15 @@ const make = Effect.gen(function* () {
           return yield* Effect.die(new Error("payment totals missing"))
         }
 
-        const page = listed.slice(0, paymentPageSize)
-        const last = page.at(-1)
-        let next: Cursor | null = null
-
-        if (listed.length > paymentPageSize && last !== undefined) {
-          const encoded = yield* Schema.encodeEffect(cursorValue)({
-            at: last.at,
-            id: PaymentID.make(last.payment.id),
-          }).pipe(Effect.orDie)
-
-          next = Cursor.make(Encoding.encodeBase64Url(encoded))
-        }
+        const { rows, next } = yield* cursors.page(listed, paymentPageSize, (last) => ({
+          at: last.at,
+          id: PaymentID.make(last.payment.id),
+        }))
 
         return new PaymentPage({
-          payments: page.map(summaryOf),
+          payments: rows.map(summaryOf),
           stats: statsOf(total),
-          next,
+          next: next === null ? null : Cursor.make(next),
         })
       }),
       snapshot,

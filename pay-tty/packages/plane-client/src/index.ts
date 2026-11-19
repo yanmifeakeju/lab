@@ -10,6 +10,9 @@ import {
   type OperationConfig,
   type PaymentLinksCreatePaymentLinkParams,
   type PaymentsListPaymentsParams,
+  type PayoutRequestEncoded,
+  type PayoutSettingsRequestEncoded,
+  type PayoutsListPayoutsParams,
   type PayStartPaymentParams,
   type SessionRequestEncoded,
   type SimulatePaymentRequestEncoded,
@@ -197,6 +200,75 @@ export const createClient = (httpClient: HttpClient.HttpClient, options: ClientO
               PaymentLinksListPaymentLinks400: ({ cause }) => Effect.fail(cause),
               PaymentLinksListPaymentLinks401: ({ cause }) => Effect.fail(cause),
               PaymentLinksListPaymentLinks409: ({ cause }) => Effect.fail(cause),
+            }),
+          ),
+        listBanks: <Config extends OperationConfig>(request: { readonly config?: Config } | undefined) =>
+          client.payoutsListBanks(request).pipe(
+            Effect.catchTags({
+              PayoutsListBanks400: ({ cause }) => Effect.fail(cause),
+              PayoutsListBanks401: ({ cause }) => Effect.fail(cause),
+              PayoutsListBanks409: ({ cause }) => Effect.fail(cause),
+            }),
+          ),
+        getPayoutSettings: <Config extends OperationConfig>(request: { readonly config?: Config } | undefined) =>
+          client.payoutsGetPayoutSettings(request).pipe(
+            Effect.catchTags({
+              PayoutsGetPayoutSettings400: ({ cause }) => Effect.fail(cause),
+              PayoutsGetPayoutSettings401: ({ cause }) => Effect.fail(cause),
+              PayoutsGetPayoutSettings409: ({ cause }) => Effect.fail(cause),
+            }),
+          ),
+        changePayoutSettings: <Config extends OperationConfig>(request: {
+          readonly payload: PayoutSettingsRequestEncoded
+          readonly config?: Config
+        }) =>
+          client.payoutsChangePayoutSettings(request).pipe(
+            Effect.catchTags({
+              PayoutsChangePayoutSettings400: ({ cause }) => Effect.fail(cause),
+              PayoutsChangePayoutSettings401: ({ cause }) => Effect.fail(cause),
+              PayoutsChangePayoutSettings409: ({ cause }) => Effect.fail(cause),
+            }),
+          ),
+        /** Moves no money: the payout waits to be confirmed, and expires if it isn't in time. */
+        createPayout: <Config extends OperationConfig>(request: {
+          readonly payload: PayoutRequestEncoded
+          readonly config?: Config
+        }) =>
+          client.payoutsCreatePayout(request).pipe(
+            Effect.catchTags({
+              PayoutsCreatePayout400: ({ cause }) => Effect.fail(cause),
+              PayoutsCreatePayout401: ({ cause }) => Effect.fail(cause),
+              PayoutsCreatePayout409: ({ cause }) => Effect.fail(cause),
+            }),
+          ),
+        /** Confirming answers 202, and confirming again 200, with the payout as it stands. */
+        confirmPayout: <Config extends OperationConfig>(payoutId: string, request?: { readonly config?: Config }) =>
+          client.payoutsConfirmPayout(payoutId, request).pipe(
+            Effect.catchTags({
+              PayoutsConfirmPayout400: ({ cause }) => Effect.fail(cause),
+              PayoutsConfirmPayout401: ({ cause }) => Effect.fail(cause),
+              PayoutsConfirmPayout404: ({ cause }) => Effect.fail(cause),
+              PayoutsConfirmPayout409: ({ cause }) => Effect.fail(cause),
+            }),
+          ),
+        listPayouts: <Config extends OperationConfig>(request: {
+          readonly params?: PayoutsListPayoutsParams
+          readonly config?: Config
+        } | undefined) =>
+          client.payoutsListPayouts(request).pipe(
+            Effect.catchTags({
+              PayoutsListPayouts400: ({ cause }) => Effect.fail(cause),
+              PayoutsListPayouts401: ({ cause }) => Effect.fail(cause),
+              PayoutsListPayouts409: ({ cause }) => Effect.fail(cause),
+            }),
+          ),
+        getPayout: <Config extends OperationConfig>(payoutId: string, request?: { readonly config?: Config }) =>
+          client.payoutsGetPayout(payoutId, request).pipe(
+            Effect.catchTags({
+              PayoutsGetPayout400: ({ cause }) => Effect.fail(cause),
+              PayoutsGetPayout401: ({ cause }) => Effect.fail(cause),
+              PayoutsGetPayout404: ({ cause }) => Effect.fail(cause),
+              PayoutsGetPayout409: ({ cause }) => Effect.fail(cause),
             }),
           ),
       }

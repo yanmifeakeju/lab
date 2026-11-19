@@ -5,11 +5,17 @@
   "type": "module",
   "exports": {
     "./business": "./src/business/business.ts",
+    "./common": "./src/common/schemas.ts",
     "./database": "./src/database/client.ts",
     "./ledger": "./src/ledger/ledger.ts",
     "./payments": "./src/payments/payments.ts",
+    "./payouts": "./src/payouts/payouts.ts",
+    "./payouts/dispatcher": "./src/payouts/dispatcher.ts",
+    "./payouts/providers/sim": "./src/payouts/providers/sim/adapter.ts",
+    "./payouts/provider": "./src/payouts/provider.ts",
     "./principal": "./src/principal/principal.ts",
     "./testing": "./src/testing/testing.ts",
+    "./testing/provider": "./src/testing/provider.ts",
     "./testing/setup": "./src/testing/setup.ts"
   },
   "scripts": {
@@ -17,13 +23,15 @@
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "./scripts/seed.sh",
     "db:reset": "./scripts/reset.sh",
-    "test": "node --env-file-if-exists=.env --test --test-global-setup=src/testing/setup.ts test/*.test.ts",
+    "test": "node --env-file-if-exists=.env --test --test-global-setup=src/testing/setup.ts test/*.test.ts 'src/**/*.test.ts'",
     "typecheck": "tsc --project tsconfig.json",
     "lint": "oxlint . --deny-warnings",
     "clean": "node -e \"import('node:fs').then(({ rmSync }) => rmSync('dist', { recursive: true, force: true }))\""
   },
   "dependencies": {
+    "@pay-tty/database": "workspace:*",
     "@pay-tty/ledger-client": "workspace:*",
+    "@pay-tty/sim": "workspace:*",
     "drizzle-orm": "^0.45.3",
     "effect": "4.0.0-rc.117",
     "pg": "^8.23.0",

@@ -1,38 +1,25 @@
+import { Common } from "@pay-tty/core/common"
 import { Payments } from "@pay-tty/core/payments"
-import { Schema, SchemaTransformation } from "effect"
+import { Schema } from "effect"
 import * as HttpApiEndpoint from "effect/unstable/httpapi/HttpApiEndpoint"
 import * as HttpApiGroup from "effect/unstable/httpapi/HttpApiGroup"
 
+import { amountIn } from "../amounts.ts"
 import { PaymentStats, stats } from "../payment-stats.ts"
 import { Conflict } from "../errors.ts"
 import { Authentication } from "../middleware/authentication.ts"
 import { BusinessContext } from "../middleware/business.ts"
+import { lineOfText, trimmedText } from "../text.ts"
 
 export const inMinorUnits = { description: "In minor units of the link's currency." }
 
-// As JSON numbers: every amount is a safe integer, so none loses precision on
-// the way.
-export const Amount = Schema.Int.check(
-  Schema.isGreaterThan(0).annotate({ expected: "a positive integer" }),
-  Schema.isLessThanOrEqualTo(Number(Payments.maxAmount)).annotate({ expected: "a safe integer" }),
-).annotate(inMinorUnits)
+export const Amount = amountIn(inMinorUnits)
 
 export const SavedAmount = Schema.Int.annotate(inMinorUnits)
 
 // Settings of the other mode are refused, not dropped: a merchant who sent one
 // meant something this link wouldn't do.
 const Absent = Schema.optionalKey(Schema.Never.annotate({ expected: "absent in this pricing mode" }))
-
-// Trimmed before the length checks, so surrounding whitespace doesn't count.
-const trimmed = (max: number) =>
-  Schema.String.pipe(
-    Schema.decodeTo(
-      Schema.Trimmed.check(
-        Schema.isMaxLength(max).annotate({ expected: `a value with a length of at most ${max}` }),
-      ),
-      SchemaTransformation.trim(),
-    ),
-  )
 
 const setting = (amount: number | null | undefined) => (amount == null ? null : BigInt(amount))
 
@@ -76,16 +63,9 @@ export class CustomerChoosesPricingRequest extends Schema.Class<CustomerChoosesP
 ) {}
 
 export class CreatePaymentLinkRequest extends Schema.Class<CreatePaymentLinkRequest>("CreatePaymentLinkRequest")({
-  title: Schema.String.check(
-    Schema.isPattern(new RegExp(".*\\S.*")).annotate({ expected: "a string containing non-whitespace" }),
-  ).pipe(
-    Schema.decodeTo(
-      Schema.Trimmed.check(Schema.isMinLength(1), Schema.isMaxLength(255), Payments.isOneLine),
-      SchemaTransformation.trim(),
-    ),
-  ),
+  title: lineOfText(255),
   // Omitted, null, and blank all mean no description.
-  description: Schema.optionalKey(Schema.NullOr(trimmed(500))),
+  description: Schema.optionalKey(Schema.NullOr(trimmedText(500))),
   pricing: Schema.Union([FixedPricingRequest, CustomerChoosesPricingRequest]),
 }) {}
 
@@ -185,7 +165,7 @@ export const paymentLinks = HttpApiGroup.make("paymentLinks")
     // For the caller's business. Plane resolves the currency, scale, and URL;
     // the caller supplies none.
     HttpApiEndpoint.post("createPaymentLink", "/payment_links", {
-      headers: { "idempotency-key": Payments.IdempotencyKey },
+      headers: { "idempotency-key": Common.IdempotencyKey },
       payload: CreatePaymentLinkRequest,
       success: [CreatedPaymentLink, PaymentLink],
       error: Conflict,

@@ -23,7 +23,7 @@ interface Counters {
   readonly credits_posted: number | string
 }
 
-// Written out as JSON text, so a counter can be a literal JSON.parse rounds.
+// Builds raw JSON text so counter values above `2^53 - 1` can be tested without `JSON.stringify` rounding.
 const account = (counters: Counters, overrides: { reference?: string; ledger_slug?: string; status?: string } = {}) => {
   const fields = {
     reference: accountRef,
@@ -54,8 +54,7 @@ const counters = (available: number | string, creditsPending: number | string = 
 
 type Reply = { readonly status: number; readonly raw: string } | "unreachable"
 
-// The ledger service, faked at the HTTP boundary so the client and its
-// decoding still run.
+// Stubs the ledger service at the `HttpClient` layer so the generated client and schema decoders still execute.
 const ledgerAnswering = (reply: Reply) => {
   const urls: Array<URL> = []
 
@@ -102,11 +101,11 @@ const failureOf = (reply: Reply) => Effect.flip(balanceFrom(reply).balance)
 
 const run = <A, E>(effect: Effect.Effect<A, E>) => () => Effect.runPromise(effect)
 
-void test("a balance is the account's available amount and its pending credits", run(
+void test("a balance is the account's available amount, its pending credits incoming, and its pending debits held", run(
   Effect.gen(function* () {
     const { urls, balance } = balanceFrom(account(counters(9_800, 1_500)))
 
-    assert.deepEqual(yield* balance, new PayableAccounts.Balance({ available: 9_800n, pending: 1_500n }))
+    assert.deepEqual(yield* balance, new PayableAccounts.Balance({ available: 9_800n, incoming: 1_500n, held: 200n }))
     assert.deepEqual(urls.map((url) => url.pathname), [`/accounts/${accountRef}`])
   }),
 ))
@@ -163,8 +162,7 @@ interface Figures {
   readonly balanceAfter: number | string
 }
 
-// A statement page as JSON text, newest first: a credit and then, on two lines
-// of one entry, a debit and a credit.
+// Builds a raw JSON statement page ordered newest first.
 const statement = (
   figures: Figures = { opening: 0, closing: 7_500, amount: 2_500, balanceAfter: 7_500 },
   overrides: { reference?: string; recorded_at?: string; next?: string | null } = {},
@@ -209,7 +207,6 @@ const statement = (
   }
 }
 
-// Instants as core holds them.
 const at = (iso: string) => DateTime.toDateUtc(DateTime.makeUnsafe(iso))
 
 const firstPage: PayableAccounts.Window = { from: at("2026-09-28T10:00:00Z") }

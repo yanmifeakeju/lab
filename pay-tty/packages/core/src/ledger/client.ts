@@ -17,29 +17,26 @@ const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(Service)(make)
 
-/** How a call to the ledger failed, whatever the call was. */
+/** Error union returned by ledger client calls. */
 export type Failure = ApiErrorResponse | HttpClientError.HttpClientError | Schema.SchemaError
 
 export type Verdict = Data.TaggedEnum<{
-  /** Worth retrying as-is. */
+  /** Transient transport or server failure; safe to retry unchanged. */
   Unavailable: {}
-  /** The ledger answered with something other than the JSON promised. */
+  /** Response body failed JSON parsing or schema decoding. */
   BadResponse: { readonly reason: string }
-  /** The ledger refused the request, with its error code. */
+  /** Domain rejection returned by the ledger (e.g. `insufficient_funds`). */
   Rejected: { readonly code: string }
-  /** A 400: we sent what the ledger won't take, which the caller can't fix. */
+  /** HTTP 400 validation error indicating a malformed request from plane. */
   Invalid: { readonly response: ApiErrorResponse }
 }>
 
 export const Verdict = Data.taggedEnum<Verdict>()
 
-// Transport failures and the ledger's own 500s are worth retrying as-is. An
-// answer that isn't the JSON promised is ours to chase, a 400 is a request we
-// built wrong, and anything else is the ledger refusing.
+// Classifies a ledger client failure into a retry/refusal verdict.
 export const classify = (failure: Failure): Effect.Effect<Verdict> => {
   if (HttpClientError.isHttpClientError(failure)) {
-    // The client reports an unparsable or missing body as an HTTP error too,
-    // but the ledger did answer.
+    // DecodeError and EmptyBodyError mean the server responded with an invalid payload.
     return failure.reason instanceof HttpClientError.DecodeError ||
         failure.reason instanceof HttpClientError.EmptyBodyError
       ? Effect.succeed(Verdict.BadResponse({ reason: failure.reason.message }))

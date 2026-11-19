@@ -778,6 +778,471 @@
         }
       }
     },
+    "/payouts/banks": {
+      "get": {
+        "tags": [
+          "payouts"
+        ],
+        "operationId": "payouts.listBanks",
+        "parameters": [],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "PayoutBankList",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PayoutBankListEncoded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationErrorResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponseEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedResponseEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictResponseEncoded"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payouts/settings": {
+      "get": {
+        "tags": [
+          "payouts"
+        ],
+        "operationId": "payouts.getPayoutSettings",
+        "parameters": [],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "PayoutSettings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PayoutSettingsEncoded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationErrorResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponseEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedResponseEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictResponseEncoded"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "payouts"
+        ],
+        "operationId": "payouts.changePayoutSettings",
+        "parameters": [],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "PayoutSettings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PayoutSettingsEncoded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationErrorResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponseEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedResponseEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictResponseEncoded"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PayoutSettingsRequestEncoded"
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/payouts": {
+      "post": {
+        "tags": [
+          "payouts"
+        ],
+        "operationId": "payouts.createPayout",
+        "parameters": [],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "CreatedPayout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedPayoutEncoded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationErrorResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponseEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedResponseEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictResponseEncoded"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PayoutRequestEncoded"
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "get": {
+        "tags": [
+          "payouts"
+        ],
+        "operationId": "payouts.listPayouts",
+        "parameters": [
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "PayoutPage",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PayoutPageEncoded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationErrorResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponseEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedResponseEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictResponseEncoded"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payouts/{payout_id}/confirm": {
+      "post": {
+        "tags": [
+          "payouts"
+        ],
+        "operationId": "payouts.confirmPayout",
+        "parameters": [
+          {
+            "name": "payout_id",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Payout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PayoutEncoded"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "ConfirmedPayout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfirmedPayoutEncoded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationErrorResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponseEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedResponseEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NotFoundResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundResponseEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictResponseEncoded"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/payouts/{payout_id}": {
+      "get": {
+        "tags": [
+          "payouts"
+        ],
+        "operationId": "payouts.getPayout",
+        "parameters": [
+          {
+            "name": "payout_id",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Payout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PayoutEncoded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "ValidationErrorResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponseEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedResponseEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NotFoundResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundResponseEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictResponse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictResponseEncoded"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/pay/payment_links/{share_token}": {
       "get": {
         "tags": [
@@ -1363,7 +1828,15 @@
                   "account_not_opened",
                   "link_inactive",
                   "payment_expired",
-                  "not_pending"
+                  "not_pending",
+                  "payouts_automatic",
+                  "payouts_unavailable",
+                  "no_payout_account",
+                  "payout_ledger_mismatch",
+                  "payout_drafts_full",
+                  "payout_expired",
+                  "payout_rules_changed",
+                  "payout_cancelled"
                 ]
               }
             },
@@ -1454,7 +1927,11 @@
             "type": "string",
             "description": "In minor units of the ledger's currency."
           },
-          "pending": {
+          "incoming": {
+            "type": "string",
+            "description": "In minor units of the ledger's currency."
+          },
+          "held": {
             "type": "string",
             "description": "In minor units of the ledger's currency."
           }
@@ -1464,7 +1941,8 @@
           "currency",
           "scale",
           "available",
-          "pending"
+          "incoming",
+          "held"
         ],
         "additionalProperties": false
       },
@@ -2330,6 +2808,563 @@
         ],
         "additionalProperties": false
       },
+      "PayoutBankEncoded": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "PayoutBankListEncoded": {
+        "type": "object",
+        "properties": {
+          "banks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PayoutBankEncoded"
+            }
+          }
+        },
+        "required": [
+          "banks"
+        ],
+        "additionalProperties": false
+      },
+      "PayoutDestinationEncoded": {
+        "type": "object",
+        "properties": {
+          "bank_code": {
+            "type": "string"
+          },
+          "bank_name": {
+            "type": "string"
+          },
+          "account_number": {
+            "type": "string"
+          },
+          "account_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "bank_code",
+          "bank_name",
+          "account_number",
+          "account_name"
+        ],
+        "additionalProperties": false
+      },
+      "PayoutSettingsEncoded": {
+        "type": "object",
+        "properties": {
+          "ledger": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "scale": {
+            "type": "integer"
+          },
+          "minimum": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "automatic"
+            ]
+          },
+          "destination": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PayoutDestinationEncoded"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "ledger",
+          "currency",
+          "scale",
+          "minimum",
+          "mode",
+          "destination",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      },
+      "PayoutDestinationRequestEncoded": {
+        "type": "object",
+        "properties": {
+          "bank_code": {
+            "type": "string",
+            "pattern": "^\\d{3}$"
+          },
+          "account_number": {
+            "type": "string",
+            "pattern": "^\\d{10}$"
+          }
+        },
+        "required": [
+          "bank_code",
+          "account_number"
+        ],
+        "additionalProperties": false
+      },
+      "PayoutSettingsRequestEncoded": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "automatic"
+            ]
+          },
+          "destination": {
+            "$ref": "#/components/schemas/PayoutDestinationRequestEncoded"
+          }
+        },
+        "required": [
+          "mode",
+          "destination"
+        ],
+        "additionalProperties": false
+      },
+      "PayoutRequestEncoded": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "description": "In minor units of the ledger's currency."
+          }
+        },
+        "required": [
+          "amount"
+        ],
+        "additionalProperties": false
+      },
+      "CreatedPayoutEncoded": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ledger": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "scale": {
+            "type": "integer"
+          },
+          "amount": {
+            "type": "string",
+            "description": "In minor units of the ledger's currency."
+          },
+          "trigger": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "scheduled"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "created",
+              "requested",
+              "held",
+              "sent",
+              "paid",
+              "failed",
+              "rejected",
+              "cancelled",
+              "expired",
+              "attention"
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "insufficient_funds"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "destination": {
+            "$ref": "#/components/schemas/PayoutDestinationEncoded"
+          },
+          "journal_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ledger_mismatch": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sent_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "ledger",
+          "currency",
+          "scale",
+          "amount",
+          "trigger",
+          "status",
+          "reason",
+          "destination",
+          "journal_ref",
+          "ledger_mismatch",
+          "created_at",
+          "expires_at",
+          "sent_at",
+          "completed_at"
+        ],
+        "additionalProperties": false
+      },
+      "ConfirmedPayoutEncoded": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ledger": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "scale": {
+            "type": "integer"
+          },
+          "amount": {
+            "type": "string",
+            "description": "In minor units of the ledger's currency."
+          },
+          "trigger": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "scheduled"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "created",
+              "requested",
+              "held",
+              "sent",
+              "paid",
+              "failed",
+              "rejected",
+              "cancelled",
+              "expired",
+              "attention"
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "insufficient_funds"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "destination": {
+            "$ref": "#/components/schemas/PayoutDestinationEncoded"
+          },
+          "journal_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ledger_mismatch": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sent_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "ledger",
+          "currency",
+          "scale",
+          "amount",
+          "trigger",
+          "status",
+          "reason",
+          "destination",
+          "journal_ref",
+          "ledger_mismatch",
+          "created_at",
+          "expires_at",
+          "sent_at",
+          "completed_at"
+        ],
+        "additionalProperties": false
+      },
+      "PayoutEncoded": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ledger": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "scale": {
+            "type": "integer"
+          },
+          "amount": {
+            "type": "string",
+            "description": "In minor units of the ledger's currency."
+          },
+          "trigger": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "scheduled"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "created",
+              "requested",
+              "held",
+              "sent",
+              "paid",
+              "failed",
+              "rejected",
+              "cancelled",
+              "expired",
+              "attention"
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "insufficient_funds"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "destination": {
+            "$ref": "#/components/schemas/PayoutDestinationEncoded"
+          },
+          "journal_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ledger_mismatch": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sent_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "ledger",
+          "currency",
+          "scale",
+          "amount",
+          "trigger",
+          "status",
+          "reason",
+          "destination",
+          "journal_ref",
+          "ledger_mismatch",
+          "created_at",
+          "expires_at",
+          "sent_at",
+          "completed_at"
+        ],
+        "additionalProperties": false
+      },
+      "PayoutPageEncoded": {
+        "type": "object",
+        "properties": {
+          "payouts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PayoutEncoded"
+            }
+          },
+          "next": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "payouts",
+          "next"
+        ],
+        "additionalProperties": false
+      },
       "PayableLinkEncoded": {
         "type": "object",
         "properties": {
@@ -2553,6 +3588,9 @@
     },
     {
       "name": "payments"
+    },
+    {
+      "name": "payouts"
     },
     {
       "name": "pay"

@@ -19,13 +19,15 @@ import { SchemaErrorLive } from "./middleware/schema-error.ts"
 import { PayLive } from "./pay/handlers.ts"
 import { PaymentsLive } from "./payments/handlers.ts"
 import { PaymentLinksLive } from "./payment_links/handlers.ts"
+import { PayoutsLive } from "./payouts/handlers.ts"
 import { SessionLive } from "./session/handlers.ts"
+import { PayoutWebhook } from "./webhooks/payouts.ts"
 
 export const ApiLive = Layer.mergeAll(
   HttpApiBuilder.layer(api, { openapiPath: "/openapi.json" }),
   HttpApiScalar.layer(api),
 ).pipe(
-  Layer.provide(Layer.mergeAll(HealthLive, SessionLive, MeLive, BusinessLive, PaymentLinksLive, PaymentsLive, PayLive)),
+  Layer.provide(Layer.mergeAll(HealthLive, SessionLive, MeLive, BusinessLive, PaymentLinksLive, PaymentsLive, PayoutsLive, PayLive)),
   Layer.provide(Layer.mergeAll(SchemaErrorLive, BusinessContextLive)),
 )
 
@@ -35,5 +37,5 @@ const ServerLive = NodeHttpServer.layerConfig(createServer, {
 
 // The relay runs as long as the server does.
 export const Plane = HttpRouter.serve(
-  Layer.mergeAll(ApiLive, UnknownErrorResponse),
+  Layer.mergeAll(ApiLive, PayoutWebhook.layer, UnknownErrorResponse),
 ).pipe(Layer.provide(ServerLive), Layer.provide(Relay.layer))

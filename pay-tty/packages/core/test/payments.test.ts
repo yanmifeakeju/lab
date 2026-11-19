@@ -2,18 +2,19 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 
 import { eq, sql } from "drizzle-orm"
-import { Cause, Effect, Encoding, Exit, Predicate, Schema } from "effect"
+import { Cause, Context, Effect, Encoding, Exit, Layer, Predicate, Schema } from "effect"
 import { ulid } from "ulid"
 
 import { Business } from "../src/business/business.ts"
 import { businesses } from "../src/business/sql.ts"
-import { Database } from "../src/database/client.ts"
+import { Common } from "../src/common/schemas.ts"
+import { Database, type Interface as DatabaseInterface } from "../src/database/client.ts"
 import { ledgers } from "../src/ledger/sql.ts"
 import { Payments } from "../src/payments/payments.ts"
 import { paymentLinks, payments as paymentRows } from "../src/payments/sql.ts"
 import { Principal } from "../src/principal/principal.ts"
 import { Testing } from "../src/testing/testing.ts"
-import { runtime } from "./runtime.ts"
+import { database, runtime } from "./runtime.ts"
 
 const createBusiness = Effect.gen(function* () {
   const principals = yield* Principal.Service
@@ -28,7 +29,7 @@ const createBusiness = Effect.gen(function* () {
   return business
 })
 
-const key = () => Payments.IdempotencyKey.make(`key_${ulid()}`)
+const key = () => Common.IdempotencyKey.make(`key_${ulid()}`)
 
 const fixed = (amount = 250_000n, title = "Consulting") =>
   new Payments.Details({ title, description: null, pricing: new Payments.Fixed({ amount }) })
@@ -48,7 +49,7 @@ const chooses = (
     }),
   })
 
-const create = (businessId: Business.ID, idempotencyKey: Payments.IdempotencyKey, details: Payments.Details) =>
+const create = (businessId: Business.ID, idempotencyKey: Common.IdempotencyKey, details: Payments.Details) =>
   Effect.gen(function* () {
     const payments = yield* Payments.Service
 
@@ -65,7 +66,7 @@ const rows = (businessId: string) =>
 const conflicts = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.map(Effect.flip(effect), Predicate.isTagged("Payments.ConflictError"))
 
-// The constraint a failed query violated; pg's error is the cause Drizzle wraps.
+// Extracts the violated PostgreSQL constraint name from a failed Drizzle query.
 const violated = <A, E>(exit: Exit.Exit<A, E>) => {
   if (Exit.isSuccess(exit)) {
     return undefined
@@ -77,7 +78,7 @@ const violated = <A, E>(exit: Exit.Exit<A, E>) => {
   return error !== undefined && "constraint" in error ? error.constraint : undefined
 }
 
-// What the database said when a query failed.
+// Extracts the database error message from a failed Drizzle query.
 const raised = <A, E>(exit: Exit.Exit<A, E>) => {
   if (Exit.isSuccess(exit)) {
     return undefined
@@ -361,7 +362,7 @@ void test("details are validated before anything reaches the database", () => {
   const invalid: ReadonlyArray<readonly [string, () => object]> = [
     ["zero amount", () => new Payments.Fixed({ amount: 0n })],
     ["negative amount", () => new Payments.Fixed({ amount: -1n })],
-    ["unsafe amount", () => new Payments.Fixed({ amount: Payments.maxAmount + 1n })],
+    ["unsafe amount", () => new Payments.Fixed({ amount: Common.maxAmount + 1n })],
     ["zero suggestion", () => chooses({ suggestedAmount: 0n })],
     ["inverted bounds", () => chooses({ minimumAmount: 200n, maximumAmount: 100n })],
     ["suggestion below the minimum", () => chooses({ suggestedAmount: 99n, minimumAmount: 100n })],
@@ -382,7 +383,7 @@ void test("details are validated before anything reaches the database", () => {
     assert.throws(make, reason)
   }
 
-  assert.doesNotThrow(() => new Payments.Fixed({ amount: Payments.maxAmount }))
+  assert.doesNotThrow(() => new Payments.Fixed({ amount: Common.maxAmount }))
   assert.doesNotThrow(() => fixed(1n, "x".repeat(255)))
   assert.doesNotThrow(() => fixed(1n, "Café ₦ 東京 🎉"))
   assert.doesNotThrow(() => chooses({}, "Two lines\nare fine here"))
@@ -394,11 +395,11 @@ void test("details are validated before anything reaches the database", () => {
   )
 
   for (const valid of ["k", "~".repeat(255), "0b9f3c52-7c1e-4a8e-9d2f-5a4b3c2d1e0f"]) {
-    assert.ok(Schema.is(Payments.IdempotencyKey)(valid), valid)
+    assert.ok(Schema.is(Common.IdempotencyKey)(valid), valid)
   }
 
   for (const invalidKey of ["", " ", "a b", "x".repeat(256), "café", "a\tb"]) {
-    assert.ok(!Schema.is(Payments.IdempotencyKey)(invalidKey), JSON.stringify(invalidKey))
+    assert.ok(!Schema.is(Common.IdempotencyKey)(invalidKey), JSON.stringify(invalidKey))
   }
 })
 
@@ -436,7 +437,7 @@ void test("the database enforces the pricing settings, bounds, and uniqueness it
         const insert = (row: Partial<typeof paymentLinks.$inferInsert>) =>
           Testing.attempt(database.use((db) => db.insert(paymentLinks).values({ ...valid(), ...row })))
 
-        const max = Payments.maxAmount
+        const max = Common.maxAmount
 
         const rejected: ReadonlyArray<readonly [string, Partial<typeof paymentLinks.$inferInsert>, string]> = [
           ["fixed without amount", { pricingMode: "fixed" }, "payment_links_pricing_settings"],
@@ -551,6 +552,55 @@ void test("payments page newest first without losing equal or microsecond timest
       linkId: foreign.id, state: null, before: null,
     })), "Payments.LinkNotFoundError"))
   }))))
+
+void test("a payment committed while a page is read doesn't make the page's totals disagree with its rows", () =>
+  runtime.runPromise(Effect.gen(function* () {
+    const real = yield* Database
+    const business = yield* createBusiness
+    const { link } = yield* create(business.id, key(), fixed())
+
+    const pay = (database: DatabaseInterface) => database.use((db) =>
+      db.insert(paymentRows).values({
+        id: `pay_${ulid()}`,
+        businessId: link.businessId,
+        linkId: link.id,
+        idempotencyKey: key(),
+        amount: 100n,
+        ledger: link.ledger,
+        expiresAt: sql`now() + interval '30 minutes'`,
+      }))
+
+    yield* pay(real)
+
+    // Another connection commits a payment between the page's first query and its next.
+    const elsewhere = Context.get(yield* Layer.build(Layer.fresh(database)), Database)
+    let landed = false
+
+    const racing = Database.of({
+      ...real,
+      use: (query) =>
+        Effect.tap(real.use(query), () => {
+          if (landed) {
+            return Effect.void
+          }
+
+          landed = true
+
+          return pay(elsewhere)
+        }),
+    })
+
+    const page = yield* Effect.gen(function* () {
+      const service = yield* Payments.Service
+
+      return yield* service.listPayments(business.id, { linkId: null, state: null, before: null })
+    }).pipe(Effect.provide(Layer.fresh(Payments.layer).pipe(Layer.provide(Layer.succeed(Database, racing)))))
+
+    assert.ok(landed)
+    // The racing payment landed after the page's snapshot, so it isn't in it.
+    assert.equal(page.payments.length, 1)
+    assert.equal(page.stats.pending, page.payments.length)
+  }).pipe(Effect.scoped)))
 
 void test("effective expiry agrees across rows, filters and totals, and malformed cursors are refused", () =>
   runtime.runPromise(Testing.rolledBack(Effect.gen(function* () {

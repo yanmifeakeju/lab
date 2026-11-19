@@ -1,0 +1,26 @@
+{
+  "name": "@pay-tty/database",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/client.ts",
+    "./columns": "./src/columns.ts",
+    "./pages": "./src/pages.ts",
+    "./testing": "./src/testing.ts"
+  },
+  "scripts": {
+    "test": "node --test --test-global-setup=src/testing.ts test/*.test.ts",
+    "typecheck": "tsc --project tsconfig.json",
+    "lint": "oxlint . --deny-warnings",
+    "clean": "node -e \"import('node:fs').then(({ rmSync }) => rmSync('dist', { recursive: true, force: true }))\""
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.3",
+    "effect": "4.0.0-rc.117",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1"
+  }
+}

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# The TypeScript workspace: plane, the TUI, and the setup job that migrates
+# The TypeScript workspace: plane, the simulated payout provider, the TUI, and the setup job that migrates
 # and seeds. Each is a target: docker build --target plane .
 
 FROM node:26-slim AS pnpm
@@ -22,12 +22,15 @@ COPY . .
 FROM pnpm AS plane-deps
 RUN pnpm install --offline --frozen-lockfile --prod --ignore-scripts --filter @pay-tty/plane...
 
+FROM pnpm AS sim-deps
+RUN pnpm install --offline --frozen-lockfile --prod --ignore-scripts --filter @pay-tty/sim...
+
 FROM pnpm AS tui-deps
 RUN pnpm install --offline --frozen-lockfile --prod --ignore-scripts --filter @pay-tty/tui...
 
-# drizzle-kit is a dev dependency of core, so this one keeps dev dependencies.
+# drizzle-kit is a dev dependency of core and the sim, so this one keeps dev dependencies.
 FROM pnpm AS setup-deps
-RUN pnpm install --offline --frozen-lockfile --ignore-scripts --filter @pay-tty/core
+RUN pnpm install --offline --frozen-lockfile --ignore-scripts --filter @pay-tty/core --filter @pay-tty/sim
 
 FROM node:26-slim AS plane
 
@@ -41,6 +44,17 @@ EXPOSE 3000
 # Node strips the types itself; workspace packages resolve through symlinks
 # outside node_modules, where it is allowed to.
 CMD ["node", "apps/plane/bin/api.ts"]
+
+FROM node:26-slim AS sim
+
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=sim-deps /app ./
+USER node
+
+EXPOSE 4000
+
+CMD ["node", "apps/sim/bin/sim.ts"]
 
 FROM oven/bun:1.4.2-slim AS tui
 

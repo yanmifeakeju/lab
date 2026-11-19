@@ -4,30 +4,30 @@ import * as HttpClientError from "effect/unstable/http/HttpClientError"
 import { LedgerClient } from "./client.ts"
 import { Ledger } from "./slug.ts"
 
-/** The ledger refused the account, or returned one that is closed. */
+/** The ledger rejected the request or returned a closed account. */
 export class RejectedError extends Schema.TaggedError<RejectedError>()(
   "PayableAccounts.RejectedError",
   { reason: Schema.String },
 ) {}
 
-/** The ledger couldn't be reached or failed on its side. */
+/** The ledger service was unreachable or returned a 5xx error. */
 export class UnavailableError extends Schema.TaggedError<UnavailableError>()(
   "PayableAccounts.UnavailableError",
   {},
 ) {}
 
-/** The ledger's answer is malformed or isn't the account asked for. */
+/** The ledger returned a malformed payload or a mismatched resource. */
 export class BadResponseError extends Schema.TaggedError<BadResponseError>()(
   "PayableAccounts.BadResponseError",
   { reason: Schema.String },
 ) {}
 
-/** The ledger refused the statement cursor the caller passed. */
+/** The statement cursor was rejected by the ledger. */
 export class CursorError extends Schema.TaggedError<CursorError>()("PayableAccounts.CursorError", {}) {}
 
 export type Error = RejectedError | UnavailableError | BadResponseError
 
-/** Who the account is for: the ledger keys it by ledger and external ID. */
+/** Holder identity for opening a payable account, keyed by `(ledger, externalId)`. */
 export interface Holder {
   readonly ledger: Ledger.Slug
   readonly externalId: string
@@ -39,16 +39,18 @@ export class Account extends Schema.Class<Account>("PayableAccounts.Account")({
   accountRef: Schema.String,
 }) {}
 
-/** In the ledger's minor units, exact: the client refuses counters past 2^53−1. */
+/** In minor units, exact: the client refuses counters past 2^53−1. */
 export class Balance extends Schema.Class<Balance>("PayableAccounts.Balance")({
   available: Schema.BigInt,
-  // Credits not yet posted.
-  pending: Schema.BigInt,
+  // Pending credits (recorded but unsettled incoming funds).
+  incoming: Schema.BigInt,
+  // Pending debits (payout holds in flight, already deducted from `available`).
+  held: Schema.BigInt,
 }) {}
 
 export class Movement extends Schema.Class<Movement>("PayableAccounts.Movement")({
   journalRef: Schema.String,
-  // With journalRef, names the row: one entry can touch the account on two lines.
+  // With `journalRef`, names the row: one entry can touch the account on two lines.
   lineNumber: Schema.Int,
   direction: Schema.Literals(["debit", "credit"]),
   amount: Schema.BigInt,
@@ -58,24 +60,23 @@ export class Movement extends Schema.Class<Movement>("PayableAccounts.Movement")
   recordedAt: Schema.Date,
 }) {}
 
-/** One page of the account's posted movements in a period, in minor units. */
+/** Keyset-paginated slice of an account's posted movements for a period. */
 export class Statement extends Schema.Class<Statement>("PayableAccounts.Statement")({
-  // The ledger's own bounds; `to` is exclusive.
+  // Half-open period bounds `[from, to)`.
   period: Schema.Struct({ from: Schema.Date, to: Schema.Date }),
-  // The balances either side of the whole period, whatever the page.
+  // Period-wide opening and closing balances, independent of page position.
   opening: Schema.BigInt,
   closing: Schema.BigInt,
-  // Newest first.
   movements: Schema.Array(Movement),
-  // Opaque cursors to the newer and older pages; null at either end.
+  // Cursors for newer and older pages, or null at either boundary.
   previous: Schema.NullOr(Schema.String),
   next: Schema.NullOr(Schema.String),
 }) {}
 
-/** Where a page starts: a period's newest movements, or a cursor, which carries its own period. */
+/** Statement query window: initial period start date, or a continuation cursor. */
 export type Window = { readonly from: Date } | { readonly cursor: string }
 
-/** Which account to read: the ledger checks it answered for this one. */
+/** Account lookup target verified against the ledger's response. */
 export interface Target {
   readonly accountRef: string
   readonly ledger: Ledger.Slug
@@ -83,21 +84,20 @@ export interface Target {
 
 export interface Interface {
   /**
-   * Opens the holder's payable account in the ledger, or returns the one it
-   * already has: a repeat is safe. The account is open and is the one asked for.
+   * Opens a payable account for `holder` in `holder.ledger`, or returns the
+   * existing open account on retry.
    */
   readonly open: (holder: Holder) => Effect.Effect<Account, Error>
 
-  /** The account's balance as the ledger has it, closed or not. */
   readonly balance: (target: Target) => Effect.Effect<Balance, Error>
 
-  /** A page of the account's posted movements, newest first. */
+  /** Reads a page of posted movements for `target`, ordered newest first. */
   readonly statement: (target: Target, window: Window) => Effect.Effect<Statement, Error | CursorError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("PayableAccounts") {}
 
-// A 400 here is a catalog ledger the ledger service doesn't have.
+// Maps a ledger client failure to a domain error; a 400 validation error is a defect.
 const classify = (failure: LedgerClient.Failure): Effect.Effect<never, Error> =>
   Effect.flatMap(LedgerClient.classify(failure), (verdict) =>
     LedgerClient.Verdict.$match(verdict, {
@@ -108,15 +108,13 @@ const classify = (failure: LedgerClient.Failure): Effect.Effect<never, Error> =>
     }),
   )
 
-// The caller chose the cursor, so the ledger refusing it is theirs to fix,
-// unlike any other 400.
+// The caller chose the cursor, so the ledger refusing it is theirs to fix, unlike any other 400.
 const refusesCursor = (failure: LedgerClient.Failure) =>
   !HttpClientError.isHttpClientError(failure) &&
   !Schema.isSchemaError(failure) &&
   failure.error.code === "validation_error" &&
   failure.error.details.some((detail) => detail.location === "query" && detail.field === "cursor")
 
-// The ledger's timestamps, or undefined for one that isn't a time.
 const dateOf = (text: string) => Option.getOrUndefined(Option.map(DateTime.make(text), DateTime.toDateUtc))
 
 const make = Effect.gen(function* () {
@@ -171,7 +169,11 @@ const make = Effect.gen(function* () {
       })
     }
 
-    return new Balance({ available: BigInt(account.available), pending: BigInt(account.balances.credits_pending) })
+    return new Balance({
+      available: BigInt(account.available),
+      incoming: BigInt(account.balances.credits_pending),
+      held: BigInt(account.balances.debits_pending),
+    })
   })
 
   const statement = Effect.fn("PayableAccounts.statement")(function* (target: Target, window: Window) {

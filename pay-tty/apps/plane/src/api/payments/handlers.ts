@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect"
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder"
 
 import { api } from "../api.ts"
-import { InvalidRequestError, NotFound } from "../errors.ts"
+import { invalidCursor, NotFound } from "../errors.ts"
 import { CurrentBusiness } from "../middleware/business.ts"
 import { paymentDetail, paymentPage } from "./routes.ts"
 
@@ -25,12 +25,7 @@ export const PaymentsLive = HttpApiBuilder.group(api, "payments", (handlers) =>
       "Payments.LinkNotFoundError": () => new NotFound({
         message: "Payment link not found.", error: { code: "not_found" },
       }),
-      "Payments.CursorError": () => new InvalidRequestError({
-        message: "Invalid payment cursor.",
-        error: { code: "validation_error", details: [{
-          location: "query", field: "before", code: "invalid_value", message: "Invalid payment cursor.",
-        }] },
-      }),
+      "Payments.CursorError": () => invalidCursor("payment"),
     }))
 
     return paymentPage(page)

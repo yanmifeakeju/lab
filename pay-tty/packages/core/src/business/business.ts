@@ -26,11 +26,10 @@ export const Country = Schema.Literals(countries)
 
 export type Country = typeof Country.Type
 
-/** The currency a business from this country trades in. */
 export const currencyOf = (country: Country) => Currency.Code.make(currencies[country])
 
 export class Details extends Schema.Class<Details>("Business.Details")({
-  // Trimmed by the caller: a repeat is compared with the stored name as is.
+  // Caller-trimmed; idempotent retries compare against the stored name verbatim.
   name: Schema.NonEmptyString.check(Schema.isTrimmed()),
   countryCode: Country,
 }) {}
@@ -46,7 +45,7 @@ export class PrimaryLedger extends Schema.Class<PrimaryLedger>("Business.Primary
   slug: Ledger.Slug,
   currency: Currency.Code,
   scale: Schema.Int,
-  // Null until the ledger has created the account.
+  // Null until the payable account is opened in the ledger.
   payableAccountRef: Schema.NullOr(Schema.String),
 }) {}
 
@@ -67,13 +66,13 @@ export class NotFoundError extends Schema.TaggedError<NotFoundError>()(
   { id: ID },
 ) {}
 
-/** No ledger is configured for new businesses from this country. */
+/** No default ledger is configured for `countryCode`. */
 export class CountryUnavailableError extends Schema.TaggedError<CountryUnavailableError>()(
   "Business.CountryUnavailableError",
   { countryCode: Country },
 ) {}
 
-/** A recorded ledger, holder, or account disagrees with the request. */
+/** Existing business or account state conflicts with the request. */
 export class ConflictError extends Schema.TaggedError<ConflictError>()(
   "Business.ConflictError",
   { id: ID, message: Schema.String },
@@ -82,26 +81,25 @@ export class ConflictError extends Schema.TaggedError<ConflictError>()(
 export interface Interface {
   readonly findByPrincipal: (principalId: Principal.ID) => Effect.Effect<Info | undefined>
   /**
-   * Idempotent per principal: an identical repeat returns the business
-   * already created, and one with another name or country conflicts. Fails if
-   * the country has no default ledger, and dies if that ledger isn't in the
-   * country's currency.
+   * Creates a business for `principalId`. Idempotent per principal when
+   * `details` match; returns `ConflictError` if a business already exists for
+   * the principal with a different name or country.
    */
   readonly create: (
     principalId: Principal.ID,
     details: Details,
   ) => Effect.Effect<Info, CountryUnavailableError | ConflictError>
   /**
-   * Records the account the ledger created in the business's primary ledger,
-   * with its holder. Repeating it is a no-op; a different ledger, holder, or
-   * account conflicts and changes nothing.
+   * Records the holder and payable account references returned by the ledger.
+   * Idempotent for identical inputs; returns `ConflictError` if the ledger,
+   * holder, or account reference differs from what is already stored.
    */
   readonly recordPayableAccount: (
     id: ID,
     ledger: Ledger.Slug,
     account: PayableAccount,
   ) => Effect.Effect<void, NotFoundError | ConflictError>
-  /** Leaves an active business as it is. Dies unless its account is recorded. */
+  /** Transitions a business with a recorded payable account to `active`. Idempotent. */
   readonly activate: (id: ID) => Effect.Effect<Info, NotFoundError>
 }
 
@@ -126,8 +124,7 @@ const make = Effect.gen(function* () {
 
     const { row, scale } = rows[0]
 
-    // The foreign key runs through the currency, so the ledger's is the
-    // business's.
+    // Composite FK guarantees `ledgers.currency` matches `businesses.currency_code`.
     const currency = Currency.Code.make(row.currencyCode)
 
     return new Info({
@@ -177,10 +174,9 @@ const make = Effect.gen(function* () {
     principalId: Principal.ID,
     details: Details,
   ) {
-    // Locking the principal row serialises concurrent creates for it, so the
-    // second one finds the first one's business instead of making another.
     const id = yield* database.transaction(
       Effect.gen(function* () {
+        // Locking the principal serialises concurrent creates, so the second finds the first's business.
         const locked = yield* database.use((db) =>
           db
             .select({ id: principals.id })
@@ -257,8 +253,7 @@ const make = Effect.gen(function* () {
 
   const recordPayableAccount = Effect.fn("Business.recordPayableAccount")(
     function* (id: ID, ledger: Ledger.Slug, account: PayableAccount) {
-      // Locking the business serialises concurrent records for it, so each
-      // sees what the last one committed.
+      // Locking the business serialises concurrent records, so each sees the last one's.
       const rows = yield* database.use((db) =>
         db
           .select({
@@ -281,8 +276,7 @@ const make = Effect.gen(function* () {
         return yield* new ConflictError({ id, message: `primary ledger is ${recorded.primaryLedger}, not ${ledger}` })
       }
 
-      // The holder and account are written together, so either both are
-      // recorded or neither is.
+      // `businesses_holder_with_account` guarantees both columns are set or both are null.
       if (recorded.accountRef !== null) {
         if (recorded.holderRef !== account.holderRef || recorded.accountRef !== account.accountRef) {
           return yield* new ConflictError({
@@ -294,8 +288,8 @@ const make = Effect.gen(function* () {
         return
       }
 
-      // The unique index would also refuse an account another business
-      // holds; checking first makes that a conflict, not a defect.
+      // Check before updating so a duplicate account reference returns
+      // `ConflictError` rather than failing on the unique index.
       const owners = yield* database.use((db) =>
         db
           .select({ id: businesses.id })
@@ -346,6 +340,7 @@ const make = Effect.gen(function* () {
       return business
     }
 
+    // Callers record the account first, so one missing is a bug, not a request to refuse.
     return yield* Effect.die(new Error(`business ${id} has no primary account recorded`))
   })
 

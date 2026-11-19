@@ -23,14 +23,14 @@ export type UnauthorizedResponseEncoded = { readonly "message": string, readonly
 export const UnauthorizedResponseEncoded = Schema.Struct({ "message": Schema.String.check(Schema.isMinLength(1).annotate({ "expected": "a value with a length of at least 1" })), "error": Schema.Struct({ "code": Schema.Literal("unauthorized") }) }).annotate({ "identifier": "UnauthorizedResponseEncoded" })
 export type CreateBusinessRequestEncoded = { readonly "name": string, readonly "country_code"?: "NG" | "US" }
 export const CreateBusinessRequestEncoded = Schema.Struct({ "name": Schema.String.check(Schema.isPattern(new RegExp(".*\\S.*")).annotate({ "expected": "a string matching the RegExp .*\\S.*" })), "country_code": Schema.optionalKey(Schema.Literals(["NG", "US"]).annotate({ "default": "NG" })) }).annotate({ "identifier": "CreateBusinessRequestEncoded" })
-export type ConflictResponseEncoded = { readonly "message": string, readonly "error": { readonly "code": "conflict" | "ledger_rejected" | "business_required" | "business_inactive" | "account_not_opened" | "link_inactive" | "payment_expired" | "not_pending" } }
-export const ConflictResponseEncoded = Schema.Struct({ "message": Schema.String.check(Schema.isMinLength(1).annotate({ "expected": "a value with a length of at least 1" })), "error": Schema.Struct({ "code": Schema.Literals(["conflict", "ledger_rejected", "business_required", "business_inactive", "account_not_opened", "link_inactive", "payment_expired", "not_pending"]) }) }).annotate({ "identifier": "ConflictResponseEncoded" })
+export type ConflictResponseEncoded = { readonly "message": string, readonly "error": { readonly "code": "conflict" | "ledger_rejected" | "business_required" | "business_inactive" | "account_not_opened" | "link_inactive" | "payment_expired" | "not_pending" | "payouts_automatic" | "payouts_unavailable" | "no_payout_account" | "payout_ledger_mismatch" | "payout_drafts_full" | "payout_expired" | "payout_rules_changed" | "payout_cancelled" } }
+export const ConflictResponseEncoded = Schema.Struct({ "message": Schema.String.check(Schema.isMinLength(1).annotate({ "expected": "a value with a length of at least 1" })), "error": Schema.Struct({ "code": Schema.Literals(["conflict", "ledger_rejected", "business_required", "business_inactive", "account_not_opened", "link_inactive", "payment_expired", "not_pending", "payouts_automatic", "payouts_unavailable", "no_payout_account", "payout_ledger_mismatch", "payout_drafts_full", "payout_expired", "payout_rules_changed", "payout_cancelled"]) }) }).annotate({ "identifier": "ConflictResponseEncoded" })
 export type ServiceUnavailableResponseEncoded = { readonly "message": string, readonly "error": { readonly "code": "ledger_unavailable" | "country_unavailable" } }
 export const ServiceUnavailableResponseEncoded = Schema.Struct({ "message": Schema.String.check(Schema.isMinLength(1).annotate({ "expected": "a value with a length of at least 1" })), "error": Schema.Struct({ "code": Schema.Literals(["ledger_unavailable", "country_unavailable"]) }) }).annotate({ "identifier": "ServiceUnavailableResponseEncoded" })
 export type BadGatewayResponseEncoded = { readonly "message": string, readonly "error": { readonly "code": "ledger_bad_response" } }
 export const BadGatewayResponseEncoded = Schema.Struct({ "message": Schema.String.check(Schema.isMinLength(1).annotate({ "expected": "a value with a length of at least 1" })), "error": Schema.Struct({ "code": Schema.Literal("ledger_bad_response") }) }).annotate({ "identifier": "BadGatewayResponseEncoded" })
-export type BusinessBalanceEncoded = { readonly "ledger": string, readonly "currency": string, readonly "scale": number, readonly "available": string, readonly "pending": string }
-export const BusinessBalanceEncoded = Schema.Struct({ "ledger": Schema.String, "currency": Schema.String, "scale": Schema.Number.check(Schema.isInt().annotate({ "expected": "an integer" })), "available": Schema.String.annotate({ "description": "In minor units of the ledger's currency." }), "pending": Schema.String.annotate({ "description": "In minor units of the ledger's currency." }) }).annotate({ "identifier": "BusinessBalanceEncoded" })
+export type BusinessBalanceEncoded = { readonly "ledger": string, readonly "currency": string, readonly "scale": number, readonly "available": string, readonly "incoming": string, readonly "held": string }
+export const BusinessBalanceEncoded = Schema.Struct({ "ledger": Schema.String, "currency": Schema.String, "scale": Schema.Number.check(Schema.isInt().annotate({ "expected": "an integer" })), "available": Schema.String.annotate({ "description": "In minor units of the ledger's currency." }), "incoming": Schema.String.annotate({ "description": "In minor units of the ledger's currency." }), "held": Schema.String.annotate({ "description": "In minor units of the ledger's currency." }) }).annotate({ "identifier": "BusinessBalanceEncoded" })
 export type StatementMovementEncoded = { readonly "journal_ref": string, readonly "line_number": number, readonly "direction": "debit" | "credit", readonly "amount": string, readonly "balance_after": string, readonly "description": string, readonly "recorded_at": string }
 export const StatementMovementEncoded = Schema.Struct({ "journal_ref": Schema.String, "line_number": Schema.Number.check(Schema.isInt().annotate({ "expected": "an integer" })), "direction": Schema.Literals(["debit", "credit"]), "amount": Schema.String.annotate({ "description": "In minor units of the ledger's currency." }), "balance_after": Schema.String.annotate({ "description": "In minor units of the ledger's currency." }), "description": Schema.String, "recorded_at": Schema.String }).annotate({ "identifier": "StatementMovementEncoded" })
 export type FixedPricingEncoded = { readonly "mode": "fixed", readonly "amount": number }
@@ -53,6 +53,14 @@ export type SettledEventEncoded = { readonly "kind": "settled", readonly "at": s
 export const SettledEventEncoded = Schema.Struct({ "kind": Schema.Literal("settled"), "at": Schema.String, "journal_ref": Schema.String }).annotate({ "identifier": "SettledEventEncoded" })
 export type RefusedEventEncoded = { readonly "kind": "refused", readonly "at": string, readonly "error_code": string }
 export const RefusedEventEncoded = Schema.Struct({ "kind": Schema.Literal("refused"), "at": Schema.String, "error_code": Schema.String }).annotate({ "identifier": "RefusedEventEncoded" })
+export type PayoutBankEncoded = { readonly "code": string, readonly "name": string }
+export const PayoutBankEncoded = Schema.Struct({ "code": Schema.String, "name": Schema.String }).annotate({ "identifier": "PayoutBankEncoded" })
+export type PayoutDestinationEncoded = { readonly "bank_code": string, readonly "bank_name": string, readonly "account_number": string, readonly "account_name": string }
+export const PayoutDestinationEncoded = Schema.Struct({ "bank_code": Schema.String, "bank_name": Schema.String, "account_number": Schema.String, "account_name": Schema.String }).annotate({ "identifier": "PayoutDestinationEncoded" })
+export type PayoutDestinationRequestEncoded = { readonly "bank_code": string, readonly "account_number": string }
+export const PayoutDestinationRequestEncoded = Schema.Struct({ "bank_code": Schema.String.check(Schema.isPattern(new RegExp("^\\d{3}$")).annotate({ "expected": "a string matching the RegExp ^\\d{3}$" })), "account_number": Schema.String.check(Schema.isPattern(new RegExp("^\\d{10}$")).annotate({ "expected": "a string matching the RegExp ^\\d{10}$" })) }).annotate({ "identifier": "PayoutDestinationRequestEncoded" })
+export type PayoutRequestEncoded = { readonly "amount": number }
+export const PayoutRequestEncoded = Schema.Struct({ "amount": Schema.Number.annotate({ "description": "In minor units of the ledger's currency." }).check(Schema.isInt().annotate({ "expected": "an integer" })).check(Schema.isLessThanOrEqualTo(9007199254740991).annotate({ "expected": "a value less than or equal to 9007199254740991" })).check(Schema.isGreaterThan(0).annotate({ "expected": "a value greater than 0" })) }).annotate({ "identifier": "PayoutRequestEncoded" })
 export type StartPaymentRequestEncoded = { readonly "amount"?: number | null }
 export const StartPaymentRequestEncoded = Schema.Struct({ "amount": Schema.optionalKey(Schema.Union([Schema.Number.annotate({ "description": "In minor units of the link's currency." }).check(Schema.isInt().annotate({ "expected": "an integer" })).check(Schema.isLessThanOrEqualTo(9007199254740991).annotate({ "expected": "a value less than or equal to 9007199254740991" })).check(Schema.isGreaterThan(0).annotate({ "expected": "a value greater than 0" })), Schema.Null])) }).annotate({ "identifier": "StartPaymentRequestEncoded" })
 export type PaymentEncoded = { readonly "id": string, readonly "amount": number, readonly "currency_code": string, readonly "scale": number, readonly "status": "pending" | "succeeded" | "failed" | "cancelled" | "expired", readonly "created_at": string, readonly "expires_at": string, readonly "completed_at": string | null }
@@ -81,12 +89,26 @@ export type PaymentPageEncoded = { readonly "payments": ReadonlyArray<PaymentSum
 export const PaymentPageEncoded = Schema.Struct({ "payments": Schema.Array(PaymentSummaryEncoded), "stats": PaymentStatsEncoded, "next": Schema.Union([Schema.String, Schema.Null]) }).annotate({ "identifier": "PaymentPageEncoded" })
 export type PaymentDetailEncoded = { readonly "payment": PaymentSummaryEncoded, readonly "timeline": ReadonlyArray<PaidEventEncoded | SettledEventEncoded | RefusedEventEncoded> }
 export const PaymentDetailEncoded = Schema.Struct({ "payment": PaymentSummaryEncoded, "timeline": Schema.Array(Schema.Union([PaidEventEncoded, SettledEventEncoded, RefusedEventEncoded])) }).annotate({ "identifier": "PaymentDetailEncoded" })
+export type PayoutBankListEncoded = { readonly "banks": ReadonlyArray<PayoutBankEncoded> }
+export const PayoutBankListEncoded = Schema.Struct({ "banks": Schema.Array(PayoutBankEncoded) }).annotate({ "identifier": "PayoutBankListEncoded" })
+export type PayoutSettingsEncoded = { readonly "ledger": string, readonly "currency": string, readonly "scale": number, readonly "minimum": string, readonly "mode": "manual" | "automatic", readonly "destination": PayoutDestinationEncoded | null, readonly "updated_at": string | null }
+export const PayoutSettingsEncoded = Schema.Struct({ "ledger": Schema.String, "currency": Schema.String, "scale": Schema.Number.check(Schema.isInt().annotate({ "expected": "an integer" })), "minimum": Schema.String, "mode": Schema.Literals(["manual", "automatic"]), "destination": Schema.Union([PayoutDestinationEncoded, Schema.Null]), "updated_at": Schema.Union([Schema.String, Schema.Null]) }).annotate({ "identifier": "PayoutSettingsEncoded" })
+export type PayoutEncoded = { readonly "id": string, readonly "ledger": string, readonly "currency": string, readonly "scale": number, readonly "amount": string, readonly "trigger": "manual" | "scheduled", readonly "status": "created" | "requested" | "held" | "sent" | "paid" | "failed" | "rejected" | "cancelled" | "expired" | "attention", readonly "reason": "insufficient_funds" | null, readonly "destination": PayoutDestinationEncoded, readonly "journal_ref": string | null, readonly "ledger_mismatch": boolean, readonly "created_at": string, readonly "expires_at": string | null, readonly "sent_at": string | null, readonly "completed_at": string | null }
+export const PayoutEncoded = Schema.Struct({ "id": Schema.String, "ledger": Schema.String, "currency": Schema.String, "scale": Schema.Number.check(Schema.isInt().annotate({ "expected": "an integer" })), "amount": Schema.String.annotate({ "description": "In minor units of the ledger's currency." }), "trigger": Schema.Literals(["manual", "scheduled"]), "status": Schema.Literals(["created", "requested", "held", "sent", "paid", "failed", "rejected", "cancelled", "expired", "attention"]), "reason": Schema.Union([Schema.Literal("insufficient_funds"), Schema.Null]), "destination": PayoutDestinationEncoded, "journal_ref": Schema.Union([Schema.String, Schema.Null]), "ledger_mismatch": Schema.Boolean, "created_at": Schema.String, "expires_at": Schema.Union([Schema.String, Schema.Null]), "sent_at": Schema.Union([Schema.String, Schema.Null]), "completed_at": Schema.Union([Schema.String, Schema.Null]) }).annotate({ "identifier": "PayoutEncoded" })
+export type CreatedPayoutEncoded = { readonly "id": string, readonly "ledger": string, readonly "currency": string, readonly "scale": number, readonly "amount": string, readonly "trigger": "manual" | "scheduled", readonly "status": "created" | "requested" | "held" | "sent" | "paid" | "failed" | "rejected" | "cancelled" | "expired" | "attention", readonly "reason": "insufficient_funds" | null, readonly "destination": PayoutDestinationEncoded, readonly "journal_ref": string | null, readonly "ledger_mismatch": boolean, readonly "created_at": string, readonly "expires_at": string | null, readonly "sent_at": string | null, readonly "completed_at": string | null }
+export const CreatedPayoutEncoded = Schema.Struct({ "id": Schema.String, "ledger": Schema.String, "currency": Schema.String, "scale": Schema.Number.check(Schema.isInt().annotate({ "expected": "an integer" })), "amount": Schema.String.annotate({ "description": "In minor units of the ledger's currency." }), "trigger": Schema.Literals(["manual", "scheduled"]), "status": Schema.Literals(["created", "requested", "held", "sent", "paid", "failed", "rejected", "cancelled", "expired", "attention"]), "reason": Schema.Union([Schema.Literal("insufficient_funds"), Schema.Null]), "destination": PayoutDestinationEncoded, "journal_ref": Schema.Union([Schema.String, Schema.Null]), "ledger_mismatch": Schema.Boolean, "created_at": Schema.String, "expires_at": Schema.Union([Schema.String, Schema.Null]), "sent_at": Schema.Union([Schema.String, Schema.Null]), "completed_at": Schema.Union([Schema.String, Schema.Null]) }).annotate({ "identifier": "CreatedPayoutEncoded" })
+export type ConfirmedPayoutEncoded = { readonly "id": string, readonly "ledger": string, readonly "currency": string, readonly "scale": number, readonly "amount": string, readonly "trigger": "manual" | "scheduled", readonly "status": "created" | "requested" | "held" | "sent" | "paid" | "failed" | "rejected" | "cancelled" | "expired" | "attention", readonly "reason": "insufficient_funds" | null, readonly "destination": PayoutDestinationEncoded, readonly "journal_ref": string | null, readonly "ledger_mismatch": boolean, readonly "created_at": string, readonly "expires_at": string | null, readonly "sent_at": string | null, readonly "completed_at": string | null }
+export const ConfirmedPayoutEncoded = Schema.Struct({ "id": Schema.String, "ledger": Schema.String, "currency": Schema.String, "scale": Schema.Number.check(Schema.isInt().annotate({ "expected": "an integer" })), "amount": Schema.String.annotate({ "description": "In minor units of the ledger's currency." }), "trigger": Schema.Literals(["manual", "scheduled"]), "status": Schema.Literals(["created", "requested", "held", "sent", "paid", "failed", "rejected", "cancelled", "expired", "attention"]), "reason": Schema.Union([Schema.Literal("insufficient_funds"), Schema.Null]), "destination": PayoutDestinationEncoded, "journal_ref": Schema.Union([Schema.String, Schema.Null]), "ledger_mismatch": Schema.Boolean, "created_at": Schema.String, "expires_at": Schema.Union([Schema.String, Schema.Null]), "sent_at": Schema.Union([Schema.String, Schema.Null]), "completed_at": Schema.Union([Schema.String, Schema.Null]) }).annotate({ "identifier": "ConfirmedPayoutEncoded" })
+export type PayoutSettingsRequestEncoded = { readonly "mode": "manual" | "automatic", readonly "destination": PayoutDestinationRequestEncoded }
+export const PayoutSettingsRequestEncoded = Schema.Struct({ "mode": Schema.Literals(["manual", "automatic"]), "destination": PayoutDestinationRequestEncoded }).annotate({ "identifier": "PayoutSettingsRequestEncoded" })
 export type ValidationErrorResponseEncoded = { readonly "message": string, readonly "error": ValidationErrorEncoded }
 export const ValidationErrorResponseEncoded = Schema.Struct({ "message": Schema.String.check(Schema.isMinLength(1).annotate({ "expected": "a value with a length of at least 1" })), "error": ValidationErrorEncoded }).annotate({ "identifier": "ValidationErrorResponseEncoded" })
 export type MeResponseEncoded = { readonly "id": string, readonly "created_at": string, readonly "business": BusinessInfoEncoded | null }
 export const MeResponseEncoded = Schema.Struct({ "id": Schema.String, "created_at": Schema.String, "business": Schema.Union([BusinessInfoEncoded, Schema.Null]) }).annotate({ "identifier": "MeResponseEncoded" })
 export type PaymentLinkListEncoded = { readonly "links": ReadonlyArray<PaymentLinkSummaryEncoded>, readonly "link_count": number, readonly "active_link_count": number, readonly "totals": PaymentStatsEncoded }
 export const PaymentLinkListEncoded = Schema.Struct({ "links": Schema.Array(PaymentLinkSummaryEncoded), "link_count": Schema.Number.check(Schema.isInt().annotate({ "expected": "an integer" })), "active_link_count": Schema.Number.check(Schema.isInt().annotate({ "expected": "an integer" })), "totals": PaymentStatsEncoded }).annotate({ "identifier": "PaymentLinkListEncoded" })
+export type PayoutPageEncoded = { readonly "payouts": ReadonlyArray<PayoutEncoded>, readonly "next": string | null }
+export const PayoutPageEncoded = Schema.Struct({ "payouts": Schema.Array(PayoutEncoded), "next": Schema.Union([Schema.String, Schema.Null]) }).annotate({ "identifier": "PayoutPageEncoded" })
 // schemas
 export type HealthGetHealth200 = HealthEncoded
 export const HealthGetHealth200 = HealthEncoded
@@ -200,6 +222,74 @@ export type PaymentsGetPayment404 = NotFoundResponseEncoded
 export const PaymentsGetPayment404 = NotFoundResponseEncoded
 export type PaymentsGetPayment409 = ConflictResponseEncoded
 export const PaymentsGetPayment409 = ConflictResponseEncoded
+export type PayoutsListBanks200 = PayoutBankListEncoded
+export const PayoutsListBanks200 = PayoutBankListEncoded
+export type PayoutsListBanks400 = ValidationErrorResponseEncoded
+export const PayoutsListBanks400 = ValidationErrorResponseEncoded
+export type PayoutsListBanks401 = UnauthorizedResponseEncoded
+export const PayoutsListBanks401 = UnauthorizedResponseEncoded
+export type PayoutsListBanks409 = ConflictResponseEncoded
+export const PayoutsListBanks409 = ConflictResponseEncoded
+export type PayoutsGetPayoutSettings200 = PayoutSettingsEncoded
+export const PayoutsGetPayoutSettings200 = PayoutSettingsEncoded
+export type PayoutsGetPayoutSettings400 = ValidationErrorResponseEncoded
+export const PayoutsGetPayoutSettings400 = ValidationErrorResponseEncoded
+export type PayoutsGetPayoutSettings401 = UnauthorizedResponseEncoded
+export const PayoutsGetPayoutSettings401 = UnauthorizedResponseEncoded
+export type PayoutsGetPayoutSettings409 = ConflictResponseEncoded
+export const PayoutsGetPayoutSettings409 = ConflictResponseEncoded
+export type PayoutsChangePayoutSettingsRequestJson = PayoutSettingsRequestEncoded
+export const PayoutsChangePayoutSettingsRequestJson = PayoutSettingsRequestEncoded
+export type PayoutsChangePayoutSettings200 = PayoutSettingsEncoded
+export const PayoutsChangePayoutSettings200 = PayoutSettingsEncoded
+export type PayoutsChangePayoutSettings400 = ValidationErrorResponseEncoded
+export const PayoutsChangePayoutSettings400 = ValidationErrorResponseEncoded
+export type PayoutsChangePayoutSettings401 = UnauthorizedResponseEncoded
+export const PayoutsChangePayoutSettings401 = UnauthorizedResponseEncoded
+export type PayoutsChangePayoutSettings409 = ConflictResponseEncoded
+export const PayoutsChangePayoutSettings409 = ConflictResponseEncoded
+export type PayoutsListPayoutsParams = { readonly "before"?: string }
+export const PayoutsListPayoutsParams = Schema.Struct({ "before": Schema.optionalKey(Schema.String) })
+export type PayoutsListPayouts200 = PayoutPageEncoded
+export const PayoutsListPayouts200 = PayoutPageEncoded
+export type PayoutsListPayouts400 = ValidationErrorResponseEncoded
+export const PayoutsListPayouts400 = ValidationErrorResponseEncoded
+export type PayoutsListPayouts401 = UnauthorizedResponseEncoded
+export const PayoutsListPayouts401 = UnauthorizedResponseEncoded
+export type PayoutsListPayouts409 = ConflictResponseEncoded
+export const PayoutsListPayouts409 = ConflictResponseEncoded
+export type PayoutsCreatePayoutRequestJson = PayoutRequestEncoded
+export const PayoutsCreatePayoutRequestJson = PayoutRequestEncoded
+export type PayoutsCreatePayout201 = CreatedPayoutEncoded
+export const PayoutsCreatePayout201 = CreatedPayoutEncoded
+export type PayoutsCreatePayout400 = ValidationErrorResponseEncoded
+export const PayoutsCreatePayout400 = ValidationErrorResponseEncoded
+export type PayoutsCreatePayout401 = UnauthorizedResponseEncoded
+export const PayoutsCreatePayout401 = UnauthorizedResponseEncoded
+export type PayoutsCreatePayout409 = ConflictResponseEncoded
+export const PayoutsCreatePayout409 = ConflictResponseEncoded
+export type PayoutsConfirmPayout200 = PayoutEncoded
+export const PayoutsConfirmPayout200 = PayoutEncoded
+export type PayoutsConfirmPayout202 = ConfirmedPayoutEncoded
+export const PayoutsConfirmPayout202 = ConfirmedPayoutEncoded
+export type PayoutsConfirmPayout400 = ValidationErrorResponseEncoded
+export const PayoutsConfirmPayout400 = ValidationErrorResponseEncoded
+export type PayoutsConfirmPayout401 = UnauthorizedResponseEncoded
+export const PayoutsConfirmPayout401 = UnauthorizedResponseEncoded
+export type PayoutsConfirmPayout404 = NotFoundResponseEncoded
+export const PayoutsConfirmPayout404 = NotFoundResponseEncoded
+export type PayoutsConfirmPayout409 = ConflictResponseEncoded
+export const PayoutsConfirmPayout409 = ConflictResponseEncoded
+export type PayoutsGetPayout200 = PayoutEncoded
+export const PayoutsGetPayout200 = PayoutEncoded
+export type PayoutsGetPayout400 = ValidationErrorResponseEncoded
+export const PayoutsGetPayout400 = ValidationErrorResponseEncoded
+export type PayoutsGetPayout401 = UnauthorizedResponseEncoded
+export const PayoutsGetPayout401 = UnauthorizedResponseEncoded
+export type PayoutsGetPayout404 = NotFoundResponseEncoded
+export const PayoutsGetPayout404 = NotFoundResponseEncoded
+export type PayoutsGetPayout409 = ConflictResponseEncoded
+export const PayoutsGetPayout409 = ConflictResponseEncoded
 export type PayPaymentLink200 = PayableLinkEncoded
 export const PayPaymentLink200 = PayableLinkEncoded
 export type PayPaymentLink400 = ValidationErrorResponseEncoded
@@ -444,6 +534,79 @@ export const make = (
     }))
     ))
   ),
+    "payoutsListBanks": (options) => HttpClientRequest.get("/payouts/banks").pipe(
+      withResponse(options?.config)(HttpClientResponse.matchStatus({
+      "2xx": decodeSuccess(PayoutsListBanks200),
+      "400": decodeError("PayoutsListBanks400", PayoutsListBanks400),
+      "401": decodeError("PayoutsListBanks401", PayoutsListBanks401),
+      "409": decodeError("PayoutsListBanks409", PayoutsListBanks409),
+      orElse: unexpectedStatus
+    }))
+    ),
+    "payoutsGetPayoutSettings": (options) => HttpClientRequest.get("/payouts/settings").pipe(
+      withResponse(options?.config)(HttpClientResponse.matchStatus({
+      "2xx": decodeSuccess(PayoutsGetPayoutSettings200),
+      "400": decodeError("PayoutsGetPayoutSettings400", PayoutsGetPayoutSettings400),
+      "401": decodeError("PayoutsGetPayoutSettings401", PayoutsGetPayoutSettings401),
+      "409": decodeError("PayoutsGetPayoutSettings409", PayoutsGetPayoutSettings409),
+      orElse: unexpectedStatus
+    }))
+    ),
+    "payoutsChangePayoutSettings": (options) => HttpClientRequest.put("/payouts/settings").pipe(
+      HttpClientRequest.bodyJsonUnsafe(options.payload),
+      withResponse(options.config)(HttpClientResponse.matchStatus({
+      "2xx": decodeSuccess(PayoutsChangePayoutSettings200),
+      "400": decodeError("PayoutsChangePayoutSettings400", PayoutsChangePayoutSettings400),
+      "401": decodeError("PayoutsChangePayoutSettings401", PayoutsChangePayoutSettings401),
+      "409": decodeError("PayoutsChangePayoutSettings409", PayoutsChangePayoutSettings409),
+      orElse: unexpectedStatus
+    }))
+    ),
+    "payoutsListPayouts": (options) => HttpClientRequest.get("/payouts").pipe(
+      HttpClientRequest.setUrlParams({ "before": options?.params?.["before"] as any }),
+      withResponse(options?.config)(HttpClientResponse.matchStatus({
+      "2xx": decodeSuccess(PayoutsListPayouts200),
+      "400": decodeError("PayoutsListPayouts400", PayoutsListPayouts400),
+      "401": decodeError("PayoutsListPayouts401", PayoutsListPayouts401),
+      "409": decodeError("PayoutsListPayouts409", PayoutsListPayouts409),
+      orElse: unexpectedStatus
+    }))
+    ),
+    "payoutsCreatePayout": (options) => HttpClientRequest.post("/payouts").pipe(
+      HttpClientRequest.bodyJsonUnsafe(options.payload),
+      withResponse(options.config)(HttpClientResponse.matchStatus({
+      "2xx": decodeSuccess(PayoutsCreatePayout201),
+      "400": decodeError("PayoutsCreatePayout400", PayoutsCreatePayout400),
+      "401": decodeError("PayoutsCreatePayout401", PayoutsCreatePayout401),
+      "409": decodeError("PayoutsCreatePayout409", PayoutsCreatePayout409),
+      orElse: unexpectedStatus
+    }))
+    ),
+    "payoutsConfirmPayout": (payoutId, options) => __makePathRequest(HttpClientRequest.post, [payoutId], () => "/payouts/" + __encodePathParam(payoutId) + "/confirm").pipe(
+    Effect.flatMap((request) => request.pipe(
+      withResponse(options?.config)(HttpClientResponse.matchStatus({
+      "200": decodeSuccess(PayoutsConfirmPayout200),
+      "202": decodeSuccess(PayoutsConfirmPayout202),
+      "400": decodeError("PayoutsConfirmPayout400", PayoutsConfirmPayout400),
+      "401": decodeError("PayoutsConfirmPayout401", PayoutsConfirmPayout401),
+      "404": decodeError("PayoutsConfirmPayout404", PayoutsConfirmPayout404),
+      "409": decodeError("PayoutsConfirmPayout409", PayoutsConfirmPayout409),
+      orElse: unexpectedStatus
+    }))
+    ))
+  ),
+    "payoutsGetPayout": (payoutId, options) => __makePathRequest(HttpClientRequest.get, [payoutId], () => "/payouts/" + __encodePathParam(payoutId) + "").pipe(
+    Effect.flatMap((request) => request.pipe(
+      withResponse(options?.config)(HttpClientResponse.matchStatus({
+      "2xx": decodeSuccess(PayoutsGetPayout200),
+      "400": decodeError("PayoutsGetPayout400", PayoutsGetPayout400),
+      "401": decodeError("PayoutsGetPayout401", PayoutsGetPayout401),
+      "404": decodeError("PayoutsGetPayout404", PayoutsGetPayout404),
+      "409": decodeError("PayoutsGetPayout409", PayoutsGetPayout409),
+      orElse: unexpectedStatus
+    }))
+    ))
+  ),
     "payPaymentLink": (shareToken, options) => __makePathRequest(HttpClientRequest.get, [shareToken], () => "/pay/payment_links/" + __encodePathParam(shareToken) + "").pipe(
     Effect.flatMap((request) => request.pipe(
       withResponse(options?.config)(HttpClientResponse.matchStatus({
@@ -496,6 +659,13 @@ export interface PlaneClient {
   readonly "paymentLinksCreatePaymentLink": <Config extends OperationConfig>(options: { readonly params: typeof PaymentLinksCreatePaymentLinkParams.Encoded; readonly payload: typeof PaymentLinksCreatePaymentLinkRequestJson.Encoded; readonly config?: Config | undefined }) => Effect.Effect<WithOptionalResponse<typeof PaymentLinksCreatePaymentLink200.Type | typeof PaymentLinksCreatePaymentLink201.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"PaymentLinksCreatePaymentLink400", typeof PaymentLinksCreatePaymentLink400.Type> | PlaneClientError<"PaymentLinksCreatePaymentLink401", typeof PaymentLinksCreatePaymentLink401.Type> | PlaneClientError<"PaymentLinksCreatePaymentLink409", typeof PaymentLinksCreatePaymentLink409.Type>>
   readonly "paymentsListPayments": <Config extends OperationConfig>(options: { readonly params?: typeof PaymentsListPaymentsParams.Encoded | undefined; readonly config?: Config | undefined } | undefined) => Effect.Effect<WithOptionalResponse<typeof PaymentsListPayments200.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"PaymentsListPayments400", typeof PaymentsListPayments400.Type> | PlaneClientError<"PaymentsListPayments401", typeof PaymentsListPayments401.Type> | PlaneClientError<"PaymentsListPayments404", typeof PaymentsListPayments404.Type> | PlaneClientError<"PaymentsListPayments409", typeof PaymentsListPayments409.Type>>
   readonly "paymentsGetPayment": <Config extends OperationConfig>(paymentId: string, options: { readonly config?: Config | undefined } | undefined) => Effect.Effect<WithOptionalResponse<typeof PaymentsGetPayment200.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"PaymentsGetPayment400", typeof PaymentsGetPayment400.Type> | PlaneClientError<"PaymentsGetPayment401", typeof PaymentsGetPayment401.Type> | PlaneClientError<"PaymentsGetPayment404", typeof PaymentsGetPayment404.Type> | PlaneClientError<"PaymentsGetPayment409", typeof PaymentsGetPayment409.Type>>
+  readonly "payoutsListBanks": <Config extends OperationConfig>(options: { readonly config?: Config | undefined } | undefined) => Effect.Effect<WithOptionalResponse<typeof PayoutsListBanks200.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"PayoutsListBanks400", typeof PayoutsListBanks400.Type> | PlaneClientError<"PayoutsListBanks401", typeof PayoutsListBanks401.Type> | PlaneClientError<"PayoutsListBanks409", typeof PayoutsListBanks409.Type>>
+  readonly "payoutsGetPayoutSettings": <Config extends OperationConfig>(options: { readonly config?: Config | undefined } | undefined) => Effect.Effect<WithOptionalResponse<typeof PayoutsGetPayoutSettings200.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"PayoutsGetPayoutSettings400", typeof PayoutsGetPayoutSettings400.Type> | PlaneClientError<"PayoutsGetPayoutSettings401", typeof PayoutsGetPayoutSettings401.Type> | PlaneClientError<"PayoutsGetPayoutSettings409", typeof PayoutsGetPayoutSettings409.Type>>
+  readonly "payoutsChangePayoutSettings": <Config extends OperationConfig>(options: { readonly payload: typeof PayoutsChangePayoutSettingsRequestJson.Encoded; readonly config?: Config | undefined }) => Effect.Effect<WithOptionalResponse<typeof PayoutsChangePayoutSettings200.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"PayoutsChangePayoutSettings400", typeof PayoutsChangePayoutSettings400.Type> | PlaneClientError<"PayoutsChangePayoutSettings401", typeof PayoutsChangePayoutSettings401.Type> | PlaneClientError<"PayoutsChangePayoutSettings409", typeof PayoutsChangePayoutSettings409.Type>>
+  readonly "payoutsListPayouts": <Config extends OperationConfig>(options: { readonly params?: typeof PayoutsListPayoutsParams.Encoded | undefined; readonly config?: Config | undefined } | undefined) => Effect.Effect<WithOptionalResponse<typeof PayoutsListPayouts200.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"PayoutsListPayouts400", typeof PayoutsListPayouts400.Type> | PlaneClientError<"PayoutsListPayouts401", typeof PayoutsListPayouts401.Type> | PlaneClientError<"PayoutsListPayouts409", typeof PayoutsListPayouts409.Type>>
+  readonly "payoutsCreatePayout": <Config extends OperationConfig>(options: { readonly payload: typeof PayoutsCreatePayoutRequestJson.Encoded; readonly config?: Config | undefined }) => Effect.Effect<WithOptionalResponse<typeof PayoutsCreatePayout201.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"PayoutsCreatePayout400", typeof PayoutsCreatePayout400.Type> | PlaneClientError<"PayoutsCreatePayout401", typeof PayoutsCreatePayout401.Type> | PlaneClientError<"PayoutsCreatePayout409", typeof PayoutsCreatePayout409.Type>>
+  readonly "payoutsConfirmPayout": <Config extends OperationConfig>(payoutId: string, options: { readonly config?: Config | undefined } | undefined) => Effect.Effect<WithOptionalResponse<typeof PayoutsConfirmPayout200.Type | typeof PayoutsConfirmPayout202.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"PayoutsConfirmPayout400", typeof PayoutsConfirmPayout400.Type> | PlaneClientError<"PayoutsConfirmPayout401", typeof PayoutsConfirmPayout401.Type> | PlaneClientError<"PayoutsConfirmPayout404", typeof PayoutsConfirmPayout404.Type> | PlaneClientError<"PayoutsConfirmPayout409", typeof PayoutsConfirmPayout409.Type>>
+  readonly "payoutsGetPayout": <Config extends OperationConfig>(payoutId: string, options: { readonly config?: Config | undefined } | undefined) => Effect.Effect<WithOptionalResponse<typeof PayoutsGetPayout200.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"PayoutsGetPayout400", typeof PayoutsGetPayout400.Type> | PlaneClientError<"PayoutsGetPayout401", typeof PayoutsGetPayout401.Type> | PlaneClientError<"PayoutsGetPayout404", typeof PayoutsGetPayout404.Type> | PlaneClientError<"PayoutsGetPayout409", typeof PayoutsGetPayout409.Type>>
   readonly "payPaymentLink": <Config extends OperationConfig>(shareToken: string, options: { readonly config?: Config | undefined } | undefined) => Effect.Effect<WithOptionalResponse<typeof PayPaymentLink200.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"PayPaymentLink400", typeof PayPaymentLink400.Type> | PlaneClientError<"PayPaymentLink404", typeof PayPaymentLink404.Type>>
   readonly "payStartPayment": <Config extends OperationConfig>(shareToken: string, options: { readonly params: typeof PayStartPaymentParams.Encoded; readonly payload: typeof PayStartPaymentRequestJson.Encoded; readonly config?: Config | undefined }) => Effect.Effect<WithOptionalResponse<typeof PayStartPayment200.Type | typeof PayStartPayment201.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"PayStartPayment400", typeof PayStartPayment400.Type> | PlaneClientError<"PayStartPayment404", typeof PayStartPayment404.Type> | PlaneClientError<"PayStartPayment409", typeof PayStartPayment409.Type>>
   readonly "paySimulatePayment": <Config extends OperationConfig>(shareToken: string, paymentId: string, options: { readonly payload: typeof PaySimulatePaymentRequestJson.Encoded; readonly config?: Config | undefined }) => Effect.Effect<WithOptionalResponse<typeof PaySimulatePayment200.Type, Config>, HttpClientError.HttpClientError | SchemaError | PlaneClientError<"PaySimulatePayment400", typeof PaySimulatePayment400.Type> | PlaneClientError<"PaySimulatePayment404", typeof PaySimulatePayment404.Type> | PlaneClientError<"PaySimulatePayment409", typeof PaySimulatePayment409.Type>>

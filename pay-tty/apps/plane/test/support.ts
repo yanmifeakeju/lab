@@ -1,5 +1,5 @@
 import { LedgerClient } from "@pay-tty/core/ledger"
-import { CreatePayableAccountRequestJson, PostJournalEntryRequestJson } from "@pay-tty/ledger-client"
+import { CreatePayableAccountRequestJson, PostJournalEntryRequestJson, ResolveJournalEntryRequestJson } from "@pay-tty/ledger-client"
 import { ConfigProvider, Effect, Layer, Schema } from "effect"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientError from "effect/unstable/http/HttpClientError"
@@ -86,6 +86,7 @@ export interface Entry {
 }
 
 // Like the ledger: a repeat of a key gets the entry it first posted, with 200.
+// A pending entry is held, not posted.
 export const posting = () => {
   const posted = new Map<string, { readonly body: object }>()
 
@@ -100,7 +101,7 @@ export const posting = () => {
       journal_ref: `jrn_${ulid()}`,
       ledger_slug: payload.ledger,
       kind: payload.kind,
-      state: "posted",
+      state: payload.pending === true ? "pending" : "posted",
       description: payload.description,
       created_at: "2026-01-01T00:00:00Z",
     }
@@ -182,11 +183,19 @@ export const statementOf = (
   }
 }
 
+/** A capture or void, under its idempotency key. */
+export interface Resolution {
+  readonly journalRef: string
+  readonly key: string
+  readonly payload: ResolveJournalEntryRequestJson
+}
+
 export interface FakeLedger {
   // Payable account creations, and what the ledger answered each.
   readonly requests: ReadonlyArray<Payload>
   readonly replies: ReadonlyArray<Reply>
   readonly entries: ReadonlyArray<Entry>
+  readonly resolutions: ReadonlyArray<Resolution>
   // The account refs read, in order.
   readonly reads: ReadonlyArray<string>
   readonly statements: ReadonlyArray<StatementRead>
@@ -197,7 +206,7 @@ export const fakeLedger = (
   reply: (payload: Payload) => Reply = remembering(),
   post: (entry: Entry) => Reply = posting(),
   // Left out, an account read answers with the account as created, its
-  // posted credits and debits summed from the entries the ledger took.
+  // counters summed from the entries the ledger took.
   read?: (accountRef: string) => Reply,
   // Left out, a statement lists the account's lines from the entries taken.
   statement?: (read: StatementRead) => Reply,
@@ -209,6 +218,60 @@ export const fakeLedger = (
   const reads: Array<string> = []
   const statements: Array<StatementRead> = []
   const journals = new Map<Entry, string>()
+  const resolutions: Array<Resolution> = []
+  // Each hold resolved, by its journal ref: how, and the answer first given.
+  const resolved = new Map<string, { readonly key: string; readonly action: string; readonly ref: string; readonly body: object }>()
+
+  // Like the ledger: a hold resolves once; a repeat of its key replays the
+  // answer, and any other resolution is told how it was settled.
+  const resolve = (resolution: Resolution): Reply => {
+    const hold = taken.find((entry) => entry.payload.pending === true && journals.get(entry) === resolution.journalRef)
+
+    if (hold === undefined) {
+      return failing(404, "entry_not_found")
+    }
+
+    const first = resolved.get(resolution.journalRef)
+
+    if (first !== undefined) {
+      return first.key === resolution.key
+        ? { status: 200, body: first.body }
+        : {
+          status: 409,
+          body: {
+            message: "Entry is already resolved.",
+            error: { code: "entry_resolved" },
+            pending_state: first.action === "capture" ? "captured" : "voided",
+            resolved_by: first.ref,
+          },
+        }
+    }
+
+    const body = {
+      journal_ref: `jrn_${ulid()}`,
+      pending_ref: resolution.journalRef,
+      ledger_slug: resolution.payload.ledger,
+      kind: hold.payload.kind,
+      pending_state: resolution.payload.action === "capture" ? "captured" : "voided",
+      description: hold.payload.description,
+      created_at: "2026-01-01T00:00:00Z",
+    }
+
+    resolved.set(resolution.journalRef, { key: resolution.key, action: resolution.payload.action, ref: body.journal_ref, body })
+
+    return { status: 201, body }
+  }
+
+  // Posted at once, or a hold since captured; a voided hold moves nothing.
+  const standing = (entry: Entry) => {
+    if (entry.payload.pending !== true) {
+      return "posted"
+    }
+
+    const action = resolved.get(journals.get(entry) ?? "")?.action
+
+    return action === undefined ? "pending" : action === "capture" ? "posted" : "voided"
+  }
 
   // Accounts the ledger created, by ref, as it answered.
   const opened = new Map<string, object>()
@@ -220,20 +283,26 @@ export const fakeLedger = (
       return failing(404, "account_not_found")
     }
 
-    const lines = taken.flatMap((entry) => entry.payload.lines)
+    const sum = (pending: boolean, side: "debit_account_ref" | "credit_account_ref") =>
+      taken
+        .filter((entry) => standing(entry) === (pending ? "pending" : "posted"))
+        .flatMap((entry) => entry.payload.lines)
+        .filter((line) => line[side] === accountRef)
+        .reduce((total, line) => total + line.amount, 0)
 
-    const sum = (side: "debit_account_ref" | "credit_account_ref") =>
-      lines.filter((line) => line[side] === accountRef).reduce((total, line) => total + line.amount, 0)
-
-    const credits = sum("credit_account_ref")
-    const debits = sum("debit_account_ref")
+    const balances = {
+      debits_pending: sum(true, "debit_account_ref"),
+      credits_pending: sum(true, "credit_account_ref"),
+      debits_posted: sum(false, "debit_account_ref"),
+      credits_posted: sum(false, "credit_account_ref"),
+    }
 
     return {
       status: 200,
       body: {
         ...account,
-        available: credits - debits,
-        balances: { debits_pending: 0, credits_pending: 0, debits_posted: debits, credits_posted: credits },
+        available: balances.credits_posted - balances.debits_posted - balances.debits_pending,
+        balances,
       },
     }
   }
@@ -251,7 +320,8 @@ export const fakeLedger = (
 
         statements.push(statementRead)
 
-        const listed = taken.flatMap((entry) =>
+        // A hold stays off the statement until captured.
+        const listed = taken.filter((entry) => standing(entry) === "posted").flatMap((entry) =>
           entry.payload.lines.map((line, index) => ({ journalRef: journals.get(entry) ?? "", lineNumber: index + 1, line })))
 
         return yield* respond(request, (statement ?? ((read) => statementOf(read, listed)))(statementRead))
@@ -268,7 +338,17 @@ export const fakeLedger = (
       const body = yield* Effect.promise(() => web.json())
       let answer: Reply
 
-      if (path === "/entries") {
+      if (path.startsWith("/entries/") && path.endsWith("/resolve")) {
+        const resolution = {
+          journalRef: decodeURIComponent(path.slice("/entries/".length, -"/resolve".length)),
+          key: web.headers.get("idempotency-key") ?? "",
+          payload: yield* Effect.orDie(Schema.decodeUnknownEffect(ResolveJournalEntryRequestJson)(body)),
+        }
+
+        resolutions.push(resolution)
+
+        answer = resolve(resolution)
+      } else if (path === "/entries") {
         const entry = {
           key: web.headers.get("idempotency-key") ?? "",
           payload: yield* Effect.orDie(Schema.decodeUnknownEffect(PostJournalEntryRequestJson)(body)),
@@ -307,6 +387,7 @@ export const fakeLedger = (
     requests,
     replies,
     entries,
+    resolutions,
     reads,
     statements,
     // Configured here, so the tests need no LEDGER_BASE_URL.

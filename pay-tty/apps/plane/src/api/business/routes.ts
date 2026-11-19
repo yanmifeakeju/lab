@@ -4,6 +4,7 @@ import { Effect, Schema, SchemaTransformation } from "effect"
 import * as HttpApiEndpoint from "effect/unstable/httpapi/HttpApiEndpoint"
 import * as HttpApiGroup from "effect/unstable/httpapi/HttpApiGroup"
 
+import { inLedgerMinorUnits } from "../amounts.ts"
 import { BadGateway, Conflict, InvalidRequestError, ServiceUnavailable } from "../errors.ts"
 import { Authentication } from "../middleware/authentication.ts"
 import { BusinessContext } from "../middleware/business.ts"
@@ -54,17 +55,17 @@ export const businessInfo = (business: Business.Info) =>
     updated_at: business.updatedAt.toISOString(),
   })
 
-const inLedgerMinorUnits = { description: "In minor units of the ledger's currency." }
-
 // The payable account's figures, in the primary ledger's currency and scale.
 export class BusinessBalance extends Schema.Class<BusinessBalance>("BusinessBalance")({
   ledger: Schema.String,
   currency: Schema.String,
   scale: Schema.Int,
-  // What the business can pay out: posted credits less debits, pending ones included.
+  // What the business can pay out: posted credits less posted and held debits.
   available: Schema.String.annotate(inLedgerMinorUnits),
-  // Credits not yet posted.
-  pending: Schema.String.annotate(inLedgerMinorUnits),
+  // Payments recorded but not yet settled.
+  incoming: Schema.String.annotate(inLedgerMinorUnits),
+  // Payouts in flight, already out of available.
+  held: Schema.String.annotate(inLedgerMinorUnits),
 }) {}
 
 export class StatementMovement extends Schema.Class<StatementMovement>("StatementMovement")({

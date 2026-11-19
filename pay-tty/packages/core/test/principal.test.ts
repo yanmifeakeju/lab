@@ -59,7 +59,7 @@ void test("keeps identities apart by issuer", () =>
     ),
   ))
 
-// Committed: concurrent first sightings need separate connections.
+// Runs without `rolledBack` so concurrent `ensure` calls use separate pool connections.
 void test("concurrent first sightings settle on one principal", () =>
   runtime.runPromise(
     Effect.gen(function* () {

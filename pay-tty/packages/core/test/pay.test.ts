@@ -6,6 +6,7 @@ import { Cause, DateTime, Effect, Exit, Predicate, Result } from "effect"
 import { ulid } from "ulid"
 
 import { Business } from "../src/business/business.ts"
+import { Common } from "../src/common/schemas.ts"
 import { Database } from "../src/database/client.ts"
 import { Payments } from "../src/payments/payments.ts"
 import { paymentLinks, payments as paymentRows } from "../src/payments/sql.ts"
@@ -27,7 +28,7 @@ const createBusiness = (name = "Adaeze Studio") =>
     return business
   })
 
-const key = () => Payments.IdempotencyKey.make(`key_${ulid()}`)
+const key = () => Common.IdempotencyKey.make(`key_${ulid()}`)
 
 const fixed = new Payments.Details({
   title: "Logo design",
@@ -47,7 +48,7 @@ const chooses = (bounds: Partial<Payments.Bounds> = {}) =>
     }),
   })
 
-// A link of a new business, ready to be paid.
+// Creates a new business and payment link ready to accept payments.
 const createLink = (details: Payments.Details = fixed) =>
   Effect.gen(function* () {
     const business = yield* createBusiness()
@@ -60,7 +61,7 @@ const createLink = (details: Payments.Details = fixed) =>
 
 const start = (
   shareToken: string,
-  idempotencyKey: Payments.IdempotencyKey,
+  idempotencyKey: Common.IdempotencyKey,
   amount: bigint | null = null,
 ) =>
   Effect.gen(function* () {
@@ -83,11 +84,11 @@ const stored = (linkId: string) =>
     return yield* database.use((db) => db.select().from(paymentRows).where(eq(paymentRows.linkId, linkId)))
   })
 
-// The tag a failed effect failed with.
+// Returns the `_tag` of the error from a failing Effect.
 const failedWith = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.map(Effect.flip(effect), (error) => (Predicate.hasProperty(error, "_tag") ? error._tag : undefined))
 
-// The constraint a failed query violated; pg's error is the cause Drizzle wraps.
+// Extracts the violated PostgreSQL constraint name from a failed Drizzle query.
 const violated = <A, E>(exit: Exit.Exit<A, E>) => {
   if (Exit.isSuccess(exit)) {
     return undefined
@@ -168,7 +169,7 @@ void test("a customer-chosen payment needs an amount within the link's bounds", 
         // A suggestion is no bound, but one whole naira always is.
         assert.equal(yield* reason(open.shareToken, 99n), "below_currency_minimum")
         assert.equal((yield* start(open.shareToken, key(), 100n)).payment.amount, 100n)
-        assert.equal((yield* start(open.shareToken, key(), Payments.maxAmount)).payment.amount, Payments.maxAmount)
+        assert.equal((yield* start(open.shareToken, key(), Common.maxAmount)).payment.amount, Common.maxAmount)
 
         assert.deepEqual(
           Payments.amountFor(open.pricing, open, 99n),
@@ -393,7 +394,7 @@ void test("the database keeps a payment in its link's business and ledger, and i
           ["another ledger", { ledger: "usd_us" }, "payments_link_fk"],
           ["unknown link", { linkId: `plink_${ulid()}` }, "payments_link_fk"],
           ["zero amount", { amount: 0n }, "payments_amount_valid"],
-          ["unsafe amount", { amount: Payments.maxAmount + 1n }, "payments_amount_valid"],
+          ["unsafe amount", { amount: Common.maxAmount + 1n }, "payments_amount_valid"],
           ["key with a space", { idempotencyKey: "a b" }, "payments_idempotency_key_valid"],
           ["expiry at creation", { expiresAt: now }, "payments_expires_after_created"],
           ["pending but completed", { completedAt: now }, "payments_completed_with_status"],

@@ -18,9 +18,10 @@ import {
   totalsLine,
   withMode,
 } from "../src/payment-link.ts"
-import { Operation, type Popup, Session, type State, View } from "../src/session.ts"
+import { Operation, type Popup, Session, SettingsOrigin, type State, View } from "../src/session.ts"
 import {
   active,
+  banks,
   business,
   createdLink,
   failure,
@@ -33,6 +34,7 @@ import {
   me,
   overview,
   paid,
+  payoutSettings,
   summary,
   tips,
   type Reply,
@@ -419,7 +421,8 @@ void test(
             const after = yield* current(session)
 
             if (popup.close === "refresh") {
-              assert.deepEqual(after, idle(home(active, 5)), name)
+              // One request more for the first link's payout account check.
+              assert.deepEqual(after, idle(home(active, 6)), name)
               yield* startLink(session)
             } else {
               assert.deepEqual(after, idle(View.CreatingLink({ business: active, overview: noLinks })), name)
@@ -672,6 +675,99 @@ void test(
       )
 
       assert.equal(plane.calls.filter(({ path }) => path === "/me").length, 2)
+    }),
+  ),
+)
+
+void test(
+  "the first link asks for a payout account when none is saved; Later goes on to the form, and it asks only once",
+  scenario(
+    Effect.gen(function* () {
+      const plane = fakePlane({ me: me(active), payoutSettings: () => ({ status: 200, body: payoutSettings() }) })
+
+      yield* run(plane, (session) =>
+        Effect.gen(function* () {
+          yield* session.load
+          yield* startLink(session)
+
+          assert.deepEqual(
+            yield* current(session),
+            idle(View.PayoutSettings({
+              business: active,
+              settings: payoutSettings(),
+              banks,
+              origin: SettingsOrigin.NewLink({ overview: noLinks }),
+            })),
+          )
+
+          // Later.
+          yield* session.back
+
+          assert.deepEqual(yield* current(session), idle(View.CreatingLink({ business: active, overview: noLinks })))
+
+          yield* session.back
+          yield* current(session)
+          yield* session.startPaymentLink
+
+          assert.deepEqual(yield* current(session), idle(View.CreatingLink({ business: active, overview: noLinks })))
+        }),
+      )
+
+      assert.equal(plane.calls.filter(({ path }) => path === "/payouts/settings").length, 1)
+      assert.equal(plane.calls.some(({ method }) => method === "PUT"), false)
+    }),
+  ),
+)
+
+void test(
+  "saving the payout account the first link asks for goes on to the link form",
+  scenario(
+    Effect.gen(function* () {
+      const plane = fakePlane({ me: me(active), payoutSettings: () => ({ status: 200, body: payoutSettings() }) })
+
+      const state = yield* run(plane, (session) =>
+        Effect.gen(function* () {
+          yield* session.load
+          yield* startLink(session)
+          yield* session.savePayoutSettings({ mode: "manual", bank: 1, accountNumber: "0123456789" })
+
+          return yield* current(session)
+        }),
+      )
+
+      assert.deepEqual(state, idle(View.CreatingLink({ business: active, overview: noLinks })))
+      assert.deepEqual(plane.calls.find(({ method }) => method === "PUT")?.body, {
+        mode: "manual",
+        destination: { bank_code: "058", account_number: "0123456789" },
+      })
+    }),
+  ),
+)
+
+void test(
+  "the payout check never stands in a link's way: a refusal or failure opens the link form, and isn't asked again",
+  scenario(
+    Effect.gen(function* () {
+      for (const reply of [failure(409, "payouts_unavailable"), failure(500, "internal_error")]) {
+        const plane = fakePlane({ me: me(active), payoutSettings: () => reply })
+
+        yield* run(plane, (session) =>
+          Effect.gen(function* () {
+            yield* session.load
+            yield* startLink(session)
+
+            assert.deepEqual(yield* current(session), idle(View.CreatingLink({ business: active, overview: noLinks })))
+
+            yield* session.back
+            yield* current(session)
+            yield* session.startPaymentLink
+
+            assert.deepEqual(yield* current(session), idle(View.CreatingLink({ business: active, overview: noLinks })))
+          }),
+        )
+
+        assert.equal(plane.calls.filter(({ path }) => path === "/payouts/settings").length, 1)
+      }
     }),
   ),
 )

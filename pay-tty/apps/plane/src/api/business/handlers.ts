@@ -2,7 +2,7 @@ import { Business } from "@pay-tty/core/business";
 import { Effect } from "effect";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
-import { BadGateway, Conflict, InvalidRequestError, ServiceUnavailable } from "../errors.ts";
+import { accountNotOpened, BadGateway, Conflict, InvalidRequestError, ServiceUnavailable } from "../errors.ts";
 import { CurrentBusiness } from "../middleware/business.ts";
 import { CurrentPrincipal } from "../principal.ts";
 import { api } from "../api.ts";
@@ -19,11 +19,6 @@ const accountConflict = new Conflict({
 const accountRejected = new Conflict({
   message: "The ledger refused the account for this business.",
   error: { code: "ledger_rejected" },
-});
-
-const accountNotOpened = new Conflict({
-  message: "Open the business's account first.",
-  error: { code: "account_not_opened" },
 });
 
 const ledgerBadResponse = new BadGateway({
@@ -124,7 +119,8 @@ export const BusinessLive = HttpApiBuilder.group(
             currency,
             scale,
             available: String(balance.available),
-            pending: String(balance.pending),
+            incoming: String(balance.incoming),
+            held: String(balance.held),
           });
         }))
       .handle("getStatement", ({ query }) =>

@@ -1,14 +1,20 @@
 import assert from "node:assert/strict"
-import { test } from "node:test"
+import { after, test } from "node:test"
 
 import { NodeHttpServer } from "@effect/platform-node"
 import { Business } from "@pay-tty/core/business"
-import { Database, layer as DatabaseLayer } from "@pay-tty/core/database"
-import { Catalog, Currency, Ledger, LedgerPostings, PayableAccounts } from "@pay-tty/core/ledger"
+import { Database } from "@pay-tty/core/database"
+import { Catalog, Currency, Ledger, LedgerPostings, PayableAccounts, RelayNudge } from "@pay-tty/core/ledger"
 import { Payments } from "@pay-tty/core/payments"
+import { Payouts } from "@pay-tty/core/payouts"
+import { PayoutProvider } from "@pay-tty/core/payouts/provider"
+import { PayoutDispatcher } from "@pay-tty/core/payouts/dispatcher"
 import { Principal } from "@pay-tty/core/principal"
 import { Testing } from "@pay-tty/core/testing"
-import { Clock, DateTime, Effect, Encoding, Layer, Schema, type Scope } from "effect"
+import { ScriptedProvider } from "@pay-tty/core/testing/provider"
+import { Testing as Databases } from "@pay-tty/database/testing"
+import { sql } from "drizzle-orm"
+import { Clock, DateTime, Duration, Effect, Encoding, Layer, Schema, type Scope } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import { decodeJwt, type JWTHeaderParameters, type JWTPayload, SignJWT } from "jose"
 import { ulid } from "ulid"
@@ -19,6 +25,7 @@ import { MeResponse } from "../src/api/me/routes.ts"
 import { CustomerChoosesPricing, FixedPricing, PaymentLink, PaymentLinkList } from "../src/api/payment_links/routes.ts"
 import { PaymentDetail, PaymentPage, RefusedEvent, SettledEvent } from "../src/api/payments/routes.ts"
 import { PaymentStats } from "../src/api/payment-stats.ts"
+import { BankList, ConfirmedPayout, CreatedPayout, Destination, Payout, PayoutPage, PayoutSettings } from "../src/api/payouts/routes.ts"
 import { PayableLink, Payment as PayPayment } from "../src/api/pay/routes.ts"
 import { SessionResponse } from "../src/api/session/routes.ts"
 import { ApiLive } from "../src/api/server.ts"
@@ -26,20 +33,28 @@ import { AuthenticationLive } from "../src/api/middleware/authentication.ts"
 import { UnknownErrorResponse } from "../src/api/middleware/defect.ts"
 import { Relay } from "../src/relay/relay.ts"
 import { Token } from "../src/token/token.ts"
+import { PayoutWebhook } from "../src/api/webhooks/payouts.ts"
+import { schema } from "./setup.ts"
 import { created as accountCreated, current, failing, fakeLedger, invalid, keys, posting, previous, secret, statementOf, type FakeLedger, type Payload, type Reply, type StatementRead } from "./support.ts"
 
+const db = await Databases.withDatabase(schema)
+
+const database = db.layer
+
+// Every pool on it is built and closed within a test.
+after(() => db.drop())
 
 // The core services over the test database, for preparing businesses and
 // reading back what plane stored.
 const domain = Layer.mergeAll(Principal.layer, Business.layer).pipe(
   Layer.provideMerge(Catalog.layer),
-  Layer.provideMerge(DatabaseLayer),
+  Layer.provideMerge(database),
 )
 
 interface ServerOptions {
   readonly ledger?: FakeLedger
-  // A stand-in for the business service, to inject local failures.
-  readonly businesses?: Business.Interface
+  // A stand-in for the business service, made from the server's own, to inject local failures.
+  readonly businesses?: (real: Business.Interface) => Business.Interface
   // A stand-in catalog for creating businesses.
   readonly catalog?: Catalog.Interface
 }
@@ -51,33 +66,43 @@ const server = (options: ServerOptions = {}) =>
   Effect.acquireRelease(
     Effect.sync(() => {
       const ledger = options.ledger ?? fakeLedger()
+      const standIn = options.businesses
+      // Takes every send and never reports, so a payout stays sent until a test's callback settles it.
+      const provider = ScriptedProvider.scripted()
 
       return {
         ledger,
+        provider,
         app: HttpRouter.toWebHandler(
-          Layer.mergeAll(ApiLive, UnknownErrorResponse).pipe(
-            Layer.provideMerge(Relay.layer),
-            Layer.provideMerge(
-              Layer.mergeAll(
-                AuthenticationLive,
-                Layer.mergeAll(PayableAccounts.layer, LedgerPostings.layer).pipe(Layer.provide(ledger.layer)),
-              ),
+        Layer.mergeAll(ApiLive, PayoutWebhook.layer, UnknownErrorResponse).pipe(
+          Layer.provideMerge(Relay.layer),
+          Layer.provideMerge(
+            Layer.mergeAll(
+              AuthenticationLive,
+              Layer.mergeAll(PayableAccounts.layer, LedgerPostings.layer).pipe(Layer.provide(ledger.layer)),
+              PayoutDispatcher.layer,
             ),
-            Layer.provideMerge(Token.layerFrom(keys)),
-            Layer.provideMerge(
-              Layer.mergeAll(
-                Principal.layer,
-                options.businesses === undefined ? Business.layer : Layer.succeed(Business.Service, options.businesses),
-                Payments.layer,
-              ),
-            ),
-            Layer.provideMerge(
-              options.catalog === undefined ? Catalog.layer : Layer.succeed(Catalog.Service, options.catalog),
-            ),
-            Layer.provideMerge(DatabaseLayer),
-            Layer.provideMerge(NodeHttpServer.layerHttpServices),
           ),
-          { disableLogger: true },
+          Layer.provideMerge(Token.layerFrom(keys)),
+          Layer.provideMerge(provider.layer),
+          Layer.provideMerge(
+            Layer.mergeAll(
+              Principal.layer,
+              standIn === undefined
+                ? Business.layer
+                : Layer.effect(Business.Service)(Effect.map(Business.Service, standIn)).pipe(Layer.provide(Business.layer)),
+              Payments.layer,
+              Payouts.layer,
+            ),
+          ),
+          Layer.provideMerge(
+            options.catalog === undefined ? Catalog.layer : Layer.succeed(Catalog.Service, options.catalog),
+          ),
+          Layer.provideMerge(RelayNudge.layer),
+          Layer.provideMerge(database),
+          Layer.provideMerge(NodeHttpServer.layerHttpServices),
+        ),
+        { disableLogger: true },
         ),
       }
     }),
@@ -245,7 +270,7 @@ void test("serves health without a token", () =>
     }),
   ))
 
-void test("publishes exactly /health, /session, /me, /business, /business/account, /business/balance, /business/statement, /payment_links, /payments, and the /pay routes", () =>
+void test("publishes exactly /health, /session, /me, /business, /business/account, /business/balance, /business/statement, /payment_links, /payments, /payouts, and the /pay routes", () =>
   run(
     Effect.gen(function* () {
       const plane = yield* server()
@@ -290,6 +315,11 @@ void test("publishes exactly /health, /session, /me, /business, /business/accoun
         "/payment_links",
         "/payments",
         "/payments/{payment_id}",
+        "/payouts",
+        "/payouts/banks",
+        "/payouts/settings",
+        "/payouts/{payout_id}",
+        "/payouts/{payout_id}/confirm",
         "/session",
       ])
       assert.deepEqual(Object.keys(paths["/me"] ?? {}), ["get"])
@@ -879,12 +909,11 @@ void test("an account recorded before an interruption is activated without askin
 void test("an account created before a local failure is recorded on retry", () =>
   run(
     Effect.gen(function* () {
-      const businesses = yield* Business.Service
       // One ledger across both servers: its account outlives the rollback.
       const ledger = fakeLedger()
 
       // Fails after the account is recorded, inside the same transaction.
-      const lost = Business.Service.of({ ...businesses, activate: () => Effect.die(new Error("connection lost")) })
+      const lost = (real: Business.Interface) => Business.Service.of({ ...real, activate: () => Effect.die(new Error("connection lost")) })
 
       const failing = yield* server({ ledger, businesses: lost })
       const { sub, authorization } = yield* withBusiness(failing)
@@ -915,9 +944,8 @@ void test("an account created before a local failure is recorded on retry", () =
 void test("a moved country default applies to new businesses, not to an existing one or its retry", () =>
   run(
     Effect.gen(function* () {
-      const businesses = yield* Business.Service
       const ledger = fakeLedger()
-      const lost = Business.Service.of({ ...businesses, activate: () => Effect.die(new Error("connection lost")) })
+      const lost = (real: Business.Interface) => Business.Service.of({ ...real, activate: () => Effect.die(new Error("connection lost")) })
 
       // The ledger opens the account, then the local transaction fails.
       const failing = yield* server({ ledger, businesses: lost })
@@ -1834,6 +1862,7 @@ void test("the relay posts a succeeded payment to the ledger, and the merchant s
         ledger: "ngn_ng",
         kind: "payment",
         description: `Payment received via ${title}`,
+        pending: false,
         lines: [{
           debit_account_ref: "acct_test_cash",
           credit_account_ref: account,
@@ -2131,7 +2160,8 @@ void test("GET /business/balance reads the caller's account from the ledger, and
         currency: "NGN",
         scale: 2,
         available: "0",
-        pending: "0",
+        incoming: "0",
+        held: "0",
       }))
       assert.deepEqual(plane.ledger.reads, [account])
 
@@ -2143,7 +2173,8 @@ void test("GET /business/balance reads the caller's account from the ledger, and
       const after = yield* balanceOf(plane, authorization)
 
       assert.equal(after.available, "250000")
-      assert.equal(after.pending, "0")
+      assert.equal(after.incoming, "0")
+      assert.equal(after.held, "0")
     }),
   ))
 
@@ -2468,5 +2499,575 @@ void test("GET /business/statement reads only the caller's account, whatever the
       yield* readStatement(plane, theirs.authorization)
 
       assert.deepEqual(plane.ledger.statements.map(({ accountRef }) => accountRef), [ourAccount, ourAccount, theirAccount])
+    }),
+  ))
+
+const gtbank = { bank_code: "058", account_number: "0123456789" }
+
+// As plane returns it: the holder is the business.
+const toGtbank = new Destination({ ...gtbank, bank_name: "GTBank", account_name: "Acme Ltd" })
+
+const getPayoutSettings = (server: Server, authorization: string | undefined) =>
+  send(server, { method: "GET", path: "/payouts/settings", authorization })
+
+const putPayoutSettings = (server: Server, authorization: string | undefined, body: { readonly [key: string]: Body }) =>
+  send(server, { method: "PUT", path: "/payouts/settings", authorization, body })
+
+// A settings change that succeeded, decoded strictly.
+const savedSettings = Effect.fnUntraced(function* (
+  server: Server,
+  authorization: string,
+  body: { readonly [key: string]: Body },
+) {
+  const { status, json } = yield* putPayoutSettings(server, authorization, body)
+
+  assert.equal(status, 200)
+
+  return yield* Schema.decodeUnknownEffect(PayoutSettings)(json, strict)
+})
+
+const createPayout = (server: Server, authorization: string | undefined, amount: Body) =>
+  send(server, { method: "POST", path: "/payouts", authorization, body: { amount } })
+
+const confirmPayout = (server: Server, authorization: string | undefined, id: string) =>
+  send(server, { method: "POST", path: `/payouts/${id}/confirm`, authorization })
+
+
+// A create that succeeded, decoded strictly.
+const createdPayout = Effect.fnUntraced(function* (server: Server, authorization: string, amount: Body) {
+  const { status, json } = yield* createPayout(server, authorization, amount)
+
+  assert.equal(status, 201)
+
+  return yield* Schema.decodeUnknownEffect(CreatedPayout)(json, strict)
+})
+
+// Created, then confirmed, as the TUI does: the confirm's answer.
+const requestPayout = Effect.fnUntraced(function* (server: Server, authorization: string, amount: Body) {
+  const { id } = yield* createdPayout(server, authorization, amount)
+
+  return yield* confirmPayout(server, authorization, id)
+})
+
+const getPayout = (server: Server, authorization: string | undefined, id: string) =>
+  send(server, { method: "GET", path: `/payouts/${id}`, authorization })
+
+const payoutOf = Effect.fnUntraced(function* (server: Server, authorization: string, id: string) {
+  const { status, json } = yield* getPayout(server, authorization, id)
+
+  assert.equal(status, 200)
+
+  return yield* Schema.decodeUnknownEffect(Payout)(json, strict)
+})
+
+// The relay and the provider work in the background; this waits for the
+// payout to move past the statuses given.
+const payoutPast = Effect.fnUntraced(function* (
+  server: Server,
+  authorization: string,
+  id: string,
+  statuses: ReadonlyArray<string> = ["requested"],
+) {
+  for (let tries = 0; tries < 250; tries++) {
+    const payout = yield* payoutOf(server, authorization, id)
+
+    if (!statuses.includes(payout.status)) {
+      return payout
+    }
+
+    yield* Effect.sleep("20 millis")
+  }
+
+  return assert.fail(`payout ${id} is still ${statuses.join(" or ")}`)
+})
+
+// Waits for the ledger's answer to the hold.
+const settledPayout = (server: Server, authorization: string, id: string) => payoutPast(server, authorization, id)
+
+// A caller whose account is open, with a destination saved and a settled
+// payment of ₦2,500.00 to pay out.
+const withPayoutAccount = Effect.fnUntraced(function* (server: Server) {
+  const { authorization, token } = yield* linkToPay(server)
+  const { body: payment } = yield* started(server, token)
+
+  yield* simulatePayment(server, token, payment.id, "succeeded")
+  yield* relayed(server, authorization, payment.id)
+  yield* savedSettings(server, authorization, { mode: "manual", destination: gtbank })
+
+  return { authorization }
+})
+
+void test("payout settings start manual with no destination once the account opens, and only automatic needs one", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+
+      assert.deepEqual(yield* getPayoutSettings(plane, undefined), { status: 401, json: unauthorized })
+
+      const { authorization: created } = yield* withBusiness(plane)
+
+      assert.equal(yield* errorCode(yield* getPayoutSettings(plane, created)), "409 account_not_opened")
+      assert.equal(
+        yield* errorCode(yield* putPayoutSettings(plane, created, { mode: "manual", destination: gtbank })),
+        "409 account_not_opened",
+      )
+
+      const { authorization } = yield* withActiveBusiness(plane)
+      const { status, json } = yield* getPayoutSettings(plane, authorization)
+      const fresh = yield* Schema.decodeUnknownEffect(PayoutSettings)(json, strict)
+
+      assert.equal(status, 200)
+      assert.deepEqual(
+        [fresh.ledger, fresh.currency, fresh.scale, fresh.mode, fresh.destination],
+        ["ngn_ng", "NGN", 2, "manual", null],
+      )
+      assert.equal(fresh.updated_at, null)
+      assert.equal(fresh.minimum, "10000")
+
+      const banks = yield* send(plane, { method: "GET", path: "/payouts/banks", authorization })
+      const listed = yield* Schema.decodeUnknownEffect(BankList)(banks.json, strict)
+
+      assert.equal(banks.status, 200)
+      assert.ok(listed.banks.some((bank) => bank.code === "058" && bank.name === "GTBank"))
+
+      const invalid: ReadonlyArray<readonly [string, { readonly [key: string]: Body }, ReadonlyArray<string>]> = [
+        ["automatic without a destination", { mode: "automatic", destination: null }, ["body:destination"]],
+        ["manual without a destination", { mode: "manual", destination: null }, ["body:destination"]],
+        ["an unlisted bank", { mode: "manual", destination: { ...gtbank, bank_code: "999" } }, ["body:destination.bank_code"]],
+        ["a short account number", { mode: "manual", destination: { ...gtbank, account_number: "12345" } }, ["body:destination.account_number"]],
+        ["an unknown mode", { mode: "weekly", destination: gtbank }, ["body:mode"]],
+      ]
+
+      for (const [reason, body, fields] of invalid) {
+        assert.deepEqual(yield* validation(yield* putPayoutSettings(plane, authorization, body)), fields, reason)
+      }
+
+      const saved = yield* savedSettings(plane, authorization, {
+        mode: "automatic",
+        // A name sent anyway is not the caller's to set.
+        destination: { ...gtbank, account_name: "Someone Else" },
+      })
+
+      assert.equal(saved.mode, "automatic")
+      assert.deepEqual(saved.destination, toGtbank)
+
+      // A later save replaces it; there is no clearing it.
+      const changed = yield* savedSettings(plane, authorization, { mode: "manual", destination: gtbank })
+
+      assert.deepEqual([changed.mode, changed.destination], ["manual", toGtbank])
+    }),
+  ))
+
+void test("a created payout moves nothing until confirmed; confirmed, it is held once the ledger records it, then sent", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { authorization } = yield* withPayoutAccount(plane)
+      const account = yield* accountRefOf(plane, authorization)
+
+      const draft = yield* createdPayout(plane, authorization, 100_000)
+
+      assert.deepEqual(
+        [draft.status, draft.amount, draft.trigger, draft.journal_ref, draft.completed_at],
+        ["created", "100000", "manual", null, null],
+      )
+      assert.deepEqual(draft.destination, toGtbank)
+      assert.equal(plane.ledger.entries.filter((entry) => entry.payload.kind === "payout").length, 0)
+      assert.equal((yield* balanceOf(plane, authorization)).held, "0")
+
+      const { status, json } = yield* confirmPayout(plane, authorization, draft.id)
+      const accepted = yield* Schema.decodeUnknownEffect(ConfirmedPayout)(json, strict)
+
+      assert.equal(status, 202)
+      assert.equal(accepted.id, draft.id)
+      assert.deepEqual(
+        [accepted.status, accepted.amount, accepted.trigger, accepted.reason, accepted.journal_ref],
+        ["requested", "100000", "manual", null, null],
+      )
+      assert.deepEqual(accepted.destination, toGtbank)
+
+      // The pass that records the hold sends it.
+      const sent = yield* payoutPast(plane, authorization, accepted.id, ["requested", "held"])
+      const hold = plane.ledger.entries.find((entry) => entry.payload.kind === "payout")
+
+      assert.equal(sent.status, "sent")
+      assert.ok(sent.journal_ref !== null)
+      assert.ok(sent.sent_at !== null)
+      assert.equal(sent.completed_at, null)
+      assert.deepEqual(hold?.payload, {
+        ledger: "ngn_ng",
+        kind: "payout",
+        description: "Payout to GTBank ••••6789",
+        pending: true,
+        lines: [{ debit_account_ref: account, credit_account_ref: "acct_test_payouts_clearing", amount: 100_000, purpose: "payout" }],
+      })
+
+      // The hold is out of available, shown apart, and off the statement.
+      const balance = yield* balanceOf(plane, authorization)
+
+      assert.deepEqual([balance.available, balance.incoming, balance.held], ["150000", "0", "100000"])
+      assert.ok((yield* readStatement(plane, authorization)).movements.every((movement) => movement.direction === "credit"))
+
+      // Confirming again is the payout as it now stands, with no second hold.
+      const again = yield* confirmPayout(plane, authorization, draft.id)
+
+      assert.equal(again.status, 200)
+      assert.equal((yield* Schema.decodeUnknownEffect(Payout)(again.json, strict)).status, "sent")
+      assert.equal(plane.ledger.entries.filter((entry) => entry.payload.kind === "payout").length, 1)
+
+      // Sent but unreported: nothing is captured or voided.
+      assert.deepEqual(plane.ledger.resolutions, [])
+    }),
+  ))
+
+void test("a hold the ledger refuses for insufficient funds is a rejected payout carrying the reason", () =>
+  run(
+    Effect.gen(function* () {
+      const accepting = posting()
+
+      const plane = yield* server({
+        ledger: fakeLedger(undefined, (entry) =>
+          entry.payload.kind === "payout" ? failing(409, "insufficient_funds") : accepting(entry)),
+      })
+
+      const { authorization } = yield* withPayoutAccount(plane)
+
+      const { json } = yield* requestPayout(plane, authorization, 9_000_000)
+      const accepted = yield* Schema.decodeUnknownEffect(ConfirmedPayout)(json, strict)
+      const rejected = yield* settledPayout(plane, authorization, accepted.id)
+
+      assert.deepEqual([rejected.status, rejected.reason, rejected.journal_ref], ["rejected", "insufficient_funds", null])
+      assert.ok(rejected.completed_at !== null)
+
+      // Refused is final: confirming again doesn't ask the ledger twice.
+      const again = yield* confirmPayout(plane, authorization, accepted.id)
+
+      assert.equal(again.status, 200)
+      assert.equal((yield* Schema.decodeUnknownEffect(Payout)(again.json, strict)).status, "rejected")
+    }),
+  ))
+
+void test("POST /payouts refuses automatic mode, no payout account and a bad amount", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+
+      assert.deepEqual(yield* createPayout(plane, undefined, 10_000), { status: 401, json: unauthorized })
+
+      const { authorization: created } = yield* withBusiness(plane)
+
+      assert.equal(yield* errorCode(yield* createPayout(plane, created, 10_000)), "409 account_not_opened")
+
+      const { authorization } = yield* withActiveBusiness(plane)
+
+      assert.equal(yield* errorCode(yield* createPayout(plane, authorization, 10_000)), "409 no_payout_account")
+
+      yield* savedSettings(plane, authorization, { mode: "automatic", destination: gtbank })
+
+      assert.equal(yield* errorCode(yield* createPayout(plane, authorization, 10_000)), "409 payouts_automatic")
+
+      yield* savedSettings(plane, authorization, { mode: "manual", destination: gtbank })
+
+      assert.deepEqual(yield* validation(yield* createPayout(plane, authorization, 9_999)), ["body:amount"])
+      assert.deepEqual(yield* validation(yield* createPayout(plane, authorization, "10000")), ["body:amount"])
+
+      // Switched to automatic after it was created: it is cancelled.
+      const draft = yield* createdPayout(plane, authorization, 10_000)
+
+      yield* savedSettings(plane, authorization, { mode: "automatic", destination: gtbank })
+
+      assert.equal(yield* errorCode(yield* confirmPayout(plane, authorization, draft.id)), "409 payouts_automatic")
+      assert.equal((yield* payoutOf(plane, authorization, draft.id)).status, "cancelled")
+      assert.equal(yield* errorCode(yield* confirmPayout(plane, authorization, draft.id)), "409 payout_cancelled")
+    }),
+  ))
+
+void test("an expired payout can't be confirmed, and another business's can't be touched", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { authorization } = yield* withPayoutAccount(plane)
+      const theirs = yield* withActiveBusiness(plane)
+
+      const draft = yield* createdPayout(plane, authorization, 10_000)
+
+      assert.equal(yield* errorCode(yield* confirmPayout(plane, theirs.authorization, draft.id)), "404 not_found")
+      assert.equal(yield* errorCode(yield* confirmPayout(plane, authorization, "pout_missing")), "404 not_found")
+
+      const stale = yield* createdPayout(plane, authorization, 10_000)
+
+      yield* Testing.createdAgo(stale.id, Duration.seconds(100))
+
+      assert.equal(yield* errorCode(yield* confirmPayout(plane, authorization, stale.id)), "409 payout_expired")
+      assert.equal((yield* payoutOf(plane, authorization, stale.id)).status, "expired")
+      assert.equal(yield* errorCode(yield* confirmPayout(plane, authorization, stale.id)), "409 payout_expired")
+      assert.equal(plane.ledger.entries.filter((entry) => entry.payload.kind === "payout").length, 0)
+    }),
+  ))
+
+void test("concurrent creates stop at five open payouts waiting to be confirmed", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { authorization } = yield* withPayoutAccount(plane)
+
+      const answers = yield* Effect.all(
+        Array.from({ length: 7 }, () => createPayout(plane, authorization, 10_000)),
+        { concurrency: "unbounded" },
+      )
+
+      assert.deepEqual(answers.map(({ status }) => status).sort((a, b) => a - b), [201, 201, 201, 201, 201, 409, 409])
+
+      const refused = answers.find(({ status }) => status === 409)
+
+      assert.equal(refused === undefined ? undefined : yield* errorCode(refused), "409 payout_drafts_full")
+    }),
+  ))
+
+void test("several payouts are in flight at once, each holding its own money", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { authorization } = yield* withPayoutAccount(plane)
+
+      const first = yield* createdPayout(plane, authorization, 100_000)
+      const second = yield* createdPayout(plane, authorization, 50_000)
+
+      assert.equal((yield* confirmPayout(plane, authorization, first.id)).status, 202)
+      assert.equal((yield* confirmPayout(plane, authorization, second.id)).status, 202)
+
+      for (const { id } of [first, second]) {
+        assert.equal((yield* payoutPast(plane, authorization, id, ["requested", "held"])).status, "sent")
+      }
+
+      const balance = yield* balanceOf(plane, authorization)
+
+      assert.deepEqual([balance.available, balance.held], ["100000", "150000"])
+    }),
+  ))
+
+void test("GET /payouts lists the caller's payouts newest first, and GET /payouts/{id} reads only its own", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server({
+        ledger: fakeLedger(undefined, (entry) =>
+          entry.payload.kind === "payout" ? failing(409, "insufficient_funds") : posting()(entry)),
+      })
+
+      const ours = yield* withPayoutAccount(plane)
+      const theirs = yield* withActiveBusiness(plane)
+      const ids: Array<string> = []
+
+      for (const amount of [10_000, 20_000]) {
+        const { json } = yield* requestPayout(plane, ours.authorization, amount)
+        const accepted = yield* Schema.decodeUnknownEffect(ConfirmedPayout)(json, strict)
+
+        yield* settledPayout(plane, ours.authorization, accepted.id)
+        ids.push(accepted.id)
+      }
+
+      const listed = yield* send(plane, { method: "GET", path: "/payouts", authorization: ours.authorization })
+      const page = yield* Schema.decodeUnknownEffect(PayoutPage)(listed.json, strict)
+
+      assert.equal(listed.status, 200)
+      assert.deepEqual(page.payouts.map((payout) => payout.id), [...ids].reverse())
+      assert.equal(page.next, null)
+
+      const empty = yield* send(plane, { method: "GET", path: "/payouts", authorization: theirs.authorization })
+
+      assert.deepEqual((yield* Schema.decodeUnknownEffect(PayoutPage)(empty.json, strict)).payouts, [])
+      assert.equal(yield* errorCode(yield* getPayout(plane, theirs.authorization, ids[0] ?? "")), "404 not_found")
+      assert.deepEqual(
+        yield* validation(yield* send(plane, { method: "GET", path: "/payouts?before=forged", authorization: ours.authorization })),
+        ["query:before"],
+      )
+    }),
+  ))
+
+// The relay resolves a hold once its payout settles; this waits for that.
+// Other tests' payouts may be resolved by this server too, so only the hold's count.
+const resolutionsOf = Effect.fnUntraced(function* (server: Server, journalRef: string | null) {
+  for (let tries = 0; tries < 250; tries++) {
+    const resolutions = server.ledger.resolutions.filter((resolution) => resolution.journalRef === journalRef)
+
+    if (resolutions.length > 0) {
+      return resolutions
+    }
+
+    yield* Effect.sleep("20 millis")
+  }
+
+  return assert.fail(`hold ${journalRef} was never resolved`)
+})
+
+const Reported = Schema.fromJsonString(PayoutProvider.Reported)
+
+// A callback as the server's scripted provider reads it.
+const callbackBody = ({ payoutId, outcome, providerRef }: { readonly payoutId: string; readonly outcome: Payouts.Outcome; readonly providerRef: string }) =>
+  Schema.encodeEffect(Reported)(new PayoutProvider.Reported({ payoutId: Payouts.ID.make(payoutId), outcome, providerRef: PayoutProvider.ProviderRef.make(providerRef) })).pipe(Effect.orDie)
+
+const callback = Effect.fnUntraced(function* (server: Server, body: string) {
+  const response = yield* Effect.promise(() =>
+    server.app.handler(new Request(new URL(PayoutWebhook.path, "http://plane.test"), { method: "POST", body })),
+  )
+
+  return response.status
+})
+
+void test("a manual payout is sent, paid when the provider's callback reports it, and its capture takes the money out of the balance", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { authorization } = yield* withPayoutAccount(plane)
+
+      const { json } = yield* requestPayout(plane, authorization, 100_000)
+      const accepted = yield* Schema.decodeUnknownEffect(ConfirmedPayout)(json, strict)
+
+      yield* payoutPast(plane, authorization, accepted.id, ["requested", "held"])
+      assert.equal(yield* callback(plane, yield* callbackBody({ payoutId: accepted.id, outcome: "paid", providerRef: ScriptedProvider.refOf(accepted.id) })), 204)
+
+      const paid = yield* payoutOf(plane, authorization, accepted.id)
+
+      assert.equal(paid.status, "paid")
+      assert.deepEqual([paid.reason, paid.journal_ref !== null], [null, true])
+      assert.ok(paid.sent_at !== null && paid.completed_at !== null)
+      assert.ok(paid.sent_at <= paid.completed_at)
+
+      // The report nudges the relay, which captures the hold under its posting's key.
+      const resolutions = yield* resolutionsOf(plane, paid.journal_ref)
+
+      assert.deepEqual(resolutions.map(({ key, payload }) => [key.endsWith(":capture"), payload]), [
+        [true, { ledger: "ngn_ng", action: "capture" }],
+      ])
+
+      const balance = yield* balanceOf(plane, authorization)
+
+      assert.deepEqual([balance.available, balance.held], ["150000", "0"])
+
+      const listed = yield* send(plane, { method: "GET", path: "/payouts", authorization })
+      const page = yield* Schema.decodeUnknownEffect(PayoutPage)(listed.json, strict)
+
+      assert.deepEqual(page.payouts.map((payout) => [payout.id, payout.status]), [[accepted.id, "paid"]])
+
+    }),
+  ))
+
+void test("the provider's callback settles a sent payout once, and a repeat, or one for an unknown payout, is acknowledged and changes nothing", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { authorization } = yield* withPayoutAccount(plane)
+
+      const { json } = yield* requestPayout(plane, authorization, 100_000)
+      const accepted = yield* Schema.decodeUnknownEffect(ConfirmedPayout)(json, strict)
+      const sent = yield* payoutPast(plane, authorization, accepted.id, ["requested", "held"])
+
+      assert.equal(sent.status, "sent")
+
+      const paid = yield* callbackBody({ payoutId: accepted.id, outcome: "paid", providerRef: ScriptedProvider.refOf(accepted.id) })
+
+      assert.equal(yield* callback(plane, paid), 204)
+      assert.equal(yield* callback(plane, paid), 204)
+      assert.equal(yield* callback(plane, yield* callbackBody({ payoutId: accepted.id, outcome: "failed", providerRef: ScriptedProvider.refOf(accepted.id) })), 204)
+      assert.equal(yield* callback(plane, yield* callbackBody({ payoutId: `pout_${ulid()}`, outcome: "paid", providerRef: "spo_x" })), 204)
+
+      const settled = yield* payoutOf(plane, authorization, accepted.id)
+
+      assert.equal(settled.status, "paid")
+
+      // One capture, however many callbacks.
+      yield* resolutionsOf(plane, settled.journal_ref)
+      yield* Effect.sleep("100 millis")
+
+      assert.deepEqual(
+        (yield* resolutionsOf(plane, settled.journal_ref)).map(({ payload }) => payload.action),
+        ["capture"],
+      )
+    }),
+  ))
+
+// The send stores the provider's ref just after the payout reads as sent; this waits for it.
+const refStored = Effect.fnUntraced(function* (id: string) {
+  const database = yield* Database
+
+  for (let tries = 0; tries < 250; tries++) {
+    const result = yield* database.use((db) => db.execute<{ provider_ref: string | null }>(sql`select provider_ref from payouts where id = ${id}`))
+
+    if (result.rows[0]?.provider_ref != null) {
+      return
+    }
+
+    yield* Effect.sleep("20 millis")
+  }
+
+  return assert.fail(`payout ${id} never stored its provider ref`)
+})
+
+void test("a callback under another ref than the one the send stored is acknowledged, and leaves the payout to a person with its hold kept", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { authorization } = yield* withPayoutAccount(plane)
+
+      const { json } = yield* requestPayout(plane, authorization, 100_000)
+      const accepted = yield* Schema.decodeUnknownEffect(ConfirmedPayout)(json, strict)
+
+      yield* payoutPast(plane, authorization, accepted.id, ["requested", "held"])
+      yield* refStored(accepted.id)
+
+      assert.equal(yield* callback(plane, yield* callbackBody({ payoutId: accepted.id, outcome: "paid", providerRef: "spo_other" })), 204)
+
+      const flagged = yield* payoutOf(plane, authorization, accepted.id)
+
+      assert.deepEqual([flagged.status, flagged.completed_at], ["attention", null])
+      assert.deepEqual(plane.ledger.resolutions.filter(({ journalRef }) => journalRef === flagged.journal_ref), [])
+    }),
+  ))
+
+void test("a callback the provider's adapter refuses as unsigned is 401, one it can't read is 400, and neither changes anything", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { authorization } = yield* withPayoutAccount(plane)
+
+      const { json } = yield* requestPayout(plane, authorization, 100_000)
+      const accepted = yield* Schema.decodeUnknownEffect(ConfirmedPayout)(json, strict)
+
+      yield* payoutPast(plane, authorization, accepted.id, ["requested", "held"])
+
+      const paid = yield* callbackBody({ payoutId: accepted.id, outcome: "paid", providerRef: ScriptedProvider.refOf(accepted.id) })
+
+      assert.equal(yield* callback(plane, "not a callback"), 400)
+
+      plane.provider.script.signed = false
+      assert.equal(yield* callback(plane, paid), 401)
+      assert.equal((yield* payoutOf(plane, authorization, accepted.id)).status, "sent")
+    }),
+  ))
+
+void test("a payout the provider's callback fails is failed, and its void returns the money to the balance", () =>
+  run(
+    Effect.gen(function* () {
+      const plane = yield* server()
+      const { authorization } = yield* withPayoutAccount(plane)
+
+      const { json } = yield* requestPayout(plane, authorization, 100_000)
+      const accepted = yield* Schema.decodeUnknownEffect(ConfirmedPayout)(json, strict)
+
+      yield* payoutPast(plane, authorization, accepted.id, ["requested", "held"])
+      assert.equal(yield* callback(plane, yield* callbackBody({ payoutId: accepted.id, outcome: "failed", providerRef: ScriptedProvider.refOf(accepted.id) })), 204)
+
+      const failed = yield* payoutOf(plane, authorization, accepted.id)
+
+      assert.deepEqual([failed.status, failed.reason], ["failed", null])
+      assert.ok(failed.completed_at !== null)
+
+      const resolutions = yield* resolutionsOf(plane, failed.journal_ref)
+
+      assert.deepEqual(resolutions.map(({ key, payload }) => [key.endsWith(":void"), payload.action]), [[true, "void"]])
+
+      const balance = yield* balanceOf(plane, authorization)
+
+      assert.deepEqual([balance.available, balance.held], ["250000", "0"])
     }),
   ))

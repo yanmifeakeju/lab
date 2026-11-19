@@ -10,6 +10,8 @@ import {
   type PostJournalEntriesBatchRequestJson,
   type PostJournalEntryParams,
   type PostJournalEntryRequestJson,
+  type ResolveJournalEntryParams,
+  type ResolveJournalEntryRequestJson,
 } from "./generated.ts"
 
 export * from "./error.ts"
@@ -94,6 +96,22 @@ export const createClient = (
           PostJournalEntriesBatch404: ({ cause }) => Effect.fail(cause),
           PostJournalEntriesBatch409: ({ cause }) => Effect.fail(cause),
           PostJournalEntriesBatch500: ({ cause }) => Effect.fail(cause),
+        }),
+      ),
+    resolveJournalEntry: <Config extends OperationConfig>(
+      journalRef: string,
+      request: {
+        readonly params: ResolveJournalEntryParams
+        readonly payload: ResolveJournalEntryRequestJson
+        readonly config?: Config
+      },
+    ) =>
+      client.resolveJournalEntry(journalRef, request).pipe(
+        Effect.catchTags({
+          ResolveJournalEntry400: ({ cause }) => Effect.fail(cause),
+          ResolveJournalEntry404: ({ cause }) => Effect.fail(cause),
+          ResolveJournalEntry409: ({ cause }) => Effect.fail(cause),
+          ResolveJournalEntry500: ({ cause }) => Effect.fail(cause),
         }),
       ),
   }

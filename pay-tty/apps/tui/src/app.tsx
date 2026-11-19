@@ -1,5 +1,4 @@
 import type { ScrollBoxRenderable } from "@opentui/core"
-import type { BusinessBalanceEncoded } from "@pay-tty/plane-client"
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { type Accessor, createEffect, createMemo, createSignal, For, type JSX, Match, on, onCleanup, Show, Switch } from "solid-js"
 
@@ -13,6 +12,7 @@ import {
   listRow,
   type Mode,
   narrowRow,
+  oneLine,
   type Overview,
   pricingLines,
   statusLine,
@@ -22,8 +22,27 @@ import {
 } from "./payment-link.ts"
 import { filterLine, filters, type Page, paymentRows, paymentTiming, type State as PaymentState, timelineLines } from "./payments.ts"
 import { formatMoney } from "./money.ts"
-import { Balance, type Business, type Popup, type State, type StatementView, View } from "./session.ts"
+import {
+  amountLine,
+  balanceSummary,
+  destinationLabel,
+  destinationLine,
+  expiryTime,
+  mismatchKey,
+  troubled,
+  detailLines,
+  type Field as PayoutField,
+  type Form as PayoutForm,
+  formOf,
+  type Payout,
+  payoutRows,
+  settingsLine,
+  statusLine as payoutStatusLine,
+} from "./payouts.ts"
+import { Balance, type Business, type Popup, type PayoutsView, SettingsOrigin, type State, type StatementView, View } from "./session.ts"
 import { balanceLine, movementId, type Period, periodLine, periods, type Statement, statementHints, statementRows } from "./statement.ts"
+
+type PayoutSettingsView = Extract<View, { readonly _tag: "PayoutSettings" }>
 
 /** What the screens can ask of the connection; each returns at once. */
 export interface Actions {
@@ -40,6 +59,15 @@ export interface Actions {
   readonly statementPeriod: (period: Period) => void
   readonly statementPage: (direction: "next" | "previous") => void
   readonly refreshStatement: () => void
+  readonly managePayouts: () => void
+  readonly refreshPayouts: () => void
+  readonly morePayouts: () => void
+  readonly openPayout: (id: string) => void
+  readonly editPayoutSettings: () => void
+  readonly savePayoutSettings: (form: PayoutForm) => void
+  readonly startPayout: () => void
+  readonly createPayout: (amount: string) => void
+  readonly confirmPayout: () => void
   readonly manageLinks: () => void
   readonly refreshLinks: () => void
   readonly openLink: (id: string) => void
@@ -87,17 +115,6 @@ const CreateBusiness = (props: {
   </box>
 )
 
-// Labels padded to one width and amounts right-aligned in one column.
-const balanceRows = (figures: BusinessBalanceEncoded) => {
-  const amounts = [figures.available, figures.pending].map((minor) =>
-    formatMoney(BigInt(minor), figures.scale, figures.currency))
-
-  const width = Math.max(...amounts.map((amount) => amount.length))
-
-  return ["Available", "Pending"].map((label, index) =>
-    `  ${label.padEnd(14)}${(amounts[index] ?? "").padStart(width)}`)
-}
-
 const ShowBalance = (props: { readonly balance: Balance }) => (
   <Switch>
     <Match when={Balance.$is("Unavailable")(props.balance)}>
@@ -107,7 +124,7 @@ const ShowBalance = (props: { readonly balance: Balance }) => (
       {(loaded) => (
         <box flexDirection="column">
           <text>Balance</text>
-          <For each={balanceRows(loaded().figures)}>{(row) => <text>{row}</text>}</For>
+          <text>{"  " + balanceSummary(loaded().figures)}</text>
         </box>
       )}
     </Match>
@@ -154,6 +171,7 @@ const ShowBusiness = (props: {
           <text fg={props.selected === 0 ? bright : muted}>{props.selected === 0 ? "› " : "  "}{"Payments        p"}</text>
           <text fg={props.selected === 1 ? bright : muted}>{props.selected === 1 ? "› " : "  "}{"Payment links   l"}</text>
           <text fg={props.selected === 2 ? bright : muted}>{props.selected === 2 ? "› " : "  "}{"Statement       s"}</text>
+          <text fg={props.selected === 3 ? bright : muted}>{props.selected === 3 ? "› " : "  "}{"Payouts         o"}</text>
         </box>
       </Match>
     </Switch>
@@ -552,6 +570,189 @@ const StatementScreen = (props: {
   )
 }
 
+const PayoutList = (props: { readonly view: PayoutsView; readonly selected: number; readonly pending: boolean }) => {
+  let rows: ScrollBoxRenderable | undefined
+  const terminal = useTerminalDimensions()
+  const manual = () => props.view.settings.mode === "manual"
+  const formattedRows = createMemo(() => payoutRows(props.view.page.payouts, terminal().width - rowChrome))
+  const selectedId = () => props.view.page.payouts[props.selected]?.id ?? "more"
+
+  useReveal(() => rows, () => "payout-row-" + selectedId(), [
+    selectedId, () => terminal().width, () => terminal().height,
+  ])
+
+  const hints = () => {
+    const narrow = terminal().width < 64
+
+    return manual()
+      ? narrow ? "↑/↓ · Enter · n · c · r · Esc" : "↑/↓ · Enter open · n new · c settings · r refresh · Esc back"
+      : narrow ? "↑/↓ · Enter · c · r · Esc" : "↑/↓ · Enter open · c settings · r refresh · Esc back"
+  }
+
+  return (
+    <box flexDirection="column" flexGrow={1} flexShrink={1}>
+      <text flexShrink={0}>Payouts</text>
+      <text flexShrink={0} fg={props.view.settings.destination === null ? error : muted}>{settingsLine(props.view.settings)}</text>
+      <Show when={props.view.page.payouts.length > 0} fallback={
+        <text flexShrink={0} fg={muted}>{manual() ? "No payouts yet. Press n to request one." : "No payouts yet."}</text>
+      }>
+        <scrollbox ref={(box) => (rows = box)} flexGrow={1} flexShrink={1} scrollY contentOptions={gutter}>
+          <For each={props.view.page.payouts}>{(payout, index) => (
+            <text id={"payout-row-" + payout.id} flexShrink={0}
+              fg={troubled(payout) ? error : index() === props.selected ? bright : muted}>
+              {index() === props.selected ? "› " : "  "}
+              {formattedRows()[index()]}
+            </text>
+          )}</For>
+          <Show when={props.view.page.next !== null}>
+            <text id="payout-row-more" flexShrink={0} fg={props.selected === props.view.page.payouts.length ? bright : muted}>
+              {props.selected === props.view.page.payouts.length ? "› " : "  "}Load more
+            </text>
+          </Show>
+        </scrollbox>
+      </Show>
+      <Show when={mismatchKey(props.view.page.payouts)}>
+        {(key) => <text flexShrink={0} fg={error}>{key()}</text>}
+      </Show>
+      <text flexShrink={0} fg={muted}>{props.pending ? "Loading…" : hints()}</text>
+    </box>
+  )
+}
+
+const payoutFieldId = (field: PayoutField) => `payout-field-${field}`
+
+const PayoutSettingsForm = (props: {
+  readonly view: PayoutSettingsView
+  readonly form: PayoutForm
+  readonly focus: PayoutField
+  readonly active: boolean
+  readonly pending: boolean
+  readonly onChange: (form: PayoutForm) => void
+  readonly onSubmit: () => void
+}) => {
+  let fields: ScrollBoxRenderable | undefined
+
+  const terminal = useTerminalDimensions()
+  const focused = (field: PayoutField) => props.active && props.focus === field
+  const choice = (field: PayoutField, text: string) => (focused(field) ? `‹ ${text} ›` : text)
+  const bank = () => (props.form.bank === null ? undefined : props.view.banks[props.form.bank]?.name) ?? "Choose a bank"
+
+  // Where it was opened from sets its heading and what Esc does.
+  const copy = () =>
+    SettingsOrigin.$match(props.view.origin, {
+      Payouts: () => ({ title: "Payout settings", note: null, escape: "cancel" }),
+      Setup: () => ({ title: "Set up payouts", note: "Add the bank account your payouts go to.", escape: "back" }),
+      NewLink: () => ({
+        title: "Where should we send your money?",
+        note: "Payments wait in your balance until you add one.",
+        escape: "later",
+      }),
+    })
+
+  useReveal(() => fields, () => payoutFieldId(props.focus), [
+    () => props.focus,
+    () => terminal().width,
+    () => terminal().height,
+  ])
+
+  return (
+    <box flexDirection="column" flexGrow={1} flexShrink={1}>
+      <text flexShrink={0}>{copy().title}</text>
+      <Show when={copy().note}>{(note) => <text flexShrink={0} fg={muted}>{note()}</text>}</Show>
+      <scrollbox ref={(box) => (fields = box)} flexGrow={1} flexShrink={1} scrollY contentOptions={gutter}>
+        <box id={payoutFieldId("mode")} flexDirection="column" flexShrink={0}>
+          <text fg={focused("mode") ? bright : muted}>Payouts</text>
+          <text>{choice("mode", props.form.mode === "automatic" ? "Automatic · daily" : "Manual")}</text>
+        </box>
+        <box id={payoutFieldId("bank")} flexDirection="column" flexShrink={0}>
+          <text fg={focused("bank") ? bright : muted}>Bank</text>
+          <text>{choice("bank", bank())}</text>
+        </box>
+        <box id={payoutFieldId("accountNumber")} flexDirection="column" flexShrink={0}>
+          <text fg={focused("accountNumber") ? bright : muted}>Account number</text>
+          <input
+            focused={focused("accountNumber")}
+            value={props.form.accountNumber}
+            maxLength={10}
+            placeholder="0123456789"
+            onInput={(accountNumber) => props.onChange({ ...props.form, accountNumber })}
+            onSubmit={props.onSubmit}
+          />
+        </box>
+        {/* Not a field: the account holder is the business. */}
+        <box flexDirection="column" flexShrink={0}>
+          <text fg={muted}>Account name</text>
+          <text>{oneLine(props.view.business.name)}</text>
+        </box>
+        <text flexShrink={0} fg={muted}>Payouts go to this account in {props.view.settings.currency}.</text>
+      </scrollbox>
+      <text flexShrink={0} fg={muted}>
+        {props.pending
+          ? "Saving…"
+          : terminal().width < 56
+          ? "Tab · ←/→ · Enter · Esc"
+          : `Tab next · ←/→ change · Enter save · Esc ${copy().escape}`}
+      </text>
+    </box>
+  )
+}
+
+const RequestPayoutForm = (props: {
+  readonly view: PayoutsView
+  readonly amount: string
+  readonly active: boolean
+  readonly onInput: (amount: string) => void
+  readonly onSubmit: () => void
+}) => (
+  <box flexDirection="column" flexGrow={1} flexShrink={1}>
+    <text flexShrink={0}>New payout</text>
+    <Show when={props.view.settings.destination}>
+      {(destination) => <text flexShrink={0} fg={muted}>To {destinationLabel(destination())}</text>}
+    </Show>
+    <box flexDirection="column" flexShrink={0}>
+      <text fg={props.active ? bright : muted}>Amount ({props.view.settings.currency})</text>
+      <input
+        focused={props.active}
+        value={props.amount}
+        maxLength={24}
+        placeholder="2500.00"
+        onInput={props.onInput}
+        onSubmit={props.onSubmit}
+      />
+    </box>
+    <text flexShrink={0} fg={muted}>Enter continue · Esc cancel</text>
+  </box>
+)
+
+// The payout as plane created it: its amount and destination are what confirming pays.
+const ConfirmPayout = (props: { readonly payout: Payout; readonly pending: boolean }) => (
+  <box flexDirection="column" flexGrow={1} flexShrink={1}>
+    <text flexShrink={0}>Confirm payout</text>
+    <text flexShrink={0}>Pay out {amountLine(props.payout)}</text>
+    <text flexShrink={0}>{destinationLine(props.payout)}</text>
+    {props.payout.expires_at === null ? null : (
+      <text flexShrink={0} fg={muted}>Confirm by {expiryTime(props.payout.expires_at)}, or it expires.</text>
+    )}
+    <text flexShrink={0} fg={muted}>
+      {props.pending ? "Waiting for plane…" : "[Enter] Confirm · [Esc] Back"}
+    </text>
+  </box>
+)
+
+const PayoutDetail = (props: { readonly payout: Payout; readonly pending: boolean }) => (
+  <box flexDirection="column" flexGrow={1} flexShrink={1}>
+    <text flexShrink={0}>Payout</text>
+    <For each={detailLines(props.payout)}>{(line) => <text flexShrink={0}>{line}</text>}</For>
+    <text flexShrink={0} fg={troubled(props.payout) ? error : bright}>
+      {payoutStatusLine(props.payout)}
+    </text>
+    <text flexShrink={0} fg={muted}>Payout ID: {props.payout.id}</text>
+    <text flexShrink={0} fg={muted}>
+      {props.pending ? "Loading…" : "[r] Refresh · [Esc] Back"}
+    </text>
+  </box>
+)
+
 // What a link's payments came to, between its pricing and how to pay it.
 const LinkStats = (props: { readonly link: Summary }) => (
   <>
@@ -670,6 +871,88 @@ export const App = (props: {
     return View.$is("Statement")(current) ? current : undefined
   }
 
+  const payouts = () => {
+    const current = view()
+
+    return View.$is("Payouts")(current) ? current : undefined
+  }
+
+  const payoutSettings = () => {
+    const current = view()
+
+    return View.$is("PayoutSettings")(current) ? current : undefined
+  }
+
+  const requestingPayout = () => {
+    const current = view()
+
+    return View.$is("RequestingPayout")(current) ? current.list : undefined
+  }
+
+  const confirmingPayout = () => {
+    const current = view()
+
+    return View.$is("ConfirmingPayout")(current) ? current : undefined
+  }
+
+  const payoutDetail = () => {
+    const current = view()
+
+    return View.$is("PayoutDetail")(current) ? current.payout : undefined
+  }
+
+  const payoutScreen = () =>
+    payouts() !== undefined || payoutSettings() !== undefined || requestingPayout() !== undefined ||
+    confirmingPayout() !== undefined || payoutDetail() !== undefined
+
+  const [payoutSelected, setPayoutSelected] = createSignal(0)
+  const [payoutForm, setPayoutForm] = createSignal<PayoutForm>({ mode: "manual", bank: null, accountNumber: "" })
+  const [payoutFocus, setPayoutFocus] = createSignal<PayoutField>("mode")
+
+  // However the form opens, it starts from the saved settings at the first field.
+  createEffect(on(() => payoutSettings() !== undefined, (showing, was) => {
+    const shown = payoutSettings()
+
+    if (showing && was !== true && shown !== undefined) {
+      setPayoutForm(formOf(shown.settings, shown.banks))
+      setPayoutFocus("mode")
+    }
+  }))
+  const [payoutAmount, setPayoutAmount] = createSignal("")
+
+  // The last row: the oldest payout, or "Load more" below it while pages remain.
+  const lastPayoutRow = () => (payouts()?.page.payouts.length ?? 0) - (payouts()?.page.next === null ? 1 : 0)
+
+  const payoutSelection = () => Math.max(0, Math.min(payoutSelected(), lastPayoutRow()))
+
+  // Back from a payout, the list selects it wherever it sits; one not listed
+  // leaves the selection be. From the amount form or a confirmation, the list
+  // is read again with any new payout on top, so the selection starts there.
+  createEffect(on(view, (shown, before) => {
+    if (before !== undefined && View.$is("PayoutDetail")(before) && View.$is("Payouts")(shown)) {
+      const at = shown.page.payouts.findIndex((payout) => payout.id === before.payout.id)
+
+      if (at !== -1) {
+        setPayoutSelected(at)
+      }
+    }
+
+    if (before !== undefined && (View.$is("RequestingPayout")(before) || View.$is("ConfirmingPayout")(before)) &&
+      View.$is("Payouts")(shown)) {
+      setPayoutSelected(0)
+    }
+  }))
+
+  const payoutFields: ReadonlyArray<PayoutField> = ["mode", "bank", "accountNumber"]
+
+  const stepPayout = (by: number) => {
+    const at = payoutFields.indexOf(payoutFocus())
+
+    setPayoutFocus(payoutFields[(at + by + payoutFields.length) % payoutFields.length] ?? "mode")
+  }
+
+  const savePayoutSettings = () => props.actions.savePayoutSettings(payoutForm())
+
   const paymentTitle = () => {
     const origin = payments()?.origin
 
@@ -708,7 +991,7 @@ export const App = (props: {
 
   const linkScreen = () =>
     creating() !== undefined || created() !== undefined || listing() !== undefined || detail() !== undefined ||
-    payments() !== undefined || paymentDetail() !== undefined || statement() !== undefined
+    payments() !== undefined || paymentDetail() !== undefined || statement() !== undefined || payoutScreen()
 
   // The list's selection, kept while a link is open and reset when the list opens.
   const [selected, setSelected] = createSignal(0)
@@ -783,6 +1066,119 @@ export const App = (props: {
     }
 
     if (props.state().pending) {
+      return
+    }
+
+    const shownPayout = payoutDetail()
+
+    if (shownPayout !== undefined) {
+      if (key.name === "escape" || key.name === "return" || key.name === "enter") {
+        props.actions.back()
+      }
+
+      // Any payout: even a settled one can turn out mismatched once the
+      // ledger answers its capture or void.
+      if (key.name === "r") {
+        props.actions.openPayout(shownPayout.id)
+      }
+
+      return
+    }
+
+    if (confirmingPayout() !== undefined) {
+      if (key.name === "escape") {
+        props.actions.back()
+      }
+
+      if (key.name === "return" || key.name === "enter") {
+        props.actions.confirmPayout()
+      }
+
+      return
+    }
+
+    if (requestingPayout() !== undefined) {
+      if (key.name === "escape") {
+        key.preventDefault()
+        props.actions.back()
+      }
+
+      return
+    }
+
+    const settings = payoutSettings()
+
+    if (settings !== undefined) {
+      if (key.name === "escape") {
+        key.preventDefault()
+
+        return props.actions.back()
+      }
+
+      if (key.name === "tab") {
+        key.preventDefault()
+
+        return stepPayout(key.shift ? -1 : 1)
+      }
+
+      // The mode and bank rows are no inputs, so they take the keys an input would.
+      const by = key.name === "left" ? -1 : key.name === "right" || key.name === "space" ? 1 : 0
+
+      if (payoutFocus() === "mode" && by !== 0) {
+        return setPayoutForm({ ...payoutForm(), mode: payoutForm().mode === "manual" ? "automatic" : "manual" })
+      }
+
+      if (payoutFocus() === "bank" && by !== 0 && settings.banks.length > 0) {
+        const count = settings.banks.length
+        const at = payoutForm().bank
+
+        // From no choice, → takes the first bank and ← the last.
+        return setPayoutForm({ ...payoutForm(), bank: at === null ? (by > 0 ? 0 : count - 1) : (at + by + count) % count })
+      }
+
+      if ((payoutFocus() === "mode" || payoutFocus() === "bank") && (key.name === "return" || key.name === "enter")) {
+        return savePayoutSettings()
+      }
+
+      return
+    }
+
+    const payoutList = payouts()
+
+    if (payoutList !== undefined) {
+      if (key.name === "escape") {
+        props.actions.back()
+      }
+
+      if (key.name === "up" || key.name === "down") {
+        setPayoutSelected(Math.max(0, Math.min(payoutSelection() + (key.name === "up" ? -1 : 1), lastPayoutRow())))
+      }
+
+      if (key.name === "return" || key.name === "enter") {
+        const payout = payoutList.page.payouts[payoutSelection()]
+
+        if (payout === undefined) {
+          props.actions.morePayouts()
+        } else {
+          props.actions.openPayout(payout.id)
+        }
+      }
+
+      if (key.name === "r") {
+        setPayoutSelected(0)
+        props.actions.refreshPayouts()
+      }
+
+      if (key.name === "c") {
+        props.actions.editPayoutSettings()
+      }
+
+      if (key.name === "n" && payoutList.settings.mode === "manual") {
+        key.preventDefault()
+        setPayoutAmount("")
+        props.actions.startPayout()
+      }
+
       return
     }
 
@@ -964,13 +1360,19 @@ export const App = (props: {
       return
     }
 
-    if (key.name === "o" && business() !== undefined) {
-      props.actions.openAccount()
+    // o opens the account until it is open, then the payouts.
+    if (key.name === "o" && business()?.status === "created") {
+      return props.actions.openAccount()
     }
 
     if (business()?.ledger != null) {
       if (key.name === "up" || key.name === "down") {
-        setSection(Math.max(0, Math.min(section() + (key.name === "up" ? -1 : 1), 2)))
+        setSection(Math.max(0, Math.min(section() + (key.name === "up" ? -1 : 1), 3)))
+      }
+
+      if (key.name === "o" || ((key.name === "return" || key.name === "enter") && section() === 3)) {
+        setPayoutSelected(0)
+        props.actions.managePayouts()
       }
 
       if (key.name === "p" || ((key.name === "return" || key.name === "enter") && section() === 0)) {
@@ -1071,6 +1473,39 @@ export const App = (props: {
           {(shown) => (
             <StatementScreen view={shown()} selected={statementSelection()} pending={props.state().pending} />
           )}
+        </Match>
+        <Match when={payouts()}>
+          {(shown) => <PayoutList view={shown()} selected={payoutSelection()} pending={props.state().pending} />}
+        </Match>
+        <Match when={payoutSettings()}>
+          {(shown) => (
+            <PayoutSettingsForm
+              view={shown()}
+              form={payoutForm()}
+              focus={payoutFocus()}
+              active={popup() === null}
+              pending={props.state().pending}
+              onChange={setPayoutForm}
+              onSubmit={savePayoutSettings}
+            />
+          )}
+        </Match>
+        <Match when={requestingPayout()}>
+          {(shown) => (
+            <RequestPayoutForm
+              view={shown()}
+              amount={payoutAmount()}
+              active={popup() === null}
+              onInput={setPayoutAmount}
+              onSubmit={() => props.actions.createPayout(payoutAmount())}
+            />
+          )}
+        </Match>
+        <Match when={confirmingPayout()}>
+          {(shown) => <ConfirmPayout payout={shown().payout} pending={props.state().pending} />}
+        </Match>
+        <Match when={payoutDetail()}>
+          {(shown) => <PayoutDetail payout={shown()} pending={props.state().pending} />}
         </Match>
         <Match when={paymentDetail()}>
           {(shown) => (

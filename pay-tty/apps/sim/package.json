@@ -1,0 +1,32 @@
+{
+  "name": "@pay-tty/sim",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./api": "./src/api.ts"
+  },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env --watch bin/sim.ts",
+    "start": "node --env-file-if-exists=.env bin/sim.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:setup": "./scripts/setup.sh",
+    "test": "node --env-file-if-exists=.env --test --test-global-setup=src/testing/setup.ts test/*.test.ts",
+    "typecheck": "tsc --project tsconfig.json",
+    "lint": "oxlint . --deny-warnings",
+    "clean": "node -e \"import('node:fs').then(({ rmSync }) => rmSync('dist', { recursive: true, force: true }))\""
+  },
+  "dependencies": {
+    "@effect/platform-node": "4.0.0-rc.117",
+    "@pay-tty/database": "workspace:*",
+    "drizzle-orm": "^0.45.3",
+    "effect": "4.0.0-rc.117",
+    "pg": "^8.23.0",
+    "ulid": "^3.0.2"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "^0.31.11"
+  }
+}

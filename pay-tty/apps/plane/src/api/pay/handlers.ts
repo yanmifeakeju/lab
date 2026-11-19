@@ -1,8 +1,8 @@
+import { RelayNudge } from "@pay-tty/core/ledger"
 import { Payments } from "@pay-tty/core/payments"
 import { Effect, Match } from "effect"
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder"
 
-import { Relay } from "../../relay/relay.ts"
 import { api } from "../api.ts"
 import { Conflict, InvalidRequestError, NotFound, ValidationError, ValidationErrorDetail } from "../errors.ts"
 import { payableLink, payment } from "./routes.ts"
@@ -82,7 +82,7 @@ export const PayLive = HttpApiBuilder.group(api, "pay", (handlers) =>
       Effect.gen(function* () {
         const payments = yield* Payments.Service
 
-        const relay = yield* Relay.Service
+        const relay = yield* RelayNudge.Service
 
         const ended = yield* payments.simulate(params.share_token, params.payment_id, payload.outcome).pipe(
           Effect.catchTags({

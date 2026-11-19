@@ -6,10 +6,11 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 
 import { createTestRenderer } from "@opentui/core/testing"
-import { Deferred, Effect, Fiber } from "effect"
+import { Deferred, Duration, Effect, Fiber } from "effect"
 import stringWidth from "string-width"
 
 import { connect } from "../src/connection.tsx"
+import type { Session } from "../src/session.ts"
 import {
   active,
   business,
@@ -31,6 +32,9 @@ import {
   credits,
   meetup,
   movement,
+  payout,
+  payoutSettings,
+  gtbank,
   statement,
   summary,
   tips,
@@ -46,7 +50,11 @@ const opened = business({
 // and close it the way an SSH disconnect would.
 const paths = (plane: ReturnType<typeof fakePlane>) => plane.calls.map(({ method, path }) => `${method} ${path}`)
 
-const screen = Effect.fnUntraced(function* (plane: ReturnType<typeof fakePlane>, size = { width: 70, height: 20 }) {
+const screen = Effect.fnUntraced(function* (
+  plane: ReturnType<typeof fakePlane>,
+  size = { width: 70, height: 20 },
+  options: Session.Options = {},
+) {
   const setup = yield* Effect.promise(() => createTestRenderer(size))
   const closers: Array<() => void> = []
   let ended = 0
@@ -60,6 +68,7 @@ const screen = Effect.fnUntraced(function* (plane: ReturnType<typeof fakePlane>,
         ended += 1
       },
       (shareToken) => `ssh ${shareToken}@tui.test`,
+      options,
     ).pipe(Effect.provide(plane.layer)),
   )
 
@@ -121,7 +130,7 @@ void test(
 
       tui.keys.pressKey("o")
 
-      const frame = yield* tui.showing("Available     ₦184,500.00")
+      const frame = yield* tui.showing("Available ₦184,500.00")
 
       assert.match(frame, /Nigeria · NGN/)
       assert.doesNotMatch(frame, /Press o/)
@@ -203,7 +212,7 @@ void test(
       const frame = yield* tui.frame
 
       assert.doesNotMatch(frame, /Create your business|Error/)
-      assert.match(frame, /Available     ₦184,500\.00/)
+      assert.match(frame, /Available ₦184,500\.00/)
       assert.deepEqual(paths(plane), ["POST /session", "GET /me", "GET /me", "GET /business/balance"])
 
       tui.close()
@@ -233,7 +242,7 @@ void test(
 
       tui.keys.pressEnter()
 
-      const frame = yield* tui.showing("Available     ₦184,500.00")
+      const frame = yield* tui.showing("Available ₦184,500.00")
 
       assert.doesNotMatch(frame, /Error/)
 
@@ -1326,7 +1335,7 @@ void test("wide payments show filter arrows and unswept expiry has an expired-at
 ))
 
 void test(
-  "home opens with the ledger balance, amounts aligned in one column, and no account line",
+  "home opens with the ledger balance on one line, without the pending figures at zero, and no account line",
   scenario(
     Effect.gen(function* () {
       const plane = fakePlane({ me: me(opened) })
@@ -1335,12 +1344,31 @@ void test(
       const frame = yield* tui.showing("Available")
       const lines = frame.split("\n").map((line) => line.replace(/^│ /, "").replace(/ *│$/, ""))
 
-      // Right edges line up, whatever each amount's width.
+      // The pending figures stay out while they are zero.
       assert.ok(lines.includes("Balance"))
-      assert.ok(lines.includes("  Available     ₦184,500.00"))
-      assert.ok(lines.includes("  Pending             ₦0.00"))
+      assert.ok(lines.includes("  Available ₦184,500.00"))
+      assert.doesNotMatch(frame, /Incoming|On hold/)
       assert.doesNotMatch(frame, /acct_01K33YV8M82N9MXP4E7J6B1QWK|Account /)
       assert.match(frame, /Payments {8}p/)
+
+      tui.close()
+      yield* Fiber.join(tui.fiber)
+    }),
+  ),
+)
+
+void test(
+  "money not yet settled shows as incoming, and payouts in flight as on hold",
+  scenario(
+    Effect.gen(function* () {
+      const plane = fakePlane({
+        me: me(opened),
+        balance: () => ({ status: 200, body: figures({ available: "100000", incoming: "1500", held: "250000" }) }),
+      })
+
+      const tui = yield* screen(plane)
+
+      yield* tui.showing("  Available ₦1,000.00 · Incoming ₦15.00 · On hold ₦2,500.00")
 
       tui.close()
       yield* Fiber.join(tui.fiber)
@@ -1369,7 +1397,7 @@ void test(
       yield* tui.showing("Balance unavailable · r to retry")
 
       tui.keys.pressKey("r")
-      yield* tui.showing("Available     ₦184,500.00")
+      yield* tui.showing("Available ₦184,500.00")
 
       assert.equal(plane.calls.filter(({ path }) => path === "/business/balance").length, 3)
 
@@ -1392,7 +1420,7 @@ void test(
       tui.keys.pressKey("p")
       yield* tui.showing("No payments yet.")
       tui.keys.pressEscape()
-      yield* tui.showing("Available     ₦184,500.00")
+      yield* tui.showing("Available ₦184,500.00")
 
       // The first request, still out, gets no say once it answers.
       yield* Deferred.succeed(held, { status: 200, body: figures({ available: "100" }) })
@@ -1417,9 +1445,9 @@ void test(
       const plane = fakePlane({ me: me(opened) })
       const tui = yield* screen(plane, { width: 40, height: 12 })
 
-      const frame = yield* tui.showing("Pending")
+      const frame = yield* tui.showing("Available")
 
-      for (const text of ["Acme Ltd", "Balance", "Available     ₦184,500.00", "Payments        p", "Payment links   l", "Ctrl+C to quit"]) {
+      for (const text of ["Acme Ltd", "Balance", "Available ₦184,500.00", "Payments        p", "Payment links   l", "Payouts         o", "Ctrl+C to quit"]) {
         assert.ok(frame.includes(text), text)
       }
 
@@ -1435,7 +1463,7 @@ const statementQueries = (plane: ReturnType<typeof fakePlane>) =>
 // The selected row of a frame, without its marker.
 const selectedRow = (frame: string) => rowsOf(frame).find((row) => row.startsWith("› "))?.slice(2).trim()
 
-void test("home lists Statement under a ledger even when the balance failed, and ↑/↓ stop at the ends", scenario(
+void test("home lists Statement and Payouts under a ledger even when the balance failed, and ↑/↓ stop at the ends", scenario(
   Effect.gen(function* () {
     const plane = fakePlane({ me: me(opened), balance: () => failure(503, "ledger_unavailable") })
     const tui = yield* screen(plane)
@@ -1443,22 +1471,24 @@ void test("home lists Statement under a ledger even when the balance failed, and
     const menu = yield* tui.showing("Balance unavailable")
 
     assert.ok(rowsOf(menu).includes("  Statement       s"))
+    assert.ok(rowsOf(menu).includes("  Payouts         o"))
 
-    tui.keys.pressArrow("down")
-    tui.keys.pressArrow("down")
-    tui.keys.pressArrow("down")
-    yield* tui.showing("› Statement       s")
+    for (let presses = 0; presses < 4; presses++) {
+      tui.keys.pressArrow("down")
+    }
+
+    yield* tui.showing("› Payouts         o")
     tui.keys.pressArrow("up")
-    yield* tui.showing("› Payment links   l")
-    tui.keys.pressArrow("down")
     yield* tui.showing("› Statement       s")
     tui.keys.pressEnter()
     yield* tui.showing("Up to a minute ago")
     tui.keys.pressEscape()
     yield* tui.showing("Statement       s")
-    tui.keys.pressArrow("up")
-    tui.keys.pressArrow("up")
-    tui.keys.pressArrow("up")
+
+    for (let presses = 0; presses < 4; presses++) {
+      tui.keys.pressArrow("up")
+    }
+
     yield* tui.showing("› Payments        p")
     tui.keys.pressKey("s")
     yield* tui.showing("Up to a minute ago")
@@ -1713,6 +1743,193 @@ void test("a description with line breaks and tabs stays on one row, in line wit
     assert.match(rows[0] ?? "", /^› 9 Oct  Payment received via Old link +\+₦2,500\.00  ₦7,500\.00/)
     assert.equal(rows[0]?.indexOf("+₦"), rows[1]?.indexOf("+₦"))
     assert.equal(rows[0]?.trimEnd().length, rows[1]?.trimEnd().length)
+
+    tui.close()
+    yield* Fiber.join(tui.fiber)
+  }),
+))
+
+const payoutCalls = (plane: ReturnType<typeof fakePlane>) =>
+  plane.calls.filter(({ path }) => path.startsWith("/payouts")).map(({ method, path }) => `${method} ${path}`)
+
+void test("o with no payout account opens its form, saving shows payouts; n creates a payout, confirms it, and the screen follows it until paid", scenario(
+  Effect.gen(function* () {
+    const plane = fakePlane({
+      me: me(opened),
+      payoutSettings: () => ({ status: 200, body: payoutSettings() }),
+      getPayout: inTurn(
+        { status: 200, body: payout({ status: "held", journal_ref: "jrn_hold" }) },
+        { status: 200, body: payout({ status: "sent", journal_ref: "jrn_hold", sent_at: "2026-11-10T09:00:01.000Z" }) },
+        {
+          status: 200,
+          body: payout({
+            status: "paid",
+            journal_ref: "jrn_hold",
+            sent_at: "2026-11-10T09:00:01.000Z",
+            completed_at: "2026-11-10T09:00:06.000Z",
+          }),
+        },
+      ),
+      listPayouts: () => ({ status: 200, body: { payouts: [payout({ status: "held" })], next: null } }),
+    })
+
+    const tui = yield* screen(plane, undefined, { followEvery: Duration.millis(30) })
+
+    yield* tui.showing("Payouts         o")
+    tui.keys.pressKey("o")
+
+    const form = yield* tui.showing("Set up payouts")
+
+    assert.match(form, /Esc back/)
+
+    // Esc leaves payouts; o asks again.
+    tui.keys.pressEscape()
+    yield* tui.showing("Payouts         o")
+    tui.keys.pressKey("o")
+    yield* tui.showing("Set up payouts")
+    tui.keys.pressTab()
+
+    // No bank until one is picked: → takes the first, then the next.
+    yield* tui.showing("‹ Choose a bank ›")
+    tui.keys.pressArrow("right")
+    yield* tui.showing("‹ Access Bank ›")
+    tui.keys.pressArrow("right")
+    yield* tui.showing("‹ GTBank ›")
+    tui.keys.pressTab()
+    yield* Effect.promise(() => tui.keys.typeText("0123456789"))
+    tui.keys.pressEnter()
+    yield* tui.showing("Manual · GTBank ••••6789")
+
+    assert.deepEqual(plane.calls.find(({ method }) => method === "PUT")?.body, {
+      mode: "manual",
+      destination: { bank_code: "058", account_number: "0123456789" },
+    })
+
+    tui.keys.pressKey("n")
+    yield* tui.showing("New payout")
+    yield* Effect.promise(() => tui.keys.typeText("2,500"))
+    tui.keys.pressEnter()
+
+    // The confirmation shows the payout plane created, which nothing moves until confirmed.
+    const confirm = yield* tui.showing("Pay out ₦2,500.00")
+
+    assert.match(confirm, /To GTBank ••••6789 · Acme Ltd/)
+    assert.match(confirm, /\[Esc\] Back/)
+    assert.deepEqual(plane.calls.find(({ method, path }) => method === "POST" && path === "/payouts")?.body, { amount: 250_000 })
+
+    tui.keys.pressEnter()
+
+    const requested = yield* tui.showing("Requested · waiting for the ledger to hold it…")
+
+    assert.match(requested, /\[r\] Refresh/)
+
+    // The screen reads it again on its own while it moves, and stops once paid.
+    yield* tui.showing("On hold · the money is set aside for this payout")
+    yield* tui.showing("Sent to GTBank ••••6789 · waiting for the bank…")
+
+    const paid = yield* tui.showing("Paid to GTBank ••••6789")
+
+    assert.match(paid, /Paid: 2026-11-10 09:00 UTC/)
+    // Settled, it can still be read again: a mismatch may follow its capture.
+    assert.match(paid, /\[r\] Refresh/)
+
+    yield* Effect.sleep("100 millis")
+
+    tui.keys.pressEscape()
+
+    const list = yield* tui.showing("paid")
+
+    assert.match(list, /₦2,500\.00/)
+    // The bank list is fetched once per connection. The first page comes with
+    // the settings, but none is fetched right after the first save: none can exist yet.
+    // A first visit sends the history request first, then the settings.
+    assert.deepEqual(payoutCalls(plane), [
+      "GET /payouts",
+      "GET /payouts/settings",
+      "GET /payouts/banks",
+      "GET /payouts",
+      "GET /payouts/settings",
+      "PUT /payouts/settings",
+      "POST /payouts",
+      "POST /payouts/pout_01K9Z1/confirm",
+      "GET /payouts/pout_01K9Z1",
+      "GET /payouts/pout_01K9Z1",
+      "GET /payouts/pout_01K9Z1",
+    ])
+
+    tui.close()
+    yield* Fiber.join(tui.fiber)
+  }),
+))
+
+void test("automatic payouts take no manual request, and a rejected payout shows why", scenario(
+  Effect.gen(function* () {
+    const rejected = payout({ status: "rejected", reason: "insufficient_funds", completed_at: "2026-11-10T09:00:02.000Z" })
+
+    const plane = fakePlane({
+      me: me(opened),
+      payoutSettings: () => ({ status: 200, body: payoutSettings({ mode: "automatic", destination: gtbank }) }),
+      listPayouts: () => ({ status: 200, body: { payouts: [rejected], next: null } }),
+      getPayout: () => ({ status: 200, body: rejected }),
+    })
+
+    const tui = yield* screen(plane)
+
+    yield* tui.showing("Payouts         o")
+    tui.keys.pressKey("o")
+
+    const list = yield* tui.showing("Automatic · daily · GTBank ••••6789")
+
+    assert.doesNotMatch(list, /n new/)
+
+    tui.keys.pressKey("n")
+
+    assert.doesNotMatch(yield* tui.frame, /New payout/)
+
+    tui.keys.pressEnter()
+    yield* tui.showing("Rejected: insufficient funds")
+
+    assert.ok(!payoutCalls(plane).includes("POST /payouts"))
+
+    tui.close()
+    yield* Fiber.join(tui.fiber)
+  }),
+))
+
+void test("Esc on a confirmation leaves its payout to expire, and a payout plane won't create says why without Retry", scenario(
+  Effect.gen(function* () {
+    const plane = fakePlane({
+      me: me(opened),
+      payoutSettings: () => ({ status: 200, body: payoutSettings({ destination: gtbank }) }),
+      createPayout: inTurn(
+        { status: 201, body: payout({ status: "created", amount: "50000" }) },
+        failure(409, "payout_drafts_full"),
+      ),
+    })
+
+    const tui = yield* screen(plane)
+
+    yield* tui.showing("Payouts         o")
+    tui.keys.pressKey("o")
+    yield* tui.showing("Manual · GTBank ••••6789")
+    tui.keys.pressKey("n")
+    yield* tui.showing("New payout")
+    yield* Effect.promise(() => tui.keys.typeText("50"))
+    tui.keys.pressEnter()
+    yield* tui.showing("A payout must be at least ₦100.00.")
+    tui.keys.pressEscape()
+    yield* tui.matching((frame) => !frame.includes("Error"))
+    yield* Effect.promise(() => tui.keys.typeText("0"))
+    tui.keys.pressEnter()
+    yield* tui.showing("Pay out ₦500.00")
+    tui.keys.pressEscape()
+    yield* tui.showing("New payout")
+    tui.keys.pressEnter()
+
+    const frame = yield* tui.showing("Too many payouts are waiting to be confirmed.")
+
+    assert.doesNotMatch(frame, /Retry/)
+    assert.ok(!payoutCalls(plane).some((call) => call.endsWith("/confirm")))
 
     tui.close()
     yield* Fiber.join(tui.fiber)

@@ -18,8 +18,8 @@ export const statuses = ["created", "active"] as const
 
 export const status = pgEnum("business_status", statuses)
 
-// The countries a business can be created in, and the currency each trades
-// in. The checks on businesses spell out the same pairs.
+// Supported countries and their trading currencies. Enforced in SQL by
+// `businesses_currency_code_matches_country`.
 export const currencies = { NG: "NGN", US: "USD" } as const
 
 export const countries = ["NG", "US"] as const satisfies ReadonlyArray<keyof typeof currencies>
@@ -28,16 +28,14 @@ export const businesses = pgTable(
   "businesses",
   {
     id: text("id").primaryKey(),
-    // Fixed at creation: the ledger holder carries this name and rejects a
-    // different one when the business onboards onto another ledger.
+    // Fixed at creation: the ledger holder carries it and rejects another name on a new ledger.
     name: text("name").notNull(),
     countryCode: text("country_code").default("NG").notNull(),
-    // Derived from the country by the server, never the caller's.
+    // Server-derived from `country_code`.
     currencyCode: text("currency_code").notNull(),
-    // The country's default ledger when the business was created; kept even
-    // if that default moves.
+    // The country's default ledger at creation; kept even if that default moves.
     primaryLedger: text("primary_ledger").notNull(),
-    // Recorded together once the ledger has created the account.
+    // Populated together once the payable account is opened in the ledger.
     primaryPayableAccountRef: text("primary_payable_account_ref"),
     ledgerHolderRef: text("ledger_holder_ref"),
     status: status("status").default("created").notNull(),
@@ -58,8 +56,7 @@ export const businesses = pgTable(
       "businesses_active_has_account",
       sql`${table.status} <> 'active' or ${table.primaryPayableAccountRef} is not null`,
     ),
-    // Through the currency too, so the primary ledger is always in the
-    // business's currency.
+    // Composite FK ensures `primary_ledger` uses `currency_code`.
     foreignKey({
       name: "businesses_primary_ledger_fk",
       columns: [table.primaryLedger, table.currencyCode],
@@ -68,7 +65,7 @@ export const businesses = pgTable(
       .onDelete("restrict")
       .onUpdate("cascade"),
     uniqueIndex("businesses_primary_payable_account_ref_unique").on(table.primaryPayableAccountRef),
-    // The target of payment_links' (business_id, ledger) foreign key.
+    // Target for composite FKs from `payment_links` and `payout_settings`.
     unique("businesses_id_primary_ledger_unique").on(table.id, table.primaryLedger),
   ],
 )
@@ -87,8 +84,8 @@ export const businessPrincipals = pgTable(
   (table) => [index("business_principals_business_id_idx").on(table.businessId)],
 )
 
-// Deferred until a business needs accounts beyond its primary one, which
-// now lives on businesses. Kept as reference for that design; not a table.
+// Reference schema for multi-ledger business accounts (deferred while each
+// business uses a single `primary_ledger`).
 //
 // export const businessLedgers = pgTable(
 //   "business_ledgers",

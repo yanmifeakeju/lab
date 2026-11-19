@@ -12,8 +12,7 @@ export const ID = Schema.String.pipe(
 
 export type ID = typeof ID.Type
 
-// Who is connecting, as asserted by the authenticated caller: the SSH front end
-// issues it and the subject is the key fingerprint.
+// Caller identity asserted at authentication (e.g. issuer="ssh", subject=key fingerprint).
 export const Identity = Schema.Struct({
   issuer: Schema.NonEmptyString,
   subject: Schema.NonEmptyString,
@@ -31,7 +30,7 @@ export class Info extends Schema.Class<Info>("Principal.Info")({
 export interface Interface {
   readonly find: (identity: Identity) => Effect.Effect<Info | undefined>
   readonly get: (id: ID) => Effect.Effect<Info | undefined>
-  /** Returns the principal for an identity, recording it on first sight. */
+  /** Returns the principal for `identity`, inserting a new record if none exists. */
   readonly ensure: (identity: Identity) => Effect.Effect<Info>
 }
 
@@ -78,8 +77,7 @@ const make = Effect.gen(function* () {
   })
 
   const ensure = Effect.fn("Principal.ensure")(function* (identity: Identity) {
-    // The unique (issuer, subject) index settles concurrent first sightings;
-    // the loser's insert is a no-op and both read the same row back.
+    // `ON CONFLICT DO NOTHING` on `(issuer, subject)` serializes concurrent first-time inserts.
     yield* database.use((db) =>
       db
         .insert(principals)

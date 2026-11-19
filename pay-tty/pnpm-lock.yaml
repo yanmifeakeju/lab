@@ -57,9 +57,43 @@ importers:
         specifier: ^6.2.12
         version: 6.2.12
     devDependencies:
+      '@pay-tty/database':
+        specifier: workspace:*
+        version: link:../../packages/database
+      drizzle-orm:
+        specifier: ^0.45.3
+        version: 0.45.3(@types/pg@8.23.1)(pg@8.23.0)
       ulid:
         specifier: ^3.0.2
         version: 3.0.2
+
+  apps/sim:
+    dependencies:
+      '@effect/platform-node':
+        specifier: 4.0.0-rc.117
+        version: 4.0.0-rc.117(effect@4.0.0-rc.117)(redis@6.2.1)
+      '@pay-tty/database':
+        specifier: workspace:*
+        version: link:../../packages/database
+      drizzle-orm:
+        specifier: ^0.45.3
+        version: 0.45.3(@types/pg@8.23.1)(pg@8.23.0)
+      effect:
+        specifier: 4.0.0-rc.117
+        version: 4.0.0-rc.117
+      pg:
+        specifier: ^8.23.0
+        version: 8.23.0
+      ulid:
+        specifier: ^3.0.2
+        version: 3.0.2
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.23.1
+        version: 8.23.1
+      drizzle-kit:
+        specifier: ^0.31.11
+        version: 0.31.11
 
   apps/tui:
     dependencies:
@@ -89,9 +123,15 @@ importers:
 
   packages/core:
     dependencies:
+      '@pay-tty/database':
+        specifier: workspace:*
+        version: link:../database
       '@pay-tty/ledger-client':
         specifier: workspace:*
         version: link:../ledger-client
+      '@pay-tty/sim':
+        specifier: workspace:*
+        version: link:../../apps/sim
       drizzle-orm:
         specifier: ^0.45.3
         version: 0.45.3(@types/pg@8.23.1)(pg@8.23.0)
@@ -111,6 +151,22 @@ importers:
       drizzle-kit:
         specifier: ^0.31.11
         version: 0.31.11
+
+  packages/database:
+    dependencies:
+      drizzle-orm:
+        specifier: ^0.45.3
+        version: 0.45.3(@types/pg@8.23.1)(pg@8.23.0)
+      effect:
+        specifier: 4.0.0-rc.117
+        version: 4.0.0-rc.117
+      pg:
+        specifier: ^8.23.0
+        version: 8.23.0
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.23.1
+        version: 8.23.1
 
   packages/ledger-client:
     dependencies:

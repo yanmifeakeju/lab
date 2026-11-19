@@ -2,7 +2,7 @@
 
 # Seeds catalog ledgers, with the currency and scale the ledger service fixes
 # for each, and their platform accounts: the `cash` and `fee` refs shared by
-# every business in that ledger. Without --slug it seeds `ngn_ng`, in NGN, as
+# every business in that ledger, with `receivable` and `payouts_clearing`. Without --slug it seeds `ngn_ng`, in NGN, as
 # Nigeria's default: the ledger every new NG business is created in. No other
 # country has a default, so creating a business there fails until one is
 # seeded. --country makes a --slug ledger its country's default; that choice
@@ -29,14 +29,16 @@ scale=
 country=
 cash_ref=
 fee_ref=
+receivable_ref=
+clearing_ref=
 
 usage() {
-	printf 'usage: %s [--slug SLUG --currency XXX [--scale N] [--country CC] [--cash ACCT_REF] [--fee ACCT_REF]]\n' "$0" >&2
+	printf 'usage: %s [--slug SLUG --currency XXX [--scale N] [--country CC] [--cash ACCT_REF] [--fee ACCT_REF] [--receivable ACCT_REF] [--payouts-clearing ACCT_REF]]\n' "$0" >&2
 }
 
 while [[ $# -gt 0 ]]; do
 	case $1 in
-	--slug | --currency | --scale | --country | --cash | --fee)
+	--slug | --currency | --scale | --country | --cash | --fee | --receivable | --payouts-clearing)
 		[[ $# -ge 2 ]] || { usage; exit 2; }
 		case $1 in
 		--slug) ledger_slug=$2 ;;
@@ -45,6 +47,8 @@ while [[ $# -gt 0 ]]; do
 		--country) country=$2 ;;
 		--cash) cash_ref=$2 ;;
 		--fee) fee_ref=$2 ;;
+		--receivable) receivable_ref=$2 ;;
+		--payouts-clearing) clearing_ref=$2 ;;
 		esac
 		shift 2
 		;;
@@ -59,7 +63,7 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
-if [[ -z $ledger_slug && -n $currency$scale$country$cash_ref$fee_ref ]]; then
+if [[ -z $ledger_slug && -n $currency$scale$country$cash_ref$fee_ref$receivable_ref$clearing_ref ]]; then
 	printf 'ledger options need --slug\n' >&2
 	usage
 	exit 2
@@ -106,9 +110,10 @@ ledger_ref() {
 	printf 'acct_0%s' "$(printf '%s:%s' "$1" "$2" | md5sum | cut -c1-25 | tr '[:lower:]' '[:upper:]')"
 }
 
-# slug currency scale country cash fee; empty scale, cash, or fee are derived.
+# slug currency scale country cash fee receivable clearing; an empty scale or
+# account ref is derived.
 seed_ledger() {
-	local slug=$1 currency=$2 scale=$3 country=$4 cash=$5 fee=$6
+	local slug=$1 currency=$2 scale=$3 country=$4 cash=$5 fee=$6 receivable=$7 clearing=$8
 
 	if [[ -z $slug || $slug =~ [[:space:]] ]]; then
 		printf 'invalid slug %q: must be non-blank\n' "$slug" >&2
@@ -142,8 +147,10 @@ seed_ledger() {
 
 	cash=${cash:-$(ledger_ref "$slug" cash)}
 	fee=${fee:-$(ledger_ref "$slug" fee_revenue)}
+	receivable=${receivable:-$(ledger_ref "$slug" receivable)}
+	clearing=${clearing:-$(ledger_ref "$slug" payouts_clearing)}
 
-	for ref in "$cash" "$fee"; do
+	for ref in "$cash" "$fee" "$receivable" "$clearing"; do
 		if [[ ! $ref =~ ^acct_[0-9A-Z]{26}$ ]]; then
 			printf 'invalid account ref %q: must be acct_ followed by 26 characters\n' "$ref" >&2
 			exit 2
@@ -160,13 +167,19 @@ seed_ledger() {
 		-v country="$country" \
 		-v cash="$cash" \
 		-v fee="$fee" \
+		-v receivable="$receivable" \
+		-v clearing="$clearing" \
 		<<'SQL'
 		INSERT INTO ledgers (slug, currency, scale, country_code, is_country_default)
 		VALUES (:'slug', :'currency', :'scale', nullif(:'country', ''), :'country' <> '')
 		ON CONFLICT (slug) DO NOTHING;
 
 		INSERT INTO platform_accounts (ledger, label, ledger_account_ref)
-		VALUES (:'slug', 'cash', :'cash'), (:'slug', 'fee', :'fee')
+		VALUES
+			(:'slug', 'cash', :'cash'),
+			(:'slug', 'fee', :'fee'),
+			(:'slug', 'receivable', :'receivable'),
+			(:'slug', 'payouts_clearing', :'clearing')
 		ON CONFLICT (ledger, label) DO NOTHING;
 SQL
 
@@ -194,9 +207,9 @@ SQL
 }
 
 if [[ -n $ledger_slug ]]; then
-	seed_ledger "$ledger_slug" "$currency" "$scale" "$country" "$cash_ref" "$fee_ref"
+	seed_ledger "$ledger_slug" "$currency" "$scale" "$country" "$cash_ref" "$fee_ref" "$receivable_ref" "$clearing_ref"
 else
-	seed_ledger ngn_ng NGN "" NG "" ""
+	seed_ledger ngn_ng NGN "" NG "" "" "" ""
 fi
 
 psql "$DATABASE_URL" \

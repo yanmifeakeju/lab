@@ -63,6 +63,9 @@ services:
     environment:
       LEDGER_DATABASE_URL: *ledger-database
       PLANE_DATABASE_URL: &plane-database postgres://plane:${PLANE_DB_PASSWORD}@postgres:5432/plane
+      SIM_DATABASE_URL: &sim-database postgres://sim:${SIM_DB_PASSWORD:?set SIM_DB_PASSWORD}@postgres:5432/sim
+      SIM_DB_PASSWORD: ${SIM_DB_PASSWORD:?set SIM_DB_PASSWORD}
+      POSTGRES_ADMIN_URL: postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/postgres
     networks: [internal]
     depends_on:
       ledger-migrate:
@@ -91,6 +94,9 @@ services:
       target: plane
     environment:
       DATABASE_URL: *plane-database
+      SIM_URL: http://sim:4000
+      SIM_API_KEY: &sim-api-key ${SIM_API_KEY:?set SIM_API_KEY}
+      SIM_WEBHOOK_SECRET: &sim-webhook-secret ${SIM_WEBHOOK_SECRET:?set SIM_WEBHOOK_SECRET}
       PORT: "3000"
       LEDGER_BASE_URL: http://ledger:8080
       PLANE_TOKEN_KEYS: ${PLANE_TOKEN_KEYS:?set PLANE_TOKEN_KEYS}
@@ -106,6 +112,23 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
+
+  # The simulated payout provider: plane calls it, and it calls plane back.
+  sim:
+    <<: *service
+    build:
+      context: .
+      target: sim
+    environment:
+      SIM_DATABASE_URL: *sim-database
+      SIM_API_KEY: *sim-api-key
+      SIM_WEBHOOK_SECRET: *sim-webhook-secret
+      PLANE_CALLBACK_URL: http://plane:3000/webhooks/payouts
+      PORT: "4000"
+    networks: [internal]
+    depends_on:
+      setup:
+        condition: service_completed_successfully
 
   tui:
     <<: *service

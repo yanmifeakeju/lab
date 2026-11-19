@@ -7,6 +7,7 @@ import { PayApp } from "./pay-app.tsx"
 import { PaySession, type State as PayState } from "./pay-session.ts"
 import type { Form } from "./payment-link.ts"
 import type { State as PaymentState } from "./payments.ts"
+import type { Form as PayoutForm } from "./payouts.ts"
 import { Session, type State } from "./session.ts"
 import type { Period } from "./statement.ts"
 
@@ -20,10 +21,11 @@ export const connect = (
   onClose: (callback: () => void) => void,
   end: () => void,
   payCommand: (shareToken: string) => string,
+  options: Session.Options = {},
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const session = yield* Session.make(fingerprint)
+      const session = yield* Session.make(fingerprint, options)
       const [state, setState] = createSignal<State>(yield* SubscriptionRef.get(session.state))
 
       yield* Effect.forkScoped(
@@ -47,6 +49,15 @@ export const connect = (
         statementPeriod: (period: Period) => void run(session.statementPeriod(period)),
         statementPage: (direction: "next" | "previous") => void run(session.statementPage(direction)),
         refreshStatement: () => void run(session.refreshStatement),
+        managePayouts: () => void run(session.managePayouts),
+        refreshPayouts: () => void run(session.refreshPayouts),
+        morePayouts: () => void run(session.morePayouts),
+        openPayout: (id: string) => void run(session.openPayout(id)),
+        editPayoutSettings: () => void run(session.editPayoutSettings),
+        savePayoutSettings: (form: PayoutForm) => void run(session.savePayoutSettings(form)),
+        startPayout: () => void run(session.startPayout),
+        createPayout: (amount: string) => void run(session.createPayout(amount)),
+        confirmPayout: () => void run(session.confirmPayout),
         manageLinks: () => void run(session.manageLinks),
         refreshLinks: () => void run(session.refreshLinks),
         openLink: (id: string) => void run(session.openLink(id)),

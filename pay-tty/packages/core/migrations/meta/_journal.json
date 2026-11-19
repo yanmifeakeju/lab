@@ -85,6 +85,27 @@
       "when": 1794045153365,
       "tag": "0011_drop-posting-effective-at",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1794313466046,
+      "tag": "0012_payouts",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1794415629441,
+      "tag": "0013_payout-release",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1794931088568,
+      "tag": "0014_payout-status-checks",
+      "breakpoints": true
     }
   ]
 }

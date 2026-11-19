@@ -147,7 +147,9 @@ psql "$DATABASE_URL" \
 	WITH platform_accounts(label, description) AS (
 		VALUES
 			('cash', 'Platform cash account'),
-			('fee_revenue', 'Platform fee revenue account')
+			('fee_revenue', 'Platform fee revenue account'),
+			('receivable', 'Platform receivable account'),
+			('payouts_clearing', 'Payouts clearing account')
 	)
 	INSERT INTO accounts (public_ref, ledger_id, kind, label, description)
 	SELECT

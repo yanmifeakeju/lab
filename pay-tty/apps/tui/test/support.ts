@@ -13,6 +13,10 @@ import {
   type PaymentLinkListEncoded,
   type PaymentLinkSummaryEncoded,
   type PaymentStatsEncoded,
+  type PayoutEncoded,
+  type PayoutBankListEncoded,
+  type PayoutSettingsEncoded,
+  PayoutSettingsRequestEncoded,
   SimulatePaymentRequestEncoded,
   StartPaymentRequestEncoded,
   type StatementMovementEncoded,
@@ -60,6 +64,22 @@ export interface Routes {
   readonly payableLink?: (call: Call) => Reply
   readonly startPayment?: (call: Call) => Reply
   readonly simulatePayment?: (call: Call) => Reply
+  /** `{ banks }` unless given. */
+  readonly banks?: (call: Call) => Reply
+  /**
+   * `payoutSettings({ destination: gtbank })` unless given, so links don't ask
+   * for a payout account; a PUT echoes what was saved unless given.
+   */
+  readonly payoutSettings?: (call: Call) => Reply
+  readonly savePayoutSettings?: (call: Call) => Reply
+  /** An empty page unless given. */
+  readonly listPayouts?: (call: Call) => Reply
+  /** `payout({ status: "created" })` unless given. */
+  readonly createPayout?: (call: Call) => Reply
+  /** `payout()`, just requested, unless given. */
+  readonly confirmPayout?: (call: Call) => Reply
+  /** `payout({ status: "cancelled" })` unless given. */
+  readonly getPayout?: (call: Call) => Reply
 }
 
 export const business = (fields: Partial<BusinessInfoEncoded> = {}): BusinessInfoEncoded => ({
@@ -125,6 +145,18 @@ export const fakePlane = (routes: Routes) => {
         Match.when("/payments", () => routes.listPayments ?? (() => ({ status: 200, body: paymentPage() }))),
         Match.when((path) => path.startsWith("/payments/"), () =>
           routes.getPayment ?? ((call: Call) => ({ status: 200, body: paymentDetail(merchantPayment({ id: call.path.slice(10) })) }))),
+        Match.when("/payouts/banks", () => routes.banks ?? (() => ({ status: 200, body: { banks } }))),
+        Match.when("/payouts/settings", () =>
+          call.method === "PUT"
+            ? (routes.savePayoutSettings ?? savedPayoutSettings)
+            : (routes.payoutSettings ?? (() => ({ status: 200, body: payoutSettings({ destination: gtbank }) })))),
+        Match.when("/payouts", () =>
+          call.method === "POST"
+            ? (routes.createPayout ?? (() => ({ status: 201, body: payout({ status: "created" }) })))
+            : (routes.listPayouts ?? (() => ({ status: 200, body: { payouts: [], next: null } })))),
+        Match.when((path) => path.startsWith("/payouts/") && path.endsWith("/confirm"), () =>
+          routes.confirmPayout ?? (() => ({ status: 202, body: payout() }))),
+        Match.when((path) => path.startsWith("/payouts/"), () => routes.getPayout),
         Match.when("/session", () => session),
         Match.when("/me", () => routes.me),
         Match.when("/business", () => routes.createBusiness),
@@ -175,7 +207,8 @@ export const figures = (fields: Partial<BusinessBalanceEncoded> = {}): BusinessB
   currency: "NGN",
   scale: 2,
   available: "18450000",
-  pending: "0",
+  incoming: "0",
+  held: "0",
   ...fields,
 })
 
@@ -476,3 +509,72 @@ export const credits = (count: number) =>
       balance_after: String((count - index) * 100),
       description: `Payment received via Row ${index}`,
     }))
+
+export const banks: PayoutBankListEncoded["banks"] = [
+  { code: "044", name: "Access Bank" },
+  { code: "058", name: "GTBank" },
+  { code: "057", name: "Zenith Bank" },
+]
+
+/** What GET /payouts/settings returns: manual, with no payout account, unless told otherwise. */
+export const payoutSettings = (fields: Partial<PayoutSettingsEncoded> = {}): PayoutSettingsEncoded => ({
+  ledger: "ngn_ng",
+  currency: "NGN",
+  scale: 2,
+  minimum: "10000",
+  mode: "manual",
+  destination: null,
+  updated_at: "2026-11-10T09:00:00.000Z",
+  ...fields,
+})
+
+export const gtbank = {
+  bank_code: "058",
+  bank_name: "GTBank",
+  account_number: "0123456789",
+  account_name: "Acme Ltd",
+} as const
+
+// The holder is the business.
+const holder = "Acme Ltd"
+
+// Plane's answer to a PUT: the settings as saved.
+export const savedPayoutSettings = (call: Call): Reply => {
+  if (!Schema.is(PayoutSettingsRequestEncoded)(call.body)) {
+    return failure(400, "validation_error")
+  }
+
+  const { mode, destination } = call.body
+
+  return {
+    status: 200,
+    body: payoutSettings({
+      mode,
+      destination: {
+        ...destination,
+        bank_name: banks.find((bank) => bank.code === destination.bank_code)?.name ?? "",
+        account_name: holder,
+      },
+    }),
+  }
+}
+
+/** A payout of ₦2,500.00 to GTBank, just requested, unless told otherwise. */
+export const payout = (fields: Partial<PayoutEncoded> = {}): PayoutEncoded => ({
+  id: "pout_01K9Z1",
+  ledger: "ngn_ng",
+  currency: "NGN",
+  scale: 2,
+  amount: "250000",
+  trigger: "manual",
+  status: "requested",
+  reason: null,
+  destination: gtbank,
+  journal_ref: null,
+  ledger_mismatch: false,
+  created_at: "2026-11-10T09:00:00.000Z",
+  expires_at: fields.status === "created" ? "2026-11-10T09:01:30.000Z" : null,
+  sent_at: null,
+  completed_at: null,
+  ...fields,
+})

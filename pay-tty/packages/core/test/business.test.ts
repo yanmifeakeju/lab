@@ -21,7 +21,7 @@ const nigeria = new Business.Details({ name: "Acme Ltd", countryCode: "NG" })
 const account = (holderRef: string, accountRef = `acct_${ulid()}`) =>
   new Business.PayableAccount({ holderRef, accountRef })
 
-// A principal and its new business, with no ledger account yet.
+// Creates a principal and a business in `created` status (no payable account yet).
 const createBusiness = (details = nigeria) =>
   Effect.gen(function* () {
     const principals = yield* Principal.Service
@@ -33,7 +33,7 @@ const createBusiness = (details = nigeria) =>
     return { principal, business, service, ledger: business.primaryLedger.slug }
   })
 
-// A catalog ledger only this test sees, so only inside a rolled-back test.
+// Inserts a test ledger into the catalog within the current rolled-back transaction.
 const addLedger = (currency: string, countryCode: string | null = null) =>
   Effect.gen(function* () {
     const slug = Ledger.Slug.make(`${currency.toLowerCase()}_test_${ulid().toLowerCase()}`)
@@ -43,7 +43,7 @@ const addLedger = (currency: string, countryCode: string | null = null) =>
     return slug
   })
 
-// The seed configures no US ledger; these tests stand one in.
+// Seeds a default US ledger (not present in the base test seed).
 const addUsDefault = Effect.gen(function* () {
   const slug = yield* addLedger("USD", "US")
 
@@ -63,7 +63,6 @@ const countryDefault = (countryCode: string) =>
     return entry
   })
 
-// The business as stored, read without going through the service.
 const stored = (id: Business.ID) =>
   Effect.gen(function* () {
     const database = yield* Database
@@ -78,7 +77,7 @@ const dies = <A, E>(exit: Exit.Exit<A, E>) => Exit.isFailure(exit) && Cause.hasD
 const conflicts = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.map(Effect.flip(effect), Predicate.isTagged("Business.ConflictError"))
 
-// The constraint a failed query violated; pg's error is the cause Drizzle wraps.
+// Extracts the violated PostgreSQL constraint name from a failed Drizzle query.
 const violated = <A, E>(exit: Exit.Exit<A, E>) => {
   if (Exit.isSuccess(exit)) {
     return undefined
@@ -199,7 +198,7 @@ void test("create for an unknown principal is a defect", () =>
     ),
   ))
 
-// Committed: the principal row lock only serialises separate connections.
+// Runs without `rolledBack` so concurrent `create` calls contend on the principal row lock across connections.
 void test("concurrent creates for one principal make one business", () =>
   runtime.runPromise(
     Effect.gen(function* () {
@@ -380,7 +379,7 @@ void test("another business's account conflicts and records nothing", () =>
     }),
   ))
 
-// Committed: the business row lock only serialises separate connections.
+// Runs without `rolledBack` so concurrent calls contend on the business row lock across connections.
 void test("concurrent records of the same account record it once", () =>
   runtime.runPromise(
     Effect.gen(function* () {
