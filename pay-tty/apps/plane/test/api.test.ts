@@ -1864,7 +1864,7 @@ void test("the relay posts a succeeded payment to the ledger, and the merchant s
         description: `Payment received via ${title}`,
         pending: false,
         lines: [{
-          debit_account_ref: "acct_test_cash",
+          debit_account_ref: "acct_test_receivable",
           credit_account_ref: account,
           amount: 250_000,
           purpose: "payment",

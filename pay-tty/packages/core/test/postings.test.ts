@@ -249,7 +249,7 @@ const heldFirst = (sent: Deferred.Deferred<void>, go: Deferred.Deferred<void>, d
     }),
   )
 
-void test("a succeeded payment commits with one posting of its amount from cash to the business's account", () =>
+void test("a succeeded payment commits with one posting of its amount from receivable to the business's account", () =>
   runtime.runPromise(
     Testing.rolledBack(
       Effect.gen(function* () {
@@ -265,7 +265,7 @@ void test("a succeeded payment commits with one posting of its amount from cash 
         assert.equal(posting.kind, "payment")
         assert.equal(posting.description, `Payment received via ${link.title}`)
         assert.deepEqual(posting.lines, [
-          { debit_account_ref: "acct_test_cash", credit_account_ref: accountRef, amount: "2500000", purpose: "payment" },
+          { debit_account_ref: "acct_test_receivable", credit_account_ref: accountRef, amount: "2500000", purpose: "payment" },
         ])
         assert.equal(posting.state, "created")
         assert.equal(posting.attempts, 0)
@@ -289,11 +289,11 @@ void test("a success that can't be posted is not a success: the payment stays pe
         const link = yield* linkOf(business.id)
         const { payment } = yield* service.startPayment(link.shareToken, key(), null)
 
-        // A seeding error: the ledger has no cash account to post from.
+        // A seeding error: the ledger has no receivable account to post from.
         yield* database.use((db) =>
           db
             .delete(platformAccounts)
-            .where(and(eq(platformAccounts.ledger, link.ledger), eq(platformAccounts.label, "cash"))),
+            .where(and(eq(platformAccounts.ledger, link.ledger), eq(platformAccounts.label, "receivable"))),
         )
 
         const exit = yield* Testing.attempt(service.simulate(link.shareToken, payment.id, "succeeded"))
@@ -439,7 +439,7 @@ void test("the posting goes to the ledger under its own key with the stored entr
             kind: "payment",
             description: row.description,
             pending: false,
-            lines: [{ debit_account_ref: "acct_test_cash", credit_account_ref: accountRef, amount: 2_500_000, purpose: "payment" }],
+            lines: [{ debit_account_ref: "acct_test_receivable", credit_account_ref: accountRef, amount: 2_500_000, purpose: "payment" }],
           },
         }])
 

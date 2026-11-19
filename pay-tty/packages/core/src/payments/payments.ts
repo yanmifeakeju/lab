@@ -823,31 +823,31 @@ const make = Effect.gen(function* () {
     )
   })
 
-  // Enqueues a `ledger_postings` entry debiting `cash` and crediting the business's payable account.
+  // Enqueues a `ledger_postings` entry debiting `receivable` and crediting the business's payable account.
   const post = Effect.fnUntraced(function* (payment: typeof payments.$inferSelect) {
     const found = yield* database.use((db) =>
       db
         .select({
-          cash: platformAccounts.ledgerAccountRef,
+          receivable: platformAccounts.ledgerAccountRef,
           payable: businesses.primaryPayableAccountRef,
           title: paymentLinks.title,
         })
         .from(businesses)
         .leftJoin(
           platformAccounts,
-          and(eq(platformAccounts.ledger, payment.ledger), eq(platformAccounts.label, "cash")),
+          and(eq(platformAccounts.ledger, payment.ledger), eq(platformAccounts.label, "receivable")),
         )
         .leftJoin(paymentLinks, eq(paymentLinks.id, payment.linkId))
         .where(eq(businesses.id, payment.businessId)),
     )
 
-    const cash = found[0]?.cash ?? null
+    const receivable = found[0]?.receivable ?? null
     const payable = found[0]?.payable ?? null
     const title = found[0]?.title ?? null
 
-    if (cash === null || payable === null || title === null) {
+    if (receivable === null || payable === null || title === null) {
       return yield* Effect.die(
-        new Error(`no cash or payable account, or no link, for payment ${payment.id} in ${payment.ledger}`),
+        new Error(`no receivable or payable account, or no link, for payment ${payment.id} in ${payment.ledger}`),
       )
     }
 
@@ -861,7 +861,7 @@ const make = Effect.gen(function* () {
         description: `Payment received via ${title}`,
         lines: [
           {
-            debit_account_ref: cash,
+            debit_account_ref: receivable,
             credit_account_ref: payable,
             amount: payment.amount.toString(),
             purpose: "payment",
