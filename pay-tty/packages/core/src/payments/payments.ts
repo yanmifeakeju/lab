@@ -1,5 +1,5 @@
-import { and, desc, eq, gt, lte, type SQL, sql } from "drizzle-orm"
-import { Context, Duration, Effect, Encoding, Layer, Result, Schema } from "effect"
+import { and, desc, eq, gt, inArray, isNull, lte, type SQL, sql } from "drizzle-orm"
+import { Config, Context, Duration, Effect, Encoding, Layer, Option, Result, Schema } from "effect"
 import { Business } from "../business/business.ts"
 import { businesses } from "../business/sql.ts"
 import { Database } from "../database/client.ts"
@@ -14,6 +14,20 @@ import { paymentLinks, payments, paymentStatuses } from "./sql.ts"
 
 /** TTL in minutes for a pending payment before it expires. */
 export const paymentWindowMinutes = 30
+
+/**
+ * When a payment that succeeded at `at` settles: the first midnight UTC after
+ * it (T+1), or `at` plus a demo's `delay`.
+ */
+export const settlesAfter = (at: SQL, delay: Option.Option<Duration.Duration>) =>
+  Option.match(delay, {
+    // In UTC throughout: a day added in the session's zone drifts across DST.
+    onNone: () => sql`(date_trunc('day', (${at}) at time zone 'UTC') + interval '1 day') at time zone 'UTC'`,
+    onSome: (delay) => sql`(${at}) + ${Duration.toMillis(delay)} * interval '1 millisecond'`,
+  })
+
+/** Payment postings marked for capture per settlement pass. */
+export const settleBatchSize = 1000
 
 /** Maximum payment links returned per business listing, ordered newest first. */
 export const linkListLimit = 100
@@ -172,8 +186,10 @@ export const Source = Schema.Union([
 export class PaymentSummary extends Schema.Class<PaymentSummary>("Payments.PaymentSummary")({
   ...Payment.fields,
   state: State,
-  /** Timestamp when the ledger posted the entry, or null until settled. */
+  /** Timestamp when the payment became available, or null until settled. */
   settledAt: Schema.NullOr(Schema.Date),
+  /** When a payment not yet settled is due to settle, or null if it isn't waiting. */
+  settlesAt: Schema.NullOr(Schema.Date),
   /** Ledger journal entry reference, once recorded. */
   journalRef: Schema.NullOr(Schema.String),
   source: Source,
@@ -181,7 +197,7 @@ export class PaymentSummary extends Schema.Class<PaymentSummary>("Payments.Payme
 
 export class Paid extends Schema.TaggedClass<Paid>("Payments.Paid")("paid", { at: Schema.Date }) {}
 
-/** Event recorded when the ledger posts the payment to the merchant's account. */
+/** Event recorded when the payment becomes available in the merchant's account, citing the entry that did it. */
 export class Settled extends Schema.TaggedClass<Settled>("Payments.Settled")("settled", {
   at: Schema.Date,
   journalRef: Schema.String,
@@ -362,6 +378,13 @@ export interface Interface {
   ) => Effect.Effect<PaymentPage, LinkNotFoundError | CursorError>
   /** Retrieves a single payment and its event timeline. */
   readonly getPayment: (businessId: Business.ID, id: string) => Effect.Effect<PaymentDetail, PaymentNotFoundError>
+  /**
+   * Marks for capture up to `settleBatchSize` pending payment postings whose
+   * settle time has passed, for the relay to send, and returns how many.
+   */
+  readonly settle: Effect.Effect<number>
+  /** How long after succeeding a payment settles, or none for T+1 at midnight UTC. */
+  readonly settlementDelay: Option.Option<Duration.Duration>
 }
 
 export class Service extends Context.Service<Service, Interface>()("Payments") {}
@@ -499,7 +522,11 @@ const summaryColumns = {
   title: paymentLinks.title,
   postingState: ledgerPostings.state,
   journalRef: ledgerPostings.journalRef,
-  recordedAt: ledgerPostings.recordedAt,
+  // A pending posting settles when captured; one posted outright, when recorded.
+  settledAt: sql<Date | null>`coalesce(${ledgerPostings.resolvedAt}, ${ledgerPostings.recordedAt})`.mapWith(
+    ledgerPostings.recordedAt,
+  ),
+  settlesAt: ledgerPostings.settlesAt,
 }
 
 interface SummaryRow extends PaymentRow {
@@ -508,15 +535,17 @@ interface SummaryRow extends PaymentRow {
   readonly title: string
   readonly postingState: string | null
   readonly journalRef: string | null
-  readonly recordedAt: Date | null
+  readonly settledAt: Date | null
+  readonly settlesAt: Date | null
 }
 
-const summaryOf = ({ status, state, title, postingState, journalRef, recordedAt, ...row }: SummaryRow) =>
+const summaryOf = ({ status, state, title, postingState, journalRef, settledAt, settlesAt, ...row }: SummaryRow) =>
   new PaymentSummary({
     ...paymentFields(row),
     status,
     state,
-    settledAt: postingState === "posted" ? recordedAt : null,
+    settledAt: postingState === "posted" ? settledAt : null,
+    settlesAt: state === "settling" ? settlesAt : null,
     journalRef,
     source: { kind: "link", id: ID.make(row.payment.linkId), title },
   })
@@ -628,6 +657,36 @@ const shareToken = (): string => {
 
 const make = Effect.gen(function* () {
   const database = yield* Database
+
+  // Unset or blank, payments settle T+1; a demo sets a duration such as
+  // "5 minutes". Blanking the line is a natural way to turn a demo off.
+  const setting = Option.filter(
+    Option.map(yield* Config.option(Config.String("SETTLEMENT_DELAY")), (value) => value.trim()),
+    (value) => value !== "",
+  )
+
+  const settlementDelay = yield* Option.match(setting, {
+    onNone: () => Effect.succeedNone,
+    onSome: (value) =>
+      // SAFETY: fromInput checks the string itself and answers None for anything
+      // that isn't a duration, which is refused below.
+      Option.match(
+        // A delay is a finite wait, zero or more: Infinity can't be stored, and a
+        // negative one would make money available before it was paid.
+        Option.filter(Duration.fromInput(value as Duration.Input), (delay) => {
+          const millis = Duration.toMillis(delay)
+
+          return Number.isFinite(millis) && millis >= 0
+        }),
+        {
+          onNone: () =>
+            Effect.die(new Error(`the settlement delay "${value}" is not a duration of zero or more, such as "5 minutes"`)),
+          onSome: Effect.succeedSome,
+        },
+      ),
+  })
+
+  const settlesAt = settlesAfter(sql`now()`, settlementDelay)
 
   const createLink = Effect.fn("Payments.createLink")(function* (
     businessId: Business.ID,
@@ -859,6 +918,8 @@ const make = Effect.gen(function* () {
         paymentId: payment.id,
         kind: "payment",
         description: `Payment received via ${title}`,
+        pending: true,
+        settlesAt,
         lines: [
           {
             debit_account_ref: receivable,
@@ -1060,6 +1121,7 @@ const make = Effect.gen(function* () {
           ...summaryColumns,
           errorCode: ledgerPostings.errorCode,
           lastAttemptAt: ledgerPostings.lastAttemptAt,
+          resolutionRef: ledgerPostings.resolutionRef,
         })
         .from(payments)
         .innerJoin(ledgers, eq(ledgers.slug, payments.ledger))
@@ -1074,16 +1136,19 @@ const make = Effect.gen(function* () {
       return yield* new PaymentNotFoundError({ linkId: null, id })
     }
 
-    const { errorCode, lastAttemptAt, ...summary } = row
-    const { payment, postingState, journalRef, recordedAt } = summary
+    const { errorCode, lastAttemptAt, resolutionRef, ...summary } = row
+    const { payment, postingState, journalRef, settledAt } = summary
     const timeline: Array<Event> = []
 
     if (payment.status === "succeeded" && payment.completedAt !== null) {
       timeline.push(new Paid({ at: payment.completedAt }))
     }
 
-    if (postingState === "posted" && recordedAt !== null && journalRef !== null) {
-      timeline.push(new Settled({ at: recordedAt, journalRef }))
+    // A hold settles by its capture, so the capture is the entry to cite.
+    const settledBy = resolutionRef ?? journalRef
+
+    if (postingState === "posted" && settledAt !== null && settledBy !== null) {
+      timeline.push(new Settled({ at: settledAt, journalRef: settledBy }))
     }
 
     if (postingState === "refused" && lastAttemptAt !== null && errorCode !== null) {
@@ -1093,7 +1158,41 @@ const make = Effect.gen(function* () {
     return new PaymentDetail({ payment: summaryOf(summary), timeline })
   })
 
-  return Service.of({ createLink, findLink, startPayment, simulate, listLinks, listPayments, getPayment })
+  const settle = database.use((db) =>
+    db
+      .update(ledgerPostings)
+      .set({ resolution: "capture" })
+      .where(
+        inArray(
+          ledgerPostings.id,
+          db
+            .select({ id: ledgerPostings.id })
+            .from(ledgerPostings)
+            .where(
+              and(
+                lte(ledgerPostings.settlesAt, sql`now()`),
+                isNull(ledgerPostings.resolution),
+                eq(ledgerPostings.state, "pending"),
+              ),
+            )
+            .limit(settleBatchSize)
+            .for("update", { skipLocked: true }),
+        ),
+      )
+      .returning({ id: ledgerPostings.id }),
+  ).pipe(Effect.map((rows) => rows.length), Effect.withSpan("Payments.settle"))
+
+  return Service.of({
+    createLink,
+    findLink,
+    startPayment,
+    simulate,
+    listLinks,
+    listPayments,
+    getPayment,
+    settle,
+    settlementDelay,
+  })
 })
 
 export const layer = Layer.effect(Service)(make)

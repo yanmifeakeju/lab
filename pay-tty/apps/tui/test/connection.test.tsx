@@ -1819,7 +1819,7 @@ void test("o with no payout account opens its form, saving shows payouts; n crea
 
     tui.keys.pressEnter()
 
-    const requested = yield* tui.showing("Requested · waiting for the ledger to hold it…")
+    const requested = yield* tui.showing("Requested · setting the money aside…")
 
     assert.match(requested, /\[r\] Refresh/)
 

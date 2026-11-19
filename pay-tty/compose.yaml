@@ -101,6 +101,8 @@ services:
       PLANE_LEDGER_URL: http://ledger:8080
       PLANE_TOKEN_KEYS: ${PLANE_TOKEN_KEYS:?set PLANE_TOKEN_KEYS}
       PLANE_TOKEN_SIGNING_KEY_ID: ${PLANE_TOKEN_SIGNING_KEY_ID:?set PLANE_TOKEN_SIGNING_KEY_ID}
+      # Passed only when set: unset, payments settle T+1.
+      PLANE_SETTLEMENT_DELAY:
     networks: [internal]
     depends_on:
       setup:

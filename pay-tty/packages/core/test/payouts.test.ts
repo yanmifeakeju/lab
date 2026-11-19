@@ -3,7 +3,8 @@ import { test } from "node:test"
 
 import { PostJournalEntryRequestJson, ResolveJournalEntryRequestJson } from "@pay-tty/ledger-client"
 import { eq, sql } from "drizzle-orm"
-import { Cause, ConfigProvider, Duration, Effect, Exit, Layer, Logger, References, Schema } from "effect"
+import type { PgUpdateSetSource } from "drizzle-orm/pg-core"
+import { Cause, ConfigProvider, DateTime, Duration, Effect, Exit, Layer, Logger, References, Schema } from "effect"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientError from "effect/unstable/http/HttpClientError"
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
@@ -11,6 +12,7 @@ import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse"
 import { ulid } from "ulid"
 
 import { Business } from "../src/business/business.ts"
+import { Common } from "../src/common/schemas.ts"
 import { Database } from "../src/database/client.ts"
 import { LedgerClient } from "../src/ledger/client.ts"
 import { RelayNudge } from "../src/ledger/nudge.ts"
@@ -934,6 +936,7 @@ void test("a paid report captures the hold: the payout is paid at once, and the 
       const captured = yield* postingOf(payout.id)
 
       assert.deepEqual([captured.state, captured.journalRef, captured.resolutionRef], ["posted", "jrn_hold", "jrn_capture"])
+      assert.ok(captured.resolvedAt instanceof Date, "the capture records when")
       assert.equal((yield* get(businessId, payout.id)).status, "paid")
 
     }),
@@ -1059,6 +1062,54 @@ void test("a resolution the ledger refuses leaves the queue, keeping the hold fo
       assert.deepEqual(yield* Effect.flip(confirm(businessId, draft.id)), blocked)
       // It can't be confirmed in time, so it gives up its slot.
       assert.equal((yield* get(businessId, draft.id)).status, "cancelled")
+    }),
+  ))
+
+void test("a payment whose capture the ledger refused or voided blocks payouts like a payout's", () =>
+  run(
+    Effect.gen(function* () {
+      const database = yield* Database
+      const payments = yield* Payments.Service
+      const { id: businessId } = yield* payable
+      const at = DateTime.toDate(DateTime.makeUnsafe("2026-11-19T00:00:00Z"))
+
+      const { link } = yield* payments.createLink(
+        businessId,
+        Common.IdempotencyKey.make(`key_${ulid()}`),
+        new Payments.Details({ title: "Logo design", description: null, pricing: new Payments.Fixed({ amount: 2_500_000n }) }),
+      )
+
+      const paidPayment = Effect.gen(function* () {
+        const { payment } = yield* payments.startPayment(link.shareToken, Common.IdempotencyKey.make(`key_${ulid()}`), null)
+
+        return yield* payments.simulate(link.shareToken, payment.id, "succeeded")
+      })
+
+      const [refused, voided] = [yield* paidPayment, yield* paidPayment]
+
+      const set = (paymentId: string, values: PgUpdateSetSource<typeof ledgerPostings>) =>
+        database.use((db) => db.update(ledgerPostings).set(values).where(eq(ledgerPostings.paymentId, paymentId)))
+
+      // Recorded holds, marked for capture; nothing is wrong yet.
+      for (const payment of [refused, voided]) {
+        yield* set(payment.id, { state: "pending", journalRef: `jrn_${payment.id}`, recordedAt: at, resolution: "capture" })
+      }
+
+      const draft = yield* create(businessId, 1_000_000n)
+      const blocked = new Payouts.LedgerMismatchError({ businessId, ledger: ngn })
+
+      // The ledger refuses one capture: payouts stop.
+      yield* set(refused.id, { state: "refused", errorCode: "account_closed" })
+
+      assert.deepEqual(yield* Effect.flip(create(businessId, 1_000_000n)), blocked)
+      assert.deepEqual(yield* Effect.flip(confirm(businessId, draft.id)), blocked)
+
+      // Corrected, payouts resume; a capture resolved as voided stops them again.
+      yield* set(refused.id, { state: "posted", errorCode: null, resolutionRef: "jrn_captured", resolvedAt: at })
+      yield* create(businessId, 1_000_000n)
+      yield* set(voided.id, { state: "voided", resolutionRef: "jrn_voided", resolvedAt: at })
+
+      assert.deepEqual(yield* Effect.flip(create(businessId, 1_000_000n)), blocked)
     }),
   ))
 

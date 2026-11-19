@@ -508,7 +508,8 @@ const make = Effect.gen(function* () {
 
   // A paid payout's voided hold returns its money to the balance, so another
   // payout could pay it twice; a failed payout's capture took the business's
-  // money, which is put back first. Either blocks payouts until support fixes it.
+  // money, which is put back first. A payment's refused or voided capture leaves
+  // the balance wrong too. Any of them blocks payouts until support fixes it.
   const refuseMismatched = (businessId: Business.ID, ledger: Ledger.Slug) =>
     Effect.gen(function* () {
       const mismatched = yield* database.use((db) =>

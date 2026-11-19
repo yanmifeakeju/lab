@@ -94,11 +94,12 @@ export const paymentRows = (
     (timeWidth === 0 ? 0 : timeWidth + gap.length) +
     statusWidth + gap.length
 
+  // A pending payment's expiry, or when a settling one becomes available.
   const expiryColumns = gap.length + "expires 00:00".length
 
   const expiryWidth = !narrow &&
     baseWidth + expiryColumns <= width &&
-    payments.some((payment) => payment.status === "pending")
+    payments.some((payment) => payment.status === "pending" || payment.settles_at !== null)
     ? expiryColumns
     : 0
 
@@ -130,26 +131,42 @@ export const paymentRows = (
 
     const row = columns.join(gap)
 
-    return cell(
-      payment.status === "pending" && expiryWidth > 0
-        ? row + gap + "expires " + payment.expires_at.slice(11, 16)
-        : row,
-      width,
-    )
+    const due = expiryWidth === 0
+      ? null
+      : payment.status === "pending"
+        ? "expires " + payment.expires_at.slice(11, 16)
+        : payment.settles_at === null ? null : "avail. " + availableAt(payment.settles_at, today)
+
+    return cell(due === null ? row : row + gap + due, width)
   })
 }
 
 const clock = (iso: string) => iso.slice(11, 16)
 
-/** One line per event, e.g. `Paid ₦25,000.00 · 14:02` then `Settled · 14:02 · jrn_…`. */
-export const timelineLines = (detail: Detail): ReadonlyArray<string> =>
-  detail.timeline.map((event) => {
+// `~14:07` on `today`, else the date, `10-23`: settlement lands just after its time.
+const availableAt = (iso: string, today: string) =>
+  iso.slice(0, 10) === today ? "~" + clock(iso) : iso.slice(5, 10)
+
+/** A demo's settlement delay for the frame's title, e.g. `5 min`. */
+export const delayLabel = (seconds: number) =>
+  seconds < 120 ? `${seconds} s` : seconds < 7200 ? `${Math.round(seconds / 60)} min` : `${Math.round(seconds / 3600)} h`
+
+/**
+ * One line per event, e.g. `Paid ₦25,000.00 · 14:02` then `Settled · 14:02 · jrn_…`.
+ * A refusal is ours to resolve, so the merchant sees it as under review, not its code.
+ */
+export const timelineLines = (detail: Detail): ReadonlyArray<string> => [
+  ...detail.timeline.flatMap((event) => {
     switch (event.kind) {
       case "paid":
-        return `Paid ${formatMoney(BigInt(detail.payment.amount), detail.payment.scale, detail.payment.currency_code)} · ${clock(event.at)}`
+        return [`Paid ${formatMoney(BigInt(detail.payment.amount), detail.payment.scale, detail.payment.currency_code)} · ${clock(event.at)}`]
       case "settled":
-        return `Settled · ${clock(event.at)} · ${event.journal_ref}`
+        return [`Settled · ${clock(event.at)} · ${event.journal_ref}`]
       case "refused":
-        return `Ledger refused: ${event.error_code}`
+        return []
     }
-  })
+  }),
+  ...(detail.payment.settles_at === null ? [] : [`Available from ~${formatTime(detail.payment.settles_at)}`]),
+  // A person is looking at it, which the merchant can't speed up.
+  ...(detail.payment.state === "attention" ? ["Under review · no action needed"] : []),
+]

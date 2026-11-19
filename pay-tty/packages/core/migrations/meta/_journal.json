@@ -106,6 +106,13 @@
       "when": 1794931088568,
       "tag": "0014_payout-status-checks",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1795096304781,
+      "tag": "0015_payment-settlement",
+      "breakpoints": true
     }
   ]
 }

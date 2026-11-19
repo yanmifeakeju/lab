@@ -10,6 +10,9 @@ export class MeResponse extends Schema.Class<MeResponse>("MeResponse")({
   created_at: Schema.String,
   // Null only when no business is linked, whatever the linked one's status.
   business: Schema.NullOr(BusinessInfo),
+  // Set only in a demo, where payments settle this long after succeeding
+  // instead of at the next midnight UTC.
+  settlement_delay_seconds: Schema.NullOr(Schema.Int),
 }) {}
 
 export const me = HttpApiGroup.make("me").add(

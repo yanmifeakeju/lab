@@ -22,8 +22,10 @@ export class PaymentSummary extends Schema.Class<PaymentSummary>("PaymentSummary
   created_at: Schema.String,
   expires_at: Schema.String,
   completed_at: Schema.NullOr(Schema.String),
-  // Set once the ledger has posted it.
+  // Set once it is available to pay out.
   settled_at: Schema.NullOr(Schema.String),
+  // While settling, when it is due to become available.
+  settles_at: Schema.NullOr(Schema.String),
   journal_ref: Schema.NullOr(Schema.String),
   source: Schema.Union([
     Schema.Struct({ kind: Schema.tag("link"), id: Schema.String, title: Schema.String }),
@@ -73,6 +75,7 @@ const paymentSummary = (payment: Payments.PaymentSummary) => new PaymentSummary(
   expires_at: payment.expiresAt.toISOString(),
   completed_at: payment.completedAt?.toISOString() ?? null,
   settled_at: payment.settledAt?.toISOString() ?? null,
+  settles_at: payment.settlesAt?.toISOString() ?? null,
   journal_ref: payment.journalRef,
   source: payment.source,
 })

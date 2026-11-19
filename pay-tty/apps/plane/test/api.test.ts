@@ -14,7 +14,7 @@ import { Testing } from "@pay-tty/core/testing"
 import { ScriptedProvider } from "@pay-tty/core/testing/provider"
 import { Testing as Databases } from "@pay-tty/database/testing"
 import { sql } from "drizzle-orm"
-import { Clock, DateTime, Duration, Effect, Encoding, Layer, Schema, type Scope } from "effect"
+import { Clock, ConfigProvider, DateTime, Duration, Effect, Encoding, Layer, Schema, type Scope } from "effect"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 import { decodeJwt, type JWTHeaderParameters, type JWTPayload, SignJWT } from "jose"
 import { ulid } from "ulid"
@@ -23,7 +23,7 @@ import { Account } from "../src/api/business/account.ts"
 import { BusinessBalance, BusinessInfo, BusinessLedger, BusinessStatement, StatementMovement } from "../src/api/business/routes.ts"
 import { MeResponse } from "../src/api/me/routes.ts"
 import { CustomerChoosesPricing, FixedPricing, PaymentLink, PaymentLinkList } from "../src/api/payment_links/routes.ts"
-import { PaymentDetail, PaymentPage, RefusedEvent, SettledEvent } from "../src/api/payments/routes.ts"
+import { PaymentDetail, PaymentPage, RefusedEvent } from "../src/api/payments/routes.ts"
 import { PaymentStats } from "../src/api/payment-stats.ts"
 import { BankList, ConfirmedPayout, CreatedPayout, Destination, Payout, PayoutPage, PayoutSettings } from "../src/api/payouts/routes.ts"
 import { PayableLink, Payment as PayPayment } from "../src/api/pay/routes.ts"
@@ -91,7 +91,10 @@ const server = (options: ServerOptions = {}) =>
               standIn === undefined
                 ? Business.layer
                 : Layer.effect(Business.Service)(Effect.map(Business.Service, standIn)).pipe(Layer.provide(Business.layer)),
-              Payments.layer,
+              // Payments settle as soon as the ledger records them.
+              Payments.layer.pipe(
+                Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({ SETTLEMENT_DELAY: "0 seconds" }))),
+              ),
               Payouts.layer,
             ),
           ),
@@ -1862,7 +1865,7 @@ void test("the relay posts a succeeded payment to the ledger, and the merchant s
         ledger: "ngn_ng",
         kind: "payment",
         description: `Payment received via ${title}`,
-        pending: false,
+        pending: true,
         lines: [{
           debit_account_ref: "acct_test_receivable",
           credit_account_ref: account,
@@ -1875,11 +1878,16 @@ void test("the relay posts a succeeded payment to the ledger, and the merchant s
       assert.equal(detail.payment.status, "succeeded")
       assert.ok(detail.payment.journal_ref !== null && detail.payment.settled_at !== null)
       assert.deepEqual(detail.timeline.map((event) => event.kind), ["paid", "settled"])
-      assert.deepEqual(detail.timeline[1], new SettledEvent({
-        kind: "settled",
-        at: detail.payment.settled_at,
-        journal_ref: detail.payment.journal_ref,
-      }))
+      // Settled by capturing the hold the payment recorded, so it cites the capture.
+      const settledEvent = detail.timeline[1]
+
+      assert.ok(plane.ledger.resolutions.some((resolution) =>
+        resolution.journalRef === detail.payment.journal_ref && resolution.payload.action === "capture"
+      ))
+      assert.ok(settledEvent?.kind === "settled")
+      assert.equal(settledEvent.at, detail.payment.settled_at)
+      assert.match(settledEvent.journal_ref, /^jrn_/)
+      assert.notEqual(settledEvent.journal_ref, detail.payment.journal_ref)
 
       const page = yield* Schema.decodeUnknownEffect(PaymentPage)(
         (yield* send(plane, { method: "GET", path: "/payments?state=settled", authorization })).json,
@@ -2715,8 +2723,9 @@ void test("a created payout moves nothing until confirmed; confirmed, it is held
       assert.equal((yield* Schema.decodeUnknownEffect(Payout)(again.json, strict)).status, "sent")
       assert.equal(plane.ledger.entries.filter((entry) => entry.payload.kind === "payout").length, 1)
 
-      // Sent but unreported: nothing is captured or voided.
-      assert.deepEqual(plane.ledger.resolutions, [])
+      // Sent but unreported: the hold is neither captured nor voided. The
+      // payments that funded it settled, so their captures are the only ones.
+      assert.deepEqual(plane.ledger.resolutions.filter((resolution) => resolution.key.startsWith(hold?.key ?? "")), [])
     }),
   ))
 

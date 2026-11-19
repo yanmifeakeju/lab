@@ -20,7 +20,7 @@ import {
   totalsLine,
   withMode,
 } from "./payment-link.ts"
-import { filterLine, filters, type Page, paymentRows, paymentTiming, type State as PaymentState, timelineLines } from "./payments.ts"
+import { delayLabel, filterLine, filters, type Page, paymentRows, paymentTiming, type State as PaymentState, timelineLines } from "./payments.ts"
 import { formatMoney } from "./money.ts"
 import {
   amountLine,
@@ -28,7 +28,7 @@ import {
   destinationLabel,
   destinationLine,
   expiryTime,
-  mismatchKey,
+  reviewKey,
   troubled,
   detailLines,
   type Field as PayoutField,
@@ -114,6 +114,11 @@ const CreateBusiness = (props: {
     </Show>
   </box>
 )
+
+// Names a demo's settlement delay, so payments settling in minutes aren't taken
+// for how the product behaves.
+const demoTitle = (delay: number | null) =>
+  delay === null ? " pay-tty " : ` pay-tty · demo: payments settle after ${delayLabel(delay)} `
 
 const ShowBalance = (props: { readonly balance: Balance }) => (
   <Switch>
@@ -611,8 +616,8 @@ const PayoutList = (props: { readonly view: PayoutsView; readonly selected: numb
           </Show>
         </scrollbox>
       </Show>
-      <Show when={mismatchKey(props.view.page.payouts)}>
-        {(key) => <text flexShrink={0} fg={error}>{key()}</text>}
+      <Show when={reviewKey(props.view.page.payouts)}>
+        {(key) => <text flexShrink={0} fg={muted}>{key()}</text>}
       </Show>
       <text flexShrink={0} fg={muted}>{props.pending ? "Loading…" : hints()}</text>
     </box>
@@ -1404,7 +1409,7 @@ export const App = (props: {
       paddingY={short() ? 0 : 1}
       flexDirection="column"
       gap={short() ? 0 : 1}
-      title=" pay-tty "
+      title={demoTitle(props.state().settlementDelay)}
     >
       <Switch>
         <Match when={View.$is("Unknown")(view()) && props.state().pending}>
@@ -1520,11 +1525,7 @@ export const App = (props: {
               <text flexShrink={0}>Link: {shown().detail.payment.source.title}</text>
               <text flexShrink={0}>Created: {formatTime(shown().detail.payment.created_at)}</text>
               <text flexShrink={0}>{paymentTiming(shown().detail.payment)}</text>
-              <For each={timelineLines(shown().detail)}>{(line, index) => (
-                <Show when={shown().detail.timeline[index()]?.kind === "refused"} fallback={<text flexShrink={0}>{line}</text>}>
-                  <text flexShrink={0} fg={error}>{line}</text>
-                </Show>
-              )}</For>
+              <For each={timelineLines(shown().detail)}>{(line) => <text flexShrink={0}>{line}</text>}</For>
               <text flexShrink={0} fg={muted}>Payment ID: {shown().detail.payment.id}</text>
             </LinkScreen>
           )}

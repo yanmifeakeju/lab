@@ -3,7 +3,8 @@ import { test } from "node:test"
 
 import { PostJournalEntryRequestJson } from "@pay-tty/ledger-client"
 import { and, eq, inArray, sql } from "drizzle-orm"
-import { Cause, ConfigProvider, DateTime, Deferred, Duration, Effect, Exit, Fiber, Layer, Logger, LogLevel, Predicate, Schema } from "effect"
+import { Cause, ConfigProvider, DateTime, Deferred, Duration, Effect, Exit, Fiber, Layer, Logger, LogLevel, Option, Predicate, Schema } from "effect"
+import type { PgUpdateSetSource } from "drizzle-orm/pg-core"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientError from "effect/unstable/http/HttpClientError"
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
@@ -116,7 +117,7 @@ const entry = (payload: Payload, journalRef: string, createdAt = "2026-10-26T14:
     journal_ref: journalRef,
     ledger_slug: payload.ledger,
     kind: payload.kind,
-    state: "posted",
+    state: payload.pending ? "pending" : "posted",
     description: payload.description,
     created_at: createdAt,
   },
@@ -272,9 +273,138 @@ void test("a succeeded payment commits with one posting of its amount from recei
         assert.equal(posting.journalRef, null)
         assert.equal(posting.recordedAt, null)
 
+        // Held until it settles, at the first midnight UTC after it succeeded.
+        const completed = DateTime.makeUnsafe(payment.completedAt ?? 0)
+        const midnight = DateTime.toDate(DateTime.startOf(DateTime.add(completed, { days: 1 }), "day"))
+
+        assert.equal(posting.pending, true)
+        assert.deepEqual(posting.settlesAt, midnight)
+
         const others = yield* Effect.all([paid(link, "failed"), paid(link, "cancelled")])
 
         assert.deepEqual(yield* postingsOf(others.map((other) => other.id)), [])
+      }),
+    ),
+  ))
+
+void test("T+1 settles at the first midnight UTC after a payment, in any session zone and across DST", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const database = yield* Database
+
+        const settles = (zone: string, at: string) =>
+          Effect.gen(function* () {
+            yield* database.use((db) => db.execute(sql`select set_config('timezone', ${zone}, true)`))
+
+            const result = yield* database.use((db) =>
+              db.execute<{ at: string }>(
+                sql`select to_char(${Payments.settlesAfter(sql`${at}::timestamptz`, Option.none())} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as at`,
+              ),
+            )
+
+            return result.rows[0]?.at
+          })
+
+        for (const zone of ["UTC", "Europe/London", "Africa/Lagos", "America/New_York"]) {
+          // Either side of midnight: just before settles that midnight, just after waits a day.
+          assert.equal(yield* settles(zone, "2026-11-19T23:59:59Z"), "2026-11-20T00:00:00Z", zone)
+          assert.equal(yield* settles(zone, "2026-11-20T00:00:01Z"), "2026-11-21T00:00:00Z", zone)
+          // Exactly midnight is already that day: it waits for the next.
+          assert.equal(yield* settles(zone, "2026-11-20T00:00:00Z"), "2026-11-21T00:00:00Z", zone)
+          // The days the clocks change in Europe and the US.
+          assert.equal(yield* settles(zone, "2027-03-28T12:00:00Z"), "2027-03-29T00:00:00Z", zone)
+          assert.equal(yield* settles(zone, "2027-10-31T12:00:00Z"), "2027-11-01T00:00:00Z", zone)
+          assert.equal(yield* settles(zone, "2027-03-14T12:00:00Z"), "2027-03-15T00:00:00Z", zone)
+          assert.equal(yield* settles(zone, "2027-11-07T12:00:00Z"), "2027-11-08T00:00:00Z", zone)
+        }
+      }),
+    ),
+  ))
+
+void test("in a demo, a payment settles the set delay after it succeeded", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const { business } = yield* createBusiness()
+        const link = yield* linkOf(business.id)
+        const payment = yield* paid(link)
+
+        assert.deepEqual(
+          (yield* postingOf(payment.id)).settlesAt,
+          DateTime.toDate(DateTime.addDuration(DateTime.makeUnsafe(payment.completedAt ?? 0), Duration.minutes(5))),
+        )
+      }).pipe(
+        Effect.provide(
+          // Fresh: the runtime already built one without the delay.
+          Layer.fresh(Payments.layer).pipe(
+            Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({ SETTLEMENT_DELAY: "5 minutes" }))),
+          ),
+        ),
+      ),
+    ),
+  ))
+
+void test("a blank settlement delay means T+1, a duration sets a demo's, and anything else stops plane starting", () =>
+  runtime.runPromise(
+    Effect.gen(function* () {
+      const delayOf = (value: string) =>
+        Effect.exit(
+          Effect.map(Payments.Service, (service) => Option.map(service.settlementDelay, Duration.toMillis)).pipe(
+            // Fresh: the runtime already built one from its own config.
+            Effect.provide(
+              Layer.fresh(Payments.layer).pipe(
+                Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({ SETTLEMENT_DELAY: value }))),
+              ),
+            ),
+          ),
+        )
+
+      // An empty value is already unset by the config provider; whitespace isn't.
+      for (const blank of ["", "  "]) {
+        assert.deepEqual(yield* delayOf(blank), Exit.succeed(Option.none()), `blank "${blank}"`)
+      }
+
+      assert.deepEqual(yield* delayOf(" 5 minutes "), Exit.succeed(Option.some(300_000)))
+      assert.deepEqual(yield* delayOf("0 seconds"), Exit.succeed(Option.some(0)))
+
+      for (const unusable of ["5m", "Infinity", "-5 minutes"]) {
+        assert.ok(Exit.hasDies(yield* delayOf(unusable)), `${unusable} stops the layer`)
+      }
+    }),
+  ))
+
+void test("settling marks a recorded payment for capture once its time has passed, and only then", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const database = yield* Database
+        const service = yield* Payments.Service
+        const { business } = yield* createBusiness()
+        const link = yield* linkOf(business.id)
+        const [due, early, unrecorded] = yield* Effect.all([paid(link), paid(link), paid(link)])
+        const recordedAt = DateTime.toDate(yield* DateTime.now)
+
+        const set = (paymentId: string, values: PgUpdateSetSource<typeof ledgerPostings>) =>
+          database.use((db) => db.update(ledgerPostings).set(values).where(eq(ledgerPostings.paymentId, paymentId)))
+
+        const past = sql`now() - interval '1 second'`
+        const recorded = { state: "pending", journalRef: "jrn_hold", recordedAt } as const
+
+        yield* set(due.id, { ...recorded, settlesAt: past })
+        yield* set(early.id, { ...recorded, settlesAt: sql`now() + interval '1 minute'` })
+        // Not yet in the ledger: it settles once the relay records the hold.
+        yield* set(unrecorded.id, { settlesAt: past })
+
+        assert.equal(yield* service.settle, 1)
+
+        const rows = yield* postingsOf([due.id, early.id, unrecorded.id])
+        const resolutionOf = (id: string) => rows.find((row) => row.paymentId === id)?.resolution
+
+        assert.deepEqual([resolutionOf(due.id), resolutionOf(early.id), resolutionOf(unrecorded.id)], ["capture", null, null])
+
+        // Settled once: a second pass, or another plane, finds nothing.
+        assert.equal(yield* service.settle, 0)
       }),
     ),
   ))
@@ -354,18 +484,31 @@ void test("the database keeps a posting in its payment's ledger, one per payment
 
         const at = DateTime.toDate(yield* DateTime.now)
 
+        // The shapes below start from an entry posted at once, not a payment's hold.
+        yield* database.use((db) =>
+          db.update(ledgerPostings).set({ pending: false, settlesAt: null }).where(eq(ledgerPostings.id, existing.id)),
+        )
+
+        // A resolution is recorded with when, and only a payment's hold settles.
+        assert.equal(
+          violated(yield* update({ state: "voided", pending: true, journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2", resolution: "void" })),
+          "ledger_postings_resolved_with_ref",
+        )
+        assert.equal(violated(yield* update({ resolvedAt: at })), "ledger_postings_resolved_with_ref")
+        assert.equal(violated(yield* update({ settlesAt: at })), "ledger_postings_settles_pending_payments")
+
         const rejected: ReadonlyArray<readonly [string, Partial<typeof ledgerPostings.$inferInsert>]> = [
           ["created with a journal entry", { journalRef: "jrn_1", recordedAt: at }],
           ["created with an error", { errorCode: "account_closed" }],
           ["pending without its authorization", { state: "pending", pending: true }],
-          ["pending already resolved", { state: "pending", pending: true, journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2" }],
+          ["pending already resolved", { state: "pending", pending: true, journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2", resolvedAt: at }],
           ["posted without a journal entry", { state: "posted" }],
           ["posted with an error", { state: "posted", journalRef: "jrn_1", recordedAt: at, errorCode: "account_closed" }],
           ["voided without its resolution", { state: "voided", pending: true, journalRef: "jrn_1", recordedAt: at, resolution: "void" }],
-          ["posted immediately with a resolution", { state: "posted", journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2" }],
+          ["posted immediately with a resolution", { state: "posted", journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2", resolvedAt: at }],
           ["captured without its resolution", { state: "posted", journalRef: "jrn_1", recordedAt: at, pending: true, resolution: "capture" }],
           ["refused without an error", { state: "refused" }],
-          ["refused with a resolution", { state: "refused", errorCode: "account_closed", journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2" }],
+          ["refused with a resolution", { state: "refused", errorCode: "account_closed", journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2", resolvedAt: at }],
         ]
 
         for (const [reason, values] of rejected) {
@@ -376,8 +519,8 @@ void test("the database keeps a posting in its payment's ledger, one per payment
         const undecided: ReadonlyArray<readonly [string, Partial<typeof ledgerPostings.$inferInsert>]> = [
           ["decided before the hold is recorded", { pending: true, resolution: "capture" }],
           ["decided for an entry posted at once", { state: "posted", journalRef: "jrn_1", recordedAt: at, resolution: "capture" }],
-          ["captured undecided", { state: "posted", pending: true, journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2" }],
-          ["voided undecided", { state: "voided", pending: true, journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2" }],
+          ["captured undecided", { state: "posted", pending: true, journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2", resolvedAt: at }],
+          ["voided undecided", { state: "voided", pending: true, journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2", resolvedAt: at }],
         ]
 
         for (const [reason, values] of undecided) {
@@ -390,7 +533,7 @@ void test("the database keeps a posting in its payment's ledger, one per payment
         // Only a hold is ever pending or voided.
         assert.equal(violated(yield* update({ state: "pending", journalRef: "jrn_1", recordedAt: at })), "ledger_postings_pending_states")
         assert.equal(
-          violated(yield* update({ state: "voided", journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2" })),
+          violated(yield* update({ state: "voided", journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2", resolvedAt: at })),
           "ledger_postings_pending_states",
         )
 
@@ -398,10 +541,10 @@ void test("the database keeps a posting in its payment's ledger, one per payment
           { state: "posted", journalRef: "jrn_1", recordedAt: at },
           { state: "pending", pending: true, journalRef: "jrn_1", recordedAt: at },
           { state: "pending", pending: true, journalRef: "jrn_1", recordedAt: at, resolution: "void" },
-          { state: "posted", pending: true, journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2", resolution: "capture" },
-          { state: "voided", pending: true, journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2", resolution: "void" },
+          { state: "posted", pending: true, journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2", resolvedAt: at, resolution: "capture" },
+          { state: "voided", pending: true, journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2", resolvedAt: at, resolution: "void" },
           // The ledger's word wins over what plane asked.
-          { state: "voided", pending: true, journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2", resolution: "capture" },
+          { state: "voided", pending: true, journalRef: "jrn_1", recordedAt: at, resolutionRef: "jrn_2", resolvedAt: at, resolution: "capture" },
           { state: "refused", pending: false, errorCode: "account_closed", resolution: null },
         ] as const) {
           assert.ok(Exit.isSuccess(yield* update(values)), values.state)
@@ -438,14 +581,14 @@ void test("the posting goes to the ledger under its own key with the stored entr
             ledger: row.ledger,
             kind: "payment",
             description: row.description,
-            pending: false,
+            pending: true,
             lines: [{ debit_account_ref: "acct_test_receivable", credit_account_ref: accountRef, amount: 2_500_000, purpose: "payment" }],
           },
         }])
 
         const posted = yield* postingOf(payment.id)
 
-        assert.equal(posted.state, "posted")
+        assert.equal(posted.state, "pending")
         assert.equal(posted.journalRef, "jrn_first")
         assert.deepEqual(posted.recordedAt, DateTime.toDate(DateTime.makeUnsafe("2026-10-26T14:02:00Z")))
         assert.equal(posted.attempts, 1)
@@ -494,7 +637,7 @@ void test("a refusal is recorded with its code, and a failure leaves the posting
 
         const posted = yield* postingOf(retried.paymentId ?? "")
 
-        assert.deepEqual([posted.state, posted.journalRef, posted.attempts], ["posted", "jrn_retried", 3])
+        assert.deepEqual([posted.state, posted.journalRef, posted.attempts], ["pending", "jrn_retried", 3])
         assert.equal(new Set(flaky.sent.map((call) => JSON.stringify(call))).size, 1, "every retry is identical")
       }),
     ),
@@ -545,7 +688,7 @@ void test("a relay pass sends what is waiting and stops at the first posting the
 
         const after = new Map((yield* postingsOf(ids)).map((row) => [row.id, [row.state, row.attempts]]))
 
-        assert.deepEqual(after.get(first?.id ?? ""), ["posted", 1])
+        assert.deepEqual(after.get(first?.id ?? ""), ["pending", 1])
         assert.deepEqual(after.get(second?.id ?? ""), ["created", 1])
         assert.deepEqual(after.get(third?.id ?? ""), ["created", 0], "not sent once the ledger was down")
 
@@ -565,7 +708,7 @@ void test("a relay pass sends what is waiting and stops at the first posting the
         const up = fakeLedger(({ payload, key }) => entry(payload, `jrn_${key}`))
 
         yield* relay(up.layer)
-        assert.deepEqual((yield* postingsOf(ids)).map((row) => row.state), ["posted", "posted", "posted"])
+        assert.deepEqual((yield* postingsOf(ids)).map((row) => row.state), ["pending", "pending", "pending"])
         assert.deepEqual(
           up.sent.map((call) => call.key).filter((key) => key === second?.id || key === third?.id),
           [second?.id, third?.id],
@@ -578,6 +721,33 @@ void test("a relay pass sends what is waiting and stops at the first posting the
 
         yield* relay(up.layer)
         assert.equal(sent(), before)
+      }),
+    ),
+  ))
+
+void test("a relay pass reports a full batch while more is waiting, so the caller can go again", () =>
+  runtime.runPromise(
+    Testing.rolledBack(
+      Effect.gen(function* () {
+        const { business } = yield* createBusiness()
+        const link = yield* linkOf(business.id)
+        const up = fakeLedger(({ payload, key }) => entry(payload, `jrn_${key}`))
+        const batch = Array.from({ length: LedgerPostings.relayBatchSize + 1 })
+
+        const ids = yield* Effect.forEach(batch, () => Effect.map(paid(link), (payment) => payment.id))
+
+        // Eleven are waiting, so the first pass is full. Passes then go on until
+        // one comes back short, which other files' postings can only delay.
+        assert.equal(yield* relay(up.layer), LedgerPostings.relayBatchSize)
+
+        let passes = 1
+
+        while ((yield* relay(up.layer)) === LedgerPostings.relayBatchSize) {
+          passes += 1
+          assert.ok(passes < 100, "a pass came back short")
+        }
+
+        assert.ok((yield* postingsOf(ids)).every((row) => row.state === "pending"), "a short pass left nothing of ours")
       }),
     ),
   ))
@@ -618,7 +788,7 @@ void test("a posting the ledger will never take leaves the queue, and the rest o
 
         assert.deepEqual(after.get(conflicted?.id ?? ""), ["refused", "idempotency_conflict"])
         assert.deepEqual(after.get(invalid?.id ?? ""), ["refused", "validation_error"])
-        assert.deepEqual(after.get(fine?.id ?? ""), ["posted", null])
+        assert.deepEqual(after.get(fine?.id ?? ""), ["pending", null])
 
         // Out of the queue: the next pass sends neither again.
         const refusedKeys = new Set([conflicted?.id, invalid?.id])
@@ -667,12 +837,12 @@ void test("a send records nothing on a claim it no longer holds", () =>
 
         const posted = yield* postingOf(row.paymentId ?? "")
 
-        assert.deepEqual([posted.state, posted.attempts, posted.journalRef], ["posted", 1, "jrn_current"])
+        assert.deepEqual([posted.state, posted.attempts, posted.journalRef], ["pending", 1, "jrn_current"])
 
         // Resolved once: the stale pass can't move it again either.
         yield* database.use((db) => db.update(ledgerPostings).set({ claimId: stale }).where(eq(ledgerPostings.id, row.id)))
         yield* send(row, stale).pipe(Effect.provide(fakeLedger(() => refusal(409, "account_closed")).layer))
-        assert.equal((yield* postingOf(row.paymentId ?? "")).state, "posted")
+        assert.equal((yield* postingOf(row.paymentId ?? "")).state, "pending")
       }),
     ),
   ))
@@ -790,7 +960,7 @@ void test("a posting the ledger took but plane never recorded is posted from the
 
         const stored = yield* postingOf(row.paymentId ?? "")
 
-        assert.deepEqual([stored.state, stored.journalRef, stored.attempts], ["posted", journalRef, 1])
+        assert.deepEqual([stored.state, stored.journalRef, stored.attempts], ["pending", journalRef, 1])
       }),
     ),
   ))
@@ -834,7 +1004,7 @@ void test("a ledger slower than the send timeout leaves the posting to retry, an
 
         const stored = yield* postingOf(slow?.paymentId ?? "")
 
-        assert.deepEqual([stored.state, stored.journalRef, stored.attempts], ["posted", `jrn_${slow?.id}`, 2])
+        assert.deepEqual([stored.state, stored.journalRef, stored.attempts], ["pending", `jrn_${slow?.id}`, 2])
       }),
     ),
   ))
@@ -965,8 +1135,8 @@ void test("the relay holds no connection or lock while the ledger answers", () =
         ),
       )
 
-      assert.deepEqual(checks, [["posted", true]])
-      assert.deepEqual((yield* postingsOf(ids)).map((row) => row.state), ["posted", "posted"])
+      assert.deepEqual(checks, [["pending", true]])
+      assert.deepEqual((yield* postingsOf(ids)).map((row) => row.state), ["pending", "pending"])
     }),
   ))
 
@@ -983,11 +1153,19 @@ void test("settling, settled and attention agree across rows, filters and totals
         const attention = yield* paid(link)
         const failed = yield* paid(link, "failed")
         const recordedAt = DateTime.toDate(DateTime.makeUnsafe("2026-10-26T14:02:00Z"))
+        const capturedAt = DateTime.toDate(DateTime.makeUnsafe("2026-10-27T00:00:05Z"))
 
         const set = (paymentId: string, values: Partial<typeof ledgerPostings.$inferInsert>) =>
           database.use((db) => db.update(ledgerPostings).set(values).where(eq(ledgerPostings.paymentId, paymentId)))
 
-        yield* set(settled.id, { state: "posted", journalRef: "jrn_settled", recordedAt })
+        // Settled is captured: available from the capture, not the hold.
+        yield* set(settled.id, { state: "pending", journalRef: "jrn_settled", recordedAt })
+        yield* set(settled.id, {
+          state: "posted",
+          resolution: "capture",
+          resolutionRef: "jrn_capture",
+          resolvedAt: capturedAt,
+        })
         yield* set(attention.id, { state: "refused", errorCode: "account_closed", lastAttemptAt: recordedAt })
 
         const expected = [
@@ -1017,7 +1195,13 @@ void test("settling, settled and attention agree across rows, filters and totals
 
         const row = all.payments.find((payment) => payment.id === settled.id)
 
-        assert.deepEqual([row?.settledAt, row?.journalRef], [recordedAt, "jrn_settled"])
+        assert.deepEqual([row?.settledAt, row?.settlesAt, row?.journalRef], [capturedAt, null, "jrn_settled"])
+
+        // Settling shows when it becomes available.
+        const waiting = all.payments.find((payment) => payment.id === settling.id)
+
+        assert.deepEqual(waiting?.settlesAt, (yield* postingOf(settling.id)).settlesAt)
+        assert.ok(waiting?.settlesAt instanceof Date)
 
         for (const [state, ids] of expected) {
           const page = yield* service.listPayments(business.id, { linkId: link.id, state, before: null })
@@ -1045,7 +1229,7 @@ void test("settling, settled and attention agree across rows, filters and totals
         assert.deepEqual(yield* timeline(settling.id), [paidAt(settling)])
         assert.deepEqual(yield* timeline(settled.id), [
           paidAt(settled),
-          new Payments.Settled({ at: recordedAt, journalRef: "jrn_settled" }),
+          new Payments.Settled({ at: capturedAt, journalRef: "jrn_capture" }),
         ])
         assert.deepEqual(yield* timeline(attention.id), [
           paidAt(attention),

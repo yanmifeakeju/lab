@@ -1,5 +1,6 @@
 import { Business } from "@pay-tty/core/business"
-import { Effect } from "effect"
+import { Payments } from "@pay-tty/core/payments"
+import { Duration, Effect, Option } from "effect"
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder"
 
 import { CurrentPrincipal } from "../principal.ts"
@@ -13,6 +14,7 @@ export const MeLive = HttpApiBuilder.group(api, "me", (handlers) =>
     Effect.gen(function* () {
       const businesses = yield* Business.Service
       const principal = yield* CurrentPrincipal.Service
+      const payments = yield* Payments.Service
 
       const business = yield* businesses.findByPrincipal(principal.id)
 
@@ -20,6 +22,9 @@ export const MeLive = HttpApiBuilder.group(api, "me", (handlers) =>
         id: principal.id,
         created_at: principal.createdAt.toISOString(),
         business: business === undefined ? null : businessInfo(business),
+        settlement_delay_seconds: Option.getOrNull(
+          Option.map(payments.settlementDelay, (delay) => Math.round(Duration.toSeconds(delay))),
+        ),
       })
     }),
   ),

@@ -124,6 +124,10 @@ export const ledgerPostings = pgTable(
     journalRef: text("journal_ref"),
     // Ledger reference for the resolving entry (`capture` or `void`).
     resolutionRef: text("resolution_ref"),
+    // Timestamp when plane recorded the resolving entry.
+    resolvedAt: at("resolved_at"),
+    // When a pending payment settles: the settlement job captures it from then.
+    settlesAt: at("settles_at"),
     errorCode: text("error_code"),
     attempts: integer("attempts").default(0).notNull(),
     // Timestamp of the first relay attempt; anchors the hold-confirmation timeout.
@@ -170,6 +174,11 @@ export const ledgerPostings = pgTable(
         and (not ${table.pending} or ${table.state} not in ('posted', 'voided') or ${table.resolution} is not null)`,
     ),
     check("ledger_postings_recorded_with_journal", sql`(${table.journalRef} is null) = (${table.recordedAt} is null)`),
+    check("ledger_postings_resolved_with_ref", sql`(${table.resolutionRef} is null) = (${table.resolvedAt} is null)`),
+    check(
+      "ledger_postings_settles_pending_payments",
+      sql`${table.settlesAt} is null or (${table.pending} and ${table.paymentId} is not null)`,
+    ),
     check("ledger_postings_first_attempt_with_attempts", sql`(${table.attempts} = 0) = (${table.firstAttemptAt} is null)`),
     check("ledger_postings_claimed_together", sql`(${table.claimId} is null) = (${table.claimedUntil} is null)`),
     uniqueIndex("ledger_postings_payment_unique").on(table.paymentId).where(sql`${table.paymentId} is not null`),
@@ -178,6 +187,9 @@ export const ledgerPostings = pgTable(
     index("ledger_postings_resolving_idx")
       .on(table.createdAt)
       .where(sql`${table.state} = 'pending' and ${table.resolution} is not null`),
+    index("ledger_postings_settling_idx")
+      .on(table.settlesAt)
+      .where(sql`${table.settlesAt} is not null and ${table.resolution} is null and ${table.state} = 'pending'`),
     index("ledger_postings_mismatched_idx").on(table.businessId, table.ledger).where(resolutionMismatched(table)),
   ],
 )

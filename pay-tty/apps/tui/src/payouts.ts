@@ -66,20 +66,20 @@ const statusText: Readonly<Record<Status, string>> = {
   attention: "attention",
 }
 
-// A payout the ledger disagrees with is marked, so the mismatch block points
-// at it; the mark is short so the dates keep their room.
-const rowStatus = (payout: Payout) => `${statusText[payout.status]}${payout.ledger_mismatch ? " !" : ""}`
+// A payout under review is marked; the mark is short so the dates keep their
+// room. Payouts paused by a payment show no mark here: the payment says so.
+const rowStatus = (payout: Payout) => `${statusText[payout.status]}${payout.under_review ? " !" : ""}`
 
 /**
- * Drawn as errors: refused, failed, waiting on a person, or disagreeing with
- * the ledger.
+ * Drawn as errors: refused, failed or waiting on a person. Being under review
+ * isn't: it needs nothing from the merchant.
  */
 export const troubled = (payout: Payout) =>
-  payout.status === "rejected" || payout.status === "failed" || payout.status === "attention" || payout.ledger_mismatch
+  payout.status === "rejected" || payout.status === "failed" || payout.status === "attention"
 
 /** The key to the list's mark, when a listed payout carries it. */
-export const mismatchKey = (payouts: ReadonlyArray<Payout>) =>
-  payouts.some((payout) => payout.ledger_mismatch) ? "! the ledger doesn't match these payouts · support will resolve them" : null
+export const reviewKey = (payouts: ReadonlyArray<Payout>) =>
+  payouts.some((payout) => payout.under_review) ? "! under review · no action needed" : null
 
 /** Each payout's date, status and amount, the amounts right-aligned in one column. */
 export const payoutRows = (payouts: ReadonlyArray<Payout>, width: number): ReadonlyArray<string> => {
@@ -109,7 +109,7 @@ export const statusLine = (payout: Payout) => {
         ? "Not confirmed · nothing moves until it is"
         : `Not confirmed · nothing moves until it is, and it expires at ${expiryTime(payout.expires_at)}`
     case "requested":
-      return "Requested · waiting for the ledger to hold it…"
+      return "Requested · setting the money aside…"
     case "held":
       return "On hold · the money is set aside for this payout"
     case "sent":
@@ -117,12 +117,12 @@ export const statusLine = (payout: Payout) => {
     case "paid":
       return `Paid to ${destinationLabel(payout.destination)}`
     case "failed":
-      // With a mismatch the hold may not have been released, so the balance isn't promised.
-      return payout.ledger_mismatch
+      // Under review the hold may not have been released, so the balance isn't promised.
+      return payout.under_review
         ? "Failed · the bank didn't take it"
         : "Failed · the bank didn't take it, so the money is going back to your balance"
     case "rejected":
-      return `Rejected: ${payout.reason === "insufficient_funds" ? "insufficient funds" : "the ledger refused it"}`
+      return `Rejected: ${payout.reason === "insufficient_funds" ? "insufficient funds" : "it couldn't be processed"}`
     case "cancelled":
       return "Cancelled · nothing was paid"
     case "expired":
@@ -161,7 +161,7 @@ export const detailLines = (payout: Payout): ReadonlyArray<string> => [
   `Created: ${formatTime(payout.created_at)}`,
   ...(payout.sent_at === null ? [] : [`Sent: ${formatTime(payout.sent_at)}`]),
   ...(payout.completed_at === null ? [] : [`${completedAs[payout.status]}: ${formatTime(payout.completed_at)}`]),
-  ...(payout.ledger_mismatch ? ["Ledger doesn't match this payout · support will resolve it"] : []),
+  ...(payout.under_review ? ["Under review · no action needed"] : []),
 ]
 
 export type Field = "mode" | "bank" | "accountNumber"

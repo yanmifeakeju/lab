@@ -232,7 +232,7 @@ export const settled = (session: Session.Interface) =>
 
 export const me = (shown: BusinessInfoEncoded | null) => (): Reply => ({
   status: 200,
-  body: { id: "prn_1", created_at: "2026-10-08T00:00:00.000Z", business: shown },
+  body: { id: "prn_1", created_at: "2026-10-08T00:00:00.000Z", business: shown, settlement_delay_seconds: null },
 })
 
 // Replies in order, then the last one for every later call.
@@ -441,6 +441,7 @@ export const merchantPayment = (fields: Partial<PaymentSummaryEncoded> = {}): Pa
     expires_at: "2026-10-22T14:32:00.000Z",
     completed_at: "2026-10-22T14:03:00.000Z",
     settled_at: settled ? "2026-10-22T14:03:05.000Z" : null,
+    settles_at: null,
     journal_ref: settled ? "jrn_one" : null,
     source: { kind: "link", id: paid.id, title: paid.title },
     ...fields,
@@ -571,7 +572,7 @@ export const payout = (fields: Partial<PayoutEncoded> = {}): PayoutEncoded => ({
   reason: null,
   destination: gtbank,
   journal_ref: null,
-  ledger_mismatch: false,
+  under_review: false,
   created_at: "2026-11-10T09:00:00.000Z",
   expires_at: fields.status === "created" ? "2026-11-10T09:01:30.000Z" : null,
   sent_at: null,

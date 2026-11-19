@@ -76,8 +76,9 @@ const payoutFields = {
   // `attention` payout one the ledger may have recorded wrongly.
   journal_ref: Schema.NullOr(Schema.String),
   // The ledger refused to capture or void the hold, or resolved it the other
-  // way; no other payout is taken until support corrects it.
-  ledger_mismatch: Schema.Boolean,
+  // way; no other payout is taken until support corrects it. Named for what
+  // the merchant is told: the cause is ours to resolve.
+  under_review: Schema.Boolean,
   created_at: Schema.String,
   // When a created payout expires unconfirmed; null once it isn't created.
   expires_at: Schema.NullOr(Schema.String),
@@ -134,7 +135,7 @@ const fieldsOf = (payout: Payouts.Payout) => ({
   reason: payout.reason,
   destination: destination(payout.destination),
   journal_ref: payout.journalRef,
-  ledger_mismatch: payout.ledgerMismatch,
+  under_review: payout.ledgerMismatch,
   created_at: payout.createdAt.toISOString(),
   expires_at: payout.expiresAt?.toISOString() ?? null,
   sent_at: payout.sentAt?.toISOString() ?? null,

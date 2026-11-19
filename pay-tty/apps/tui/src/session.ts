@@ -217,6 +217,8 @@ export interface State {
   readonly view: View;
   readonly pending: boolean;
   readonly popup: Popup | null;
+  /** In a demo, the seconds a payment takes to settle, from /me; null otherwise. */
+  readonly settlementDelay: number | null;
 }
 
 // Plane's declared errors arrive as their decoded bodies; anything else, a 500
@@ -360,13 +362,14 @@ const listing = (list: PayoutsView, payout: Payout): PayoutsView => {
 // What a read of a payout in flight can change; the rest is fixed at creation.
 const moved = (shown: Payout, read: Payout) =>
   shown.status !== read.status || shown.reason !== read.reason || shown.journal_ref !== read.journal_ref ||
-  shown.ledger_mismatch !== read.ledger_mismatch || shown.sent_at !== read.sent_at ||
+  shown.under_review !== read.under_review || shown.sent_at !== read.sent_at ||
   shown.completed_at !== read.completed_at;
 
 // Refusals that end a payout's follow: asking again can't change them.
 const followEnds = new Set(["not_found", "unauthorized", "business_required", "account_not_opened"]);
 
-const ledgerMismatch = "A payout doesn't match the ledger. Support will correct it before you can request another."
+// Plane's block while support reviews a mismatch: calm, and nothing to do.
+const payoutsPaused = "Payouts are paused while we review your account. No action needed; you can request one again once we're done."
 
 const popupFor = (operation: Operation, failure: Failure): Popup => {
   const code = codeOf(failure);
@@ -411,7 +414,7 @@ const popupFor = (operation: Operation, failure: Failure): Popup => {
           (value) => value === "conflict" || value === "ledger_rejected",
           () => ({
             message:
-              "The ledger couldn't open an account for this business. Contact support.",
+              "We couldn't open an account for this business. Contact support.",
             retry: null,
             close: "refresh" as const,
           }),
@@ -470,8 +473,8 @@ const popupFor = (operation: Operation, failure: Failure): Popup => {
         message: "Save a payout account whose bank takes payouts first.", retry: null, close: "dismiss" as const,
       })),
       // Nothing here can succeed until support corrects it.
-      Match.when("payout_ledger_mismatch", () => ({
-        message: ledgerMismatch, retry: null, close: "payouts" as const,
+      Match.when("payouts_paused", () => ({
+        message: payoutsPaused, retry: null, close: "payouts" as const,
       })),
       // Drafts expire in moments, so the form stays for another try.
       Match.when("payout_drafts_full", () => ({
@@ -493,8 +496,8 @@ const popupFor = (operation: Operation, failure: Failure): Popup => {
         retry: null,
         close: "back" as const,
       })),
-      // Plane cancels a draft when the mode or the rules changed, or under a
-      // ledger mismatch; the list, read again, shows where things stand.
+      // Plane cancels a draft when the mode or the rules changed, or while
+      // payouts are paused; the list, read again, shows where things stand.
       Match.when("payout_cancelled", () => ({
         message: "This payout was cancelled, so nothing was paid.",
         retry: null,
@@ -514,8 +517,8 @@ const popupFor = (operation: Operation, failure: Failure): Popup => {
         close: "payouts" as const,
       })),
       // Nothing here can succeed until support corrects it.
-      Match.when("payout_ledger_mismatch", () => ({
-        message: `This payout was cancelled, so nothing was paid. ${ledgerMismatch}`,
+      Match.when("payouts_paused", () => ({
+        message: `This payout was cancelled, so nothing was paid. ${payoutsPaused}`,
         retry: null,
         close: "payouts" as const,
       })),
@@ -628,6 +631,7 @@ export const make = Effect.fnUntraced(function* (fingerprint: string, options: O
     view: View.Unknown(),
     pending: false,
     popup: null,
+    settlementDelay: null,
   });
 
   const token = yield* Ref.make<
@@ -701,7 +705,7 @@ export const make = Effect.fnUntraced(function* (fingerprint: string, options: O
     });
 
   const succeed = (view: View) =>
-    SubscriptionRef.set(state, { view, pending: false, popup: null });
+    SubscriptionRef.update(state, (current) => ({ ...current, view, pending: false, popup: null }));
 
   // Home for the business; its balance loads under `request` once shown.
   const home = (business: Business, request: number) =>
@@ -811,12 +815,15 @@ export const make = Effect.fnUntraced(function* (fingerprint: string, options: O
       const outcome = yield* Effect.result(
         Operation.$match(operation, {
           Load: () =>
-            Effect.map(
-              authorized((client) => client.me(undefined)),
-              ({ business }) =>
+            authorized((client) => client.me(undefined)).pipe(
+              Effect.tap(({ settlement_delay_seconds }) =>
+                SubscriptionRef.update(state, (current) => ({ ...current, settlementDelay: settlement_delay_seconds })),
+              ),
+              Effect.map(({ business }) =>
                 business === null
                   ? View.NoBusiness()
                   : home(business, request),
+              ),
             ),
           // Nigeria is the only country with a ledger; see TASK-004.
           CreateBusiness: ({ name }) =>
@@ -961,6 +968,7 @@ export const make = Effect.fnUntraced(function* (fingerprint: string, options: O
       const popup = popupFor(operation, outcome.failure);
 
       yield* SubscriptionRef.update(state, (current) => ({
+        ...current,
         view: Operation.$is("Load")(operation) ? View.Unknown() : current.view,
         pending: false,
         popup,
@@ -980,10 +988,10 @@ export const make = Effect.fnUntraced(function* (fingerprint: string, options: O
           : ([false, current] as const),
     );
 
-  const reload = { view: View.Unknown(), pending: true, popup: null };
+  const reload = (current: State): State => ({ ...current, view: View.Unknown(), pending: true, popup: null });
 
   const load = Effect.gen(function* () {
-    if (yield* begin(() => true, () => reload)) {
+    if (yield* begin(() => true, reload)) {
       yield* perform(Operation.Load());
     }
   });
@@ -1579,7 +1587,7 @@ export const make = Effect.fnUntraced(function* (fingerprint: string, options: O
       }
 
       return current.popup.close === "refresh"
-        ? [Operation.Load(), reload]
+        ? [Operation.Load(), reload(current)]
         : [undefined, { ...current, popup: null }];
     });
 

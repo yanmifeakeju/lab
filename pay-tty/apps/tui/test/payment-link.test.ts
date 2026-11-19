@@ -49,7 +49,7 @@ const run = <A, R>(plane: ReturnType<typeof fakePlane>, body: (session: Session.
 // Once any balance home is loading has answered.
 const current = settled
 
-const idle = (view: View, popup: Popup | null = null): State => ({ view, pending: false, popup })
+const idle = (view: View, popup: Popup | null = null): State => ({ view, pending: false, popup, settlementDelay: null })
 
 const fixed: Form = { ...emptyForm, title: "Consulting", amount: "2,500" }
 

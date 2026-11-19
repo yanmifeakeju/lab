@@ -88,7 +88,7 @@ export class Conflict extends Schema.Error<Conflict>("ConflictResponse")(
       "payouts_automatic",
       "payouts_unavailable",
       "no_payout_account",
-      "payout_ledger_mismatch",
+      "payouts_paused",
       "payout_drafts_full",
       "payout_expired",
       "payout_rules_changed",

@@ -25,6 +25,20 @@ void test("payment rows show time, state, amount and source, with expiry for pen
   assert.match(paymentRow(payment, 24, false, "2026-10-23"), /10-22 14:02 P ₦25,000.00/)
 })
 
+void test("a settling payment shows when it becomes available: a time today, else the date", () => {
+  const payment = merchantPayment({ state: "settling", settled_at: null, settles_at: "2026-10-22T14:07:00.000Z" })
+
+  assert.match(paymentRow(payment, 90, false, "2026-10-22"), /settling +₦25,000.00 +Logo design +avail\. ~14:07/)
+  assert.match(
+    paymentRow({ ...payment, settles_at: "2026-10-23T00:00:00.000Z" }, 90, false, "2026-10-22"),
+    /avail\. 10-23/,
+  )
+  assert.deepEqual(timelineLines(paymentDetail(payment, [{ kind: "paid", at: "2026-10-22T14:03:00.000Z" }])), [
+    "Paid ₦25,000.00 · 14:03",
+    "Available from ~2026-10-22 14:07 UTC",
+  ])
+})
+
 void test("payment rows fit wide titles and fall back below narrowRow without splitting graphemes", () => {
   const payment = merchantPayment({ source: { kind: "link", id: "plink_one", title: "図書館 👩🏽‍💻 ".repeat(20) } })
 
@@ -187,7 +201,7 @@ void test("rows show the merchant's state, shortened when narrow", () => {
   }
 })
 
-void test("a payment's timeline reads as paid, then settled with its journal entry or refused with the ledger's code", () => {
+void test("a payment's timeline reads as paid, then settled with its journal entry, or under review once refused", () => {
   assert.deepEqual(timelineLines(paymentDetail(merchantPayment())), [
     "Paid ₦25,000.00 · 14:03",
     "Settled · 14:03 · jrn_one",
@@ -198,7 +212,7 @@ void test("a payment's timeline reads as paid, then settled with its journal ent
   assert.deepEqual(timelineLines(paymentDetail(refused, [
     { kind: "paid", at: "2026-10-22T14:03:00.000Z" },
     { kind: "refused", at: "2026-10-22T14:03:05.000Z", error_code: "account_closed" },
-  ])), ["Paid ₦25,000.00 · 14:03", "Ledger refused: account_closed"])
+  ])), ["Paid ₦25,000.00 · 14:03", "Under review · no action needed"])
 
   assert.deepEqual(timelineLines(paymentDetail(merchantPayment({ status: "pending", completed_at: null }))), [])
 })

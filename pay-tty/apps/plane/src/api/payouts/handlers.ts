@@ -30,13 +30,16 @@ const automatic = new Conflict({
   error: { code: "payouts_automatic" },
 })
 
-const mismatch = "A payout doesn't match the ledger"
+// A payment or payout the ledger disagrees with blocks payouts until support
+// corrects it. The merchant is told calmly, without the cause: they can't act
+// on it, and it's ours to resolve.
+const paused = "Payouts are paused while we review your account"
 
-const supportCorrects = "Support will correct it before you can request another."
+const resume = "No action needed; you can request one again once we're done."
 
 const mismatched = new Conflict({
-  message: `${mismatch}. ${supportCorrects}`,
-  error: { code: "payout_ledger_mismatch" },
+  message: `${paused}. ${resume}`,
+  error: { code: "payouts_paused" },
 })
 
 const expired = new Conflict({
@@ -130,8 +133,8 @@ export const PayoutsLive = HttpApiBuilder.group(api, "payouts", (handlers) =>
               }),
             "Payouts.LedgerMismatchError": () =>
               new Conflict({
-                message: `${mismatch}, so this payout was cancelled. ${supportCorrects}`,
-                error: { code: "payout_ledger_mismatch" },
+                message: `${paused}, so this payout was cancelled. ${resume}`,
+                error: { code: "payouts_paused" },
               }),
             "Payouts.RulesChangedError": () =>
               new Conflict({

@@ -39,7 +39,7 @@ const current = settled
 const loadThen = <A>(next: (session: Session.Interface) => Effect.Effect<A>) => (session: Session.Interface) =>
   Effect.andThen(session.load, Effect.andThen(next(session), current(session)))
 
-const idle = (view: View, popup: Popup | null = null): State => ({ view, pending: false, popup })
+const idle = (view: View, popup: Popup | null = null): State => ({ view, pending: false, popup, settlementDelay: null })
 
 const loadFailed = idle(View.Unknown(), { message: "Couldn't load your account.", retry: Operation.Load(), close: null })
 
@@ -457,7 +457,7 @@ void test(
   scenario(
     Effect.gen(function* () {
       const refused: Popup = {
-        message: "The ledger couldn't open an account for this business. Contact support.",
+        message: "We couldn't open an account for this business. Contact support.",
         retry: null,
         close: "refresh",
       }
@@ -1144,7 +1144,7 @@ void test(
     Effect.gen(function* () {
       const refusals = [
         ["payout_drafts_full", "Too many payouts are waiting to be confirmed. Wait a moment for them to expire, then try again.", "dismiss"],
-        ["payout_ledger_mismatch", "A payout doesn't match the ledger. Support will correct it before you can request another.", "payouts"],
+        ["payouts_paused", "Payouts are paused while we review your account. No action needed; you can request one again once we're done.", "payouts"],
         ["payouts_automatic", "Payouts are automatic, so plane pays you out daily.", "payouts"],
         ["no_payout_account", "Save a payout account whose bank takes payouts first.", "dismiss"],
       ] as const
@@ -1632,13 +1632,13 @@ void test("a payout's screen says where it stands once sent, paid or failed", ()
   assert.equal(statusLine(paidOut), "Paid to GTBank ••••6789")
   assert.equal(statusLine(failedOut), "Failed · the bank didn't take it, so the money is going back to your balance")
   // A hold the ledger didn't release: the balance isn't promised.
-  assert.equal(statusLine({ ...failedOut, ledger_mismatch: true }), "Failed · the bank didn't take it")
+  assert.equal(statusLine({ ...failedOut, under_review: true }), "Failed · the bank didn't take it")
 
   assert.deepEqual(detailLines(sent).slice(-1), ["Sent: 2026-11-10 09:00 UTC"])
   assert.deepEqual(detailLines(paidOut).slice(-2), ["Sent: 2026-11-10 09:00 UTC", "Paid: 2026-11-10 09:00 UTC"])
   assert.deepEqual(detailLines(failedOut).slice(-1), ["Failed: 2026-11-10 09:00 UTC"])
-  assert.deepEqual(detailLines({ ...failedOut, ledger_mismatch: true }).slice(-2), [
+  assert.deepEqual(detailLines({ ...failedOut, under_review: true }).slice(-2), [
     "Failed: 2026-11-10 09:00 UTC",
-    "Ledger doesn't match this payout · support will resolve it",
+    "Under review · no action needed",
   ])
 })

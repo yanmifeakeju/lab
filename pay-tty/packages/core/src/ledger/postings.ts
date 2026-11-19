@@ -11,7 +11,21 @@ import { LedgerClient } from "./client.ts"
 import { Ledger } from "./slug.ts"
 import { ledgerPostings, postingStates, resolutions } from "./sql.ts"
 
-/** Maximum postings claimed per relay pass. */
+/**
+ * relayBatchSize is the most postings a relay pass claims.
+ *
+ * It suits this project's volume. The relay sends one posting at a time, oldest
+ * first by when it was created, across all businesses. A payment's capture
+ * reuses the posting created with the payment, so when many are marked at once,
+ * such as a day's payments settling together, they come before anything created
+ * since: a new payment or payout waits until they're sent. The relay keeps
+ * going while the queue is full, so a few thousand take minutes, and each
+ * posting has an idempotency key, so a retry never records it twice. For more
+ * volume than that, batch each business's postings through the ledger's batch
+ * endpoints, send batches for different businesses in parallel, and serve next
+ * whichever business has waited longest, so one large business can't hold up
+ * the rest.
+ */
 export const relayBatchSize = 10
 
 /** Per-request timeout for ledger calls; past it, the ledger counts as down. */
@@ -122,8 +136,9 @@ export interface Interface {
   /**
    * Claims a batch and sends each posting sequentially, aborting the pass on
    * the first transient failure (`retrying`) and releasing any remaining leases.
+   * Returns how many it claimed: a full `relayBatchSize` means more may be waiting.
    */
-  readonly relay: Effect.Effect<void, UnavailableError>
+  readonly relay: Effect.Effect<number, UnavailableError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("LedgerPostings") {}
@@ -188,7 +203,7 @@ const make = Effect.gen(function* () {
     claim: ClaimID,
     posting: Posting,
     outcome: Outcome,
-    values: Partial<typeof ledgerPostings.$inferInsert>,
+    values: PgUpdateSetSource<typeof ledgerPostings>,
     payout?: PgUpdateSetSource<typeof payouts>,
     from: ReadonlyArray<"requested" | "attention"> = ["requested"],
   ) =>
@@ -369,7 +384,7 @@ const make = Effect.gen(function* () {
       ? annotated(Effect.logError("ledger resolved hold the other way", pendingState, asked))
       : Effect.void
 
-    return Effect.andThen(mismatch, commit(claim, posting, state, { state, resolutionRef }))
+    return Effect.andThen(mismatch, commit(claim, posting, state, { state, resolutionRef, resolvedAt: sql`now()` }))
   }
 
   const isResolved = Schema.is(Schema.Struct({
@@ -469,6 +484,8 @@ const make = Effect.gen(function* () {
             return yield* new UnavailableError()
           }
         }
+
+        return postings.length
       }),
     ({ id }, exit) => (Exit.isFailure(exit) ? release(id) : Effect.void),
   ).pipe(Effect.withSpan("LedgerPostings.relay"))
