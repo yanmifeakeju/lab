@@ -8,6 +8,13 @@
       "when": 1795063801213,
       "tag": "0000_provider-payouts",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1795163378202,
+      "tag": "0001_identifiers-collate-c",
+      "breakpoints": true
     }
   ]
 }

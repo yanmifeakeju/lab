@@ -13,6 +13,7 @@ import {
 import { createdAt, space, timestamps } from "../database/columns.ts"
 import { ledgers } from "../ledger/sql.ts"
 import { principals } from "../principal/sql.ts"
+import { identifier } from "@pay-tty/database/columns"
 
 export const statuses = ["created", "active"] as const
 
@@ -27,17 +28,17 @@ export const countries = ["NG", "US"] as const satisfies ReadonlyArray<keyof typ
 export const businesses = pgTable(
   "businesses",
   {
-    id: text("id").primaryKey(),
+    id: identifier("id").primaryKey(),
     // Fixed at creation: the ledger holder carries it and rejects another name on a new ledger.
     name: text("name").notNull(),
-    countryCode: text("country_code").default("NG").notNull(),
+    countryCode: identifier("country_code").default("NG").notNull(),
     // Server-derived from `country_code`.
-    currencyCode: text("currency_code").notNull(),
+    currencyCode: identifier("currency_code").notNull(),
     // The country's default ledger at creation; kept even if that default moves.
-    primaryLedger: text("primary_ledger").notNull(),
+    primaryLedger: identifier("primary_ledger").notNull(),
     // Populated together once the payable account is opened in the ledger.
-    primaryPayableAccountRef: text("primary_payable_account_ref"),
-    ledgerHolderRef: text("ledger_holder_ref"),
+    primaryPayableAccountRef: identifier("primary_payable_account_ref"),
+    ledgerHolderRef: identifier("ledger_holder_ref"),
     status: status("status").default("created").notNull(),
     ...timestamps,
   },
@@ -73,10 +74,10 @@ export const businesses = pgTable(
 export const businessPrincipals = pgTable(
   "business_principals",
   {
-    principalId: text("principal_id")
+    principalId: identifier("principal_id")
       .primaryKey()
       .references(() => principals.id, { onDelete: "restrict" }),
-    businessId: text("business_id")
+    businessId: identifier("business_id")
       .notNull()
       .references(() => businesses.id, { onDelete: "restrict" }),
     ...createdAt,
@@ -90,14 +91,14 @@ export const businessPrincipals = pgTable(
 // export const businessLedgers = pgTable(
 //   "business_ledgers",
 //   {
-//     businessId: text("business_id")
+//     businessId: identifier("business_id")
 //       .notNull()
 //       .references(() => businesses.id, { onDelete: "cascade" }),
-//     ledger: text("ledger")
+//     ledger: identifier("ledger")
 //       .notNull()
 //       .references(() => ledgers.slug, { onDelete: "restrict", onUpdate: "cascade" }),
 //     isDefault: boolean("is_default").default(false).notNull(),
-//     payableAccountRef: text("payable_account_ref").notNull(),
+//     payableAccountRef: identifier("payable_account_ref").notNull(),
 //     ...createdAt,
 //   },
 //   (table) => [

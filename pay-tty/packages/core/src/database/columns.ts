@@ -20,6 +20,10 @@ export const idempotencyKeyValid = (column: AnyPgColumn) => sql`${column} ~ '^[!
 
 export const trimmed = (column: AnyPgColumn) => sql`${column} !~ ${sql.raw(`'^${space}|${space}$'`)}`
 
+// Has a character outside `space`. Not `\S`, whose meaning follows the column's
+// collation: under `COLLATE "C"` (identifiers) it only knows ASCII spaces.
+export const notBlank = (column: AnyPgColumn) => sql`${column} !~ ${sql.raw(`'^${space}*$'`)}`
+
 // SQL equivalent of `isOneLine` (`common/schemas.ts`), expanding `\p{Cc}`
 // explicitly (Postgres regexes lack Unicode property classes and `text` forbids NUL).
 export const oneLine = (column: AnyPgColumn) =>

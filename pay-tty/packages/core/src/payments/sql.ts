@@ -11,7 +11,7 @@ import {
 } from "drizzle-orm/pg-core"
 
 import { businesses } from "../business/sql.ts"
-import { amount, amountValid, at } from "@pay-tty/database/columns"
+import { amount, amountValid, at, identifier } from "@pay-tty/database/columns"
 import { createdAt, idempotencyKeyValid, oneLine, trimmed } from "../database/columns.ts"
 
 export const pricingModes = ["fixed", "customer_chooses"] as const
@@ -21,17 +21,17 @@ export const pricingMode = pgEnum("payment_link_pricing_mode", pricingModes)
 export const paymentLinks = pgTable(
   "payment_links",
   {
-    id: text("id").primaryKey(),
-    businessId: text("business_id")
+    id: identifier("id").primaryKey(),
+    businessId: identifier("business_id")
       .notNull()
       .references(() => businesses.id, { onDelete: "restrict" }),
     // Scoped per business for idempotent link creation.
-    idempotencyKey: text("idempotency_key").notNull(),
-    shareToken: text("share_token").notNull(),
+    idempotencyKey: identifier("idempotency_key").notNull(),
+    shareToken: identifier("share_token").notNull(),
     title: text("title").notNull(),
     description: text("description"),
     // Ledger defining the currency and scale for this link and its payments.
-    ledger: text("ledger").notNull(),
+    ledger: identifier("ledger").notNull(),
     pricingMode: pricingMode("pricing_mode").notNull(),
     // `amount` is set for `fixed` pricing; bounds/suggestion are optional for `customer_chooses`.
     amount: amount("amount"),
@@ -101,15 +101,15 @@ export const paymentStatus = pgEnum("payment_status", paymentStatuses)
 export const payments = pgTable(
   "payments",
   {
-    id: text("id").primaryKey(),
-    businessId: text("business_id")
+    id: identifier("id").primaryKey(),
+    businessId: identifier("business_id")
       .notNull()
       .references(() => businesses.id, { onDelete: "restrict" }),
-    linkId: text("link_id").notNull(),
+    linkId: identifier("link_id").notNull(),
     // Scoped per link for idempotent payment creation.
-    idempotencyKey: text("idempotency_key").notNull(),
+    idempotencyKey: identifier("idempotency_key").notNull(),
     amount: amount("amount").notNull(),
-    ledger: text("ledger").notNull(),
+    ledger: identifier("ledger").notNull(),
     status: paymentStatus("status").default("pending").notNull(),
     ...createdAt,
     expiresAt: at("expires_at").notNull(),

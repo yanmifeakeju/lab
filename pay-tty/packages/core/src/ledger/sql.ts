@@ -16,8 +16,8 @@ import {
 } from "drizzle-orm/pg-core"
 
 import { businesses } from "../business/sql.ts"
-import { at } from "@pay-tty/database/columns"
-import { createdAt, timestamps } from "../database/columns.ts"
+import { at, identifier } from "@pay-tty/database/columns"
+import { createdAt, notBlank, timestamps } from "../database/columns.ts"
 import { payments } from "../payments/sql.ts"
 import { payouts } from "../payouts/sql.ts"
 
@@ -26,17 +26,17 @@ import { payouts } from "../payouts/sql.ts"
 export const ledgers = pgTable(
   "ledgers",
   {
-    slug: text("slug").primaryKey(),
-    currency: text("currency").notNull(),
+    slug: identifier("slug").primaryKey(),
+    currency: identifier("currency").notNull(),
     scale: smallint("scale").notNull(),
     // Country whose new businesses open their primary account in this ledger.
     // Evaluated once at business creation.
-    countryCode: text("country_code"),
+    countryCode: identifier("country_code"),
     isCountryDefault: boolean("is_country_default").default(false).notNull(),
     ...createdAt,
   },
   (table) => [
-    check("ledgers_slug_not_blank", sql`${table.slug} ~ '\\S'`),
+    check("ledgers_slug_not_blank", notBlank(table.slug)),
     check("ledgers_currency_valid", sql`${table.currency} ~ '^[A-Z]{3}$'`),
     check("ledgers_scale_valid", sql`${table.scale} between 0 and 4`),
     check("ledgers_country_code_valid", sql`${table.countryCode} ~ '^[A-Z]{2}$'`),
@@ -60,11 +60,11 @@ export const platformAccountLabel = pgEnum("platform_account_label", labels)
 export const platformAccounts = pgTable(
   "platform_accounts",
   {
-    ledger: text("ledger")
+    ledger: identifier("ledger")
       .notNull()
       .references(() => ledgers.slug, { onDelete: "cascade", onUpdate: "cascade" }),
     label: platformAccountLabel("label").notNull(),
-    ledgerAccountRef: text("ledger_account_ref").notNull(),
+    ledgerAccountRef: identifier("ledger_account_ref").notNull(),
     ...timestamps,
   },
   (table) => [primaryKey({ columns: [table.ledger, table.label] })],
@@ -101,16 +101,16 @@ export const ledgerPostings = pgTable(
   "ledger_postings",
   {
     // Used as the ledger's `Idempotency-Key` (`${id}` for posts, `${id}:${resolution}` for resolutions).
-    id: text("id").primaryKey(),
-    businessId: text("business_id")
+    id: identifier("id").primaryKey(),
+    businessId: identifier("business_id")
       .notNull()
       .references(() => businesses.id, { onDelete: "restrict" }),
-    ledger: text("ledger")
+    ledger: identifier("ledger")
       .notNull()
       .references(() => ledgers.slug, { onUpdate: "cascade" }),
     // Domain cause; exactly one is non-null (`ledger_postings_one_cause`).
-    paymentId: text("payment_id").references(() => payments.id, { onDelete: "restrict" }),
-    payoutId: text("payout_id").references(() => payouts.id, { onDelete: "restrict" }),
+    paymentId: identifier("payment_id").references(() => payments.id, { onDelete: "restrict" }),
+    payoutId: identifier("payout_id").references(() => payouts.id, { onDelete: "restrict" }),
     kind: text("kind").notNull(),
     // Entry description shown on the merchant's statement.
     description: text("description").notNull(),
@@ -121,9 +121,9 @@ export const ledgerPostings = pgTable(
     resolution: postingResolution("resolution"),
     state: postingState("state").default("created").notNull(),
     // Ledger reference for the initial entry (posted or pending).
-    journalRef: text("journal_ref"),
+    journalRef: identifier("journal_ref"),
     // Ledger reference for the resolving entry (`capture` or `void`).
-    resolutionRef: text("resolution_ref"),
+    resolutionRef: identifier("resolution_ref"),
     // Timestamp when plane recorded the resolving entry.
     resolvedAt: at("resolved_at"),
     // When a pending payment settles: the settlement job captures it from then.
@@ -134,7 +134,7 @@ export const ledgerPostings = pgTable(
     firstAttemptAt: at("first_attempt_at"),
     lastAttemptAt: at("last_attempt_at"),
     // Lease fence and expiration (`claimed_until`) for the active relay pass.
-    claimId: text("claim_id"),
+    claimId: identifier("claim_id"),
     claimedUntil: at("claimed_until"),
     ...createdAt,
     // Timestamp when the ledger recorded the initial entry.

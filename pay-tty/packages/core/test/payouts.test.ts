@@ -1264,19 +1264,30 @@ void test("a pending answer without a ref is taken, and the payout is checked ag
     }),
   ))
 
-void test("the database refuses a paid payout with a blank ref", () =>
+void test("the database refuses a paid payout, or a ledger slug, that is only spaces, Unicode ones included", () =>
   run(
     Effect.gen(function* () {
       const { payout } = yield* sentPayout
       const database = yield* Database
 
-      const exit = yield* Effect.exit(database.use((db) =>
-        db.update(payoutRows).set({ status: "paid", completedAt: sql`now()`, providerRef: " " }).where(eq(payoutRows.id, payout.id))))
+      const violated = (exit: Exit.Exit<unknown, unknown>) => {
+        const cause = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined
+        const error = cause instanceof Error && cause.cause instanceof Error ? cause.cause : undefined
 
-      const cause = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined
-      const error = cause instanceof Error && cause.cause instanceof Error ? cause.cause : undefined
+        return error !== undefined && "constraint" in error ? error.constraint : undefined
+      }
 
-      assert.equal(error !== undefined && "constraint" in error ? error.constraint : undefined, "payouts_paid_has_ref")
+      // Identifiers compare byte for byte, where `\S` only knows ASCII spaces.
+      for (const [blank, label] of [[" ", "a space"], ["\u3000\u2003", "Unicode spaces"]] as const) {
+        const paid = yield* Testing.attempt(database.use((db) =>
+          db.update(payoutRows).set({ status: "paid", completedAt: sql`now()`, providerRef: blank }).where(eq(payoutRows.id, payout.id))))
+
+        assert.equal(violated(paid), "payouts_paid_has_ref", label)
+
+        const slug = yield* Testing.attempt(Testing.addLedger(blank, "NGN", 2))
+
+        assert.equal(violated(slug), "ledgers_slug_not_blank", label)
+      }
     }),
   ))
 

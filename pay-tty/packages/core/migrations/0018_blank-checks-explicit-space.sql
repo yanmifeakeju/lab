@@ -1,0 +1,4 @@
+ALTER TABLE "ledgers" DROP CONSTRAINT "ledgers_slug_not_blank";--> statement-breakpoint
+ALTER TABLE "payouts" DROP CONSTRAINT "payouts_paid_has_ref";--> statement-breakpoint
+ALTER TABLE "ledgers" ADD CONSTRAINT "ledgers_slug_not_blank" CHECK ("ledgers"."slug" !~ '^[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*$');--> statement-breakpoint
+ALTER TABLE "payouts" ADD CONSTRAINT "payouts_paid_has_ref" CHECK ("payouts"."status" <> 'paid' or ("payouts"."provider_ref" is not null and "payouts"."provider_ref" !~ '^[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*$'));

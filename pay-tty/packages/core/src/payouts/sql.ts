@@ -14,8 +14,8 @@ import {
 } from "drizzle-orm/pg-core"
 
 import { businesses } from "../business/sql.ts"
-import { amount, amountValid, at } from "@pay-tty/database/columns"
-import { createdAt, idempotencyKeyValid, timestamps, trimmed } from "../database/columns.ts"
+import { amount, amountValid, at, identifier } from "@pay-tty/database/columns"
+import { createdAt, idempotencyKeyValid, notBlank, timestamps, trimmed } from "../database/columns.ts"
 
 export const modes = ["manual", "automatic"] as const
 
@@ -63,11 +63,11 @@ const accountNameValid = (column: AnyPgColumn) => sql`${column} <> '' and ${trim
 export const payoutSettings = pgTable(
   "payout_settings",
   {
-    businessId: text("business_id").notNull(),
-    ledger: text("ledger").notNull(),
+    businessId: identifier("business_id").notNull(),
+    ledger: identifier("ledger").notNull(),
     mode: mode("mode").default("manual").notNull(),
-    bankCode: text("bank_code").notNull(),
-    accountNumber: text("account_number").notNull(),
+    bankCode: identifier("bank_code").notNull(),
+    accountNumber: identifier("account_number").notNull(),
     // When the business last switched to automatic: the daily run pays it out
     // from the next midnight UTC after, so a switch takes effect at the next run.
     automaticSince: at("automatic_since"),
@@ -97,23 +97,23 @@ export const payoutSettings = pgTable(
 export const payouts = pgTable(
   "payouts",
   {
-    id: text("id").primaryKey(),
-    businessId: text("business_id")
+    id: identifier("id").primaryKey(),
+    businessId: identifier("business_id")
       .notNull()
       .references(() => businesses.id, { onDelete: "restrict" }),
-    ledger: text("ledger").notNull(),
+    ledger: identifier("ledger").notNull(),
     amount: amount("amount").notNull(),
     trigger: trigger("trigger").notNull(),
     // The UTC date of the daily run (`scheduled` trigger only); the business's timezone later.
     scheduledFor: date("scheduled_for", { mode: "string" }),
     // Snapshot of the destination bank account at creation time.
-    bankCode: text("bank_code").notNull(),
-    accountNumber: text("account_number").notNull(),
+    bankCode: identifier("bank_code").notNull(),
+    accountNumber: identifier("account_number").notNull(),
     accountName: text("account_name").notNull(),
     status: status("status").default("created").notNull(),
     // Idempotency key for scheduled payouts; null for manual payouts (confirmed by ID).
-    idempotencyKey: text("idempotency_key"),
-    providerRef: text("provider_ref"),
+    idempotencyKey: identifier("idempotency_key"),
+    providerRef: identifier("provider_ref"),
     ...createdAt,
     // When a created draft expires if unconfirmed; fixed at creation.
     expiresAt: at("expires_at"),
@@ -175,7 +175,7 @@ export const payouts = pgTable(
         or ${table.status} in ('failed', 'attention')`,
     ),
     check("payouts_created_expires", sql`${table.status} <> 'created' or ${table.expiresAt} is not null`),
-    check("payouts_paid_has_ref", sql`${table.status} <> 'paid' or (${table.providerRef} is not null and ${table.providerRef} ~ '\\S')`),
+    check("payouts_paid_has_ref", sql`${table.status} <> 'paid' or (${table.providerRef} is not null and ${notBlank(table.providerRef)})`),
     check("payouts_sent_has_next_check", sql`${table.status} <> 'sent' or ${table.nextCheckAt} is not null`),
     check(
       "payouts_completed_with_status",

@@ -1,4 +1,4 @@
-import { amount, amountValid, at } from "@pay-tty/database/columns"
+import { amount, amountValid, at, identifier } from "@pay-tty/database/columns"
 import { sql } from "drizzle-orm"
 import { check, index, integer, pgEnum, pgTable, smallint, text } from "drizzle-orm/pg-core"
 
@@ -10,13 +10,13 @@ export const outcome = pgEnum("payout_outcome", outcomes)
 export const providerPayouts = pgTable(
   "provider_payouts",
   {
-    providerRef: text("provider_ref").primaryKey(),
+    providerRef: identifier("provider_ref").primaryKey(),
     // Caller-supplied idempotency key (payout ID). Duplicate sends are no-ops.
-    reference: text("reference").notNull().unique(),
-    ledger: text("ledger").notNull(),
+    reference: identifier("reference").notNull().unique(),
+    ledger: identifier("ledger").notNull(),
     amount: amount("amount").notNull(),
-    bankCode: text("bank_code").notNull(),
-    accountNumber: text("account_number").notNull(),
+    bankCode: identifier("bank_code").notNull(),
+    accountNumber: identifier("account_number").notNull(),
     accountName: text("account_name").notNull(),
     sentAt: at("sent_at").defaultNow().notNull(),
     // Null while the transfer is processing.

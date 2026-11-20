@@ -120,6 +120,20 @@
       "when": 1795144766474,
       "tag": "0016_automatic-payouts",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1795163327516,
+      "tag": "0017_identifiers-collate-c",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1795164644894,
+      "tag": "0018_blank-checks-explicit-space",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,192 @@
+{
+  "id": "73556f4c-5d5b-4de8-b251-59e73f0d7a3b",
+  "prevId": "44636d5e-f328-4d34-b07e-8c30ea8ac927",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.provider_payouts": {
+      "name": "provider_payouts",
+      "schema": "",
+      "columns": {
+        "provider_ref": {
+          "name": "provider_ref",
+          "type": "text COLLATE \"C\"",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "reference": {
+          "name": "reference",
+          "type": "text COLLATE \"C\"",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ledger": {
+          "name": "ledger",
+          "type": "text COLLATE \"C\"",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount": {
+          "name": "amount",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "bank_code": {
+          "name": "bank_code",
+          "type": "text COLLATE \"C\"",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "account_number": {
+          "name": "account_number",
+          "type": "text COLLATE \"C\"",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "account_name": {
+          "name": "account_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sent_at": {
+          "name": "sent_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "payout_outcome",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reversed_at": {
+          "name": "reversed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reported_at": {
+          "name": "reported_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "callback_attempts": {
+          "name": "callback_attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "next_callback_at": {
+          "name": "next_callback_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "callback_status": {
+          "name": "callback_status",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "callback_abandoned_at": {
+          "name": "callback_abandoned_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "provider_payouts_processing_idx": {
+          "name": "provider_payouts_processing_idx",
+          "columns": [
+            {
+              "expression": "sent_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"provider_payouts\".\"outcome\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "provider_payouts_unreported_idx": {
+          "name": "provider_payouts_unreported_idx",
+          "columns": [
+            {
+              "expression": "sent_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"provider_payouts\".\"outcome\" is not null and \"provider_payouts\".\"reported_at\" is null and \"provider_payouts\".\"callback_abandoned_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "provider_payouts_reference_unique": {
+          "name": "provider_payouts_reference_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "reference"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "provider_payouts_amount_valid": {
+          "name": "provider_payouts_amount_valid",
+          "value": "\"provider_payouts\".\"amount\" between 1 and 9007199254740991"
+        },
+        "provider_payouts_reported_or_abandoned": {
+          "name": "provider_payouts_reported_or_abandoned",
+          "value": "\"provider_payouts\".\"reported_at\" is null or \"provider_payouts\".\"callback_abandoned_at\" is null"
+        },
+        "provider_payouts_reported_final": {
+          "name": "provider_payouts_reported_final",
+          "value": "\"provider_payouts\".\"reported_at\" is null or \"provider_payouts\".\"outcome\" is not null"
+        },
+        "provider_payouts_reversed_paid": {
+          "name": "provider_payouts_reversed_paid",
+          "value": "\"provider_payouts\".\"reversed_at\" is null or \"provider_payouts\".\"outcome\" = 'paid'"
+        }
+      },
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {
+    "public.payout_outcome": {
+      "name": "payout_outcome",
+      "schema": "public",
+      "values": [
+        "paid",
+        "failed"
+      ]
+    }
+  },
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}
