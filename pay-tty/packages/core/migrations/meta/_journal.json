@@ -113,6 +113,13 @@
       "when": 1795096304781,
       "tag": "0015_payment-settlement",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1795144766474,
+      "tag": "0016_automatic-payouts",
+      "breakpoints": true
     }
   ]
 }

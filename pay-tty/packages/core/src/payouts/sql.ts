@@ -68,6 +68,12 @@ export const payoutSettings = pgTable(
     mode: mode("mode").default("manual").notNull(),
     bankCode: text("bank_code").notNull(),
     accountNumber: text("account_number").notNull(),
+    // When the business last switched to automatic: the daily run pays it out
+    // from the next midnight UTC after, so a switch takes effect at the next run.
+    automaticSince: at("automatic_since"),
+    // The last UTC date the daily run settled for this business, paid out or
+    // not; a run that failed leaves it, so the next check retries the day.
+    lastRunOn: date("last_run_on", { mode: "string" }),
     updatedAt: timestamps.updatedAt,
   },
   (table) => [
@@ -80,6 +86,7 @@ export const payoutSettings = pgTable(
     })
       .onDelete("restrict")
       .onUpdate("cascade"),
+    check("payout_settings_automatic_since", sql`(${table.mode} = 'automatic') = (${table.automaticSince} is not null)`),
     check("payout_settings_bank_code_valid", bankCodeValid(table.bankCode)),
     check("payout_settings_account_number_valid", accountNumberValid(table.accountNumber)),
   ],
@@ -97,7 +104,7 @@ export const payouts = pgTable(
     ledger: text("ledger").notNull(),
     amount: amount("amount").notNull(),
     trigger: trigger("trigger").notNull(),
-    // Scheduled date in the business's timezone (`scheduled` trigger only).
+    // The UTC date of the daily run (`scheduled` trigger only); the business's timezone later.
     scheduledFor: date("scheduled_for", { mode: "string" }),
     // Snapshot of the destination bank account at creation time.
     bankCode: text("bank_code").notNull(),

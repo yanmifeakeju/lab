@@ -667,7 +667,7 @@ const PayoutSettingsForm = (props: {
       <scrollbox ref={(box) => (fields = box)} flexGrow={1} flexShrink={1} scrollY contentOptions={gutter}>
         <box id={payoutFieldId("mode")} flexDirection="column" flexShrink={0}>
           <text fg={focused("mode") ? bright : muted}>Payouts</text>
-          <text>{choice("mode", props.form.mode === "automatic" ? "Automatic · daily" : "Manual")}</text>
+          <text>{choice("mode", props.form.mode === "automatic" ? "Automatic · daily at 00:00 UTC" : "Manual")}</text>
         </box>
         <box id={payoutFieldId("bank")} flexDirection="column" flexShrink={0}>
           <text fg={focused("bank") ? bright : muted}>Bank</text>

@@ -4,6 +4,7 @@ import { layer as DatabaseLayer } from "@pay-tty/core/database";
 import { Catalog, LedgerClient, LedgerPostings, PayableAccounts, RelayNudge } from "@pay-tty/core/ledger";
 import { Payments } from "@pay-tty/core/payments";
 import { Payouts } from "@pay-tty/core/payouts";
+import { AutomaticPayouts } from "@pay-tty/core/payouts/automatic";
 import { PayoutDispatcher } from "@pay-tty/core/payouts/dispatcher";
 import { SimProvider } from "@pay-tty/core/payouts/providers/sim";
 import { Principal } from "@pay-tty/core/principal";
@@ -24,11 +25,11 @@ const LedgerClientLive = LedgerClient.layer.pipe(Layer.provide(FetchHttpClient.l
 // v1 pays out through the simulated provider at SIM_URL; nothing reaches a bank.
 const PayoutProviderLive = SimProvider.layer.pipe(Layer.provide(FetchHttpClient.layer));
 
-const RuntimeLive = Layer.mergeAll(
-  AuthenticationLive,
-  Layer.mergeAll(PayableAccounts.layer, LedgerPostings.layer).pipe(Layer.provide(LedgerClientLive)),
-  PayoutDispatcher.layer,
-).pipe(
+// Balances and postings, both over the ledger's API.
+const LedgerLive = Layer.mergeAll(PayableAccounts.layer, LedgerPostings.layer).pipe(Layer.provide(LedgerClientLive));
+
+const RuntimeLive = Layer.mergeAll(AuthenticationLive, PayoutDispatcher.layer, AutomaticPayouts.layer).pipe(
+  Layer.provideMerge(LedgerLive),
   Layer.provideMerge(Token.layer),
   Layer.provideMerge(PayoutProviderLive),
   Layer.provideMerge(DomainLive),

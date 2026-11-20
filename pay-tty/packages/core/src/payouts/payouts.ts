@@ -1,4 +1,4 @@
-import { and, count, desc, eq, isNotNull, isNull, not, sql } from "drizzle-orm"
+import { and, count, desc, eq, isNotNull, isNull, lt, not, or, sql } from "drizzle-orm"
 import { Context, Data, Duration, Effect, Layer, Result, Schema } from "effect"
 
 import { Business } from "../business/business.ts"
@@ -311,6 +311,19 @@ export interface Interface {
     Confirmed,
     PayoutNotFoundError | ExpiredError | CancelledError | AutomaticError | LedgerMismatchError | RulesChangedError
   >
+  /**
+   * The daily run for one business on UTC `date`: creates its automatic payout
+   * of `available`, already confirmed, and nudges the relay. Returns null when
+   * there's nothing to do: the business isn't due (not automatic, switched
+   * since that day began, or already run), or `available` is below the
+   * currency's minimum. Paused payouts fail, so the day is retried.
+   */
+  readonly schedule: (
+    businessId: Business.ID,
+    ledger: Ledger.Slug,
+    date: string,
+    available: bigint,
+  ) => Effect.Effect<Payout | null, LedgerMismatchError | UnavailableError>
   /** Lists confirmed payouts for `businessId`, ordered newest first (excludes drafts). */
   readonly list: (businessId: Business.ID, before: Cursor | null) => Effect.Effect<Page, CursorError>
   readonly get: (businessId: Business.ID, id: string) => Effect.Effect<Payout, PayoutNotFoundError>
@@ -479,6 +492,9 @@ const make = Effect.gen(function* () {
       accountNumber: destination.accountNumber,
     }
 
+    // Kept while automatic, so saving a new account doesn't delay the next run.
+    const automatic = change.mode === "automatic"
+
     const opened = yield* openedIn(businessId, ledger)
     const rules = yield* rulesIn(businessId, ledger, opened.currency)
 
@@ -489,10 +505,14 @@ const make = Effect.gen(function* () {
     const saved = yield* database.use((db) =>
       db
         .insert(payoutSettings)
-        .values({ businessId, ledger, ...values })
+        .values({ businessId, ledger, ...values, automaticSince: automatic ? sql`now()` : null })
         .onConflictDoUpdate({
           target: [payoutSettings.businessId, payoutSettings.ledger],
-          set: { ...values, updatedAt: sql`now()` },
+          set: {
+            ...values,
+            automaticSince: automatic ? sql`coalesce(${payoutSettings.automaticSince}, now())` : null,
+            updatedAt: sql`now()`,
+          },
         })
         .returning(),
     )
@@ -644,6 +664,28 @@ const make = Effect.gen(function* () {
 
   const reread = (businessId: Business.ID, id: string) => Effect.orDie(get(businessId, id))
 
+  // Queues a requested payout's pending hold, from the payable account to payouts clearing.
+  const hold = (payout: typeof payouts.$inferSelect, payable: string, clearing: string) =>
+    database.use((db) =>
+      db.insert(ledgerPostings).values({
+        id: createId("lpost"),
+        businessId: payout.businessId,
+        ledger: payout.ledger,
+        payoutId: payout.id,
+        kind: "payout",
+        description: `Payout to ${bankName(payout.bankCode)} ••••${payout.accountNumber.slice(-4)}`,
+        lines: [
+          {
+            debit_account_ref: payable,
+            credit_account_ref: clearing,
+            amount: payout.amount.toString(),
+            purpose: "payout",
+          },
+        ],
+        pending: true,
+      }),
+    )
+
   const confirm = Effect.fn("Payouts.confirm")(function* (businessId: Business.ID, id: string) {
     const outcome = yield* database.transaction(
       Effect.gen(function* () {
@@ -725,25 +767,7 @@ const make = Effect.gen(function* () {
 
         yield* database.use((db) => db.update(payouts).set({ status: "requested" }).where(eq(payouts.id, payout.id)))
 
-        yield* database.use((db) =>
-          db.insert(ledgerPostings).values({
-            id: createId("lpost"),
-            businessId,
-            ledger,
-            payoutId: payout.id,
-            kind: "payout",
-            description: `Payout to ${bankName(payout.bankCode)} ••••${payout.accountNumber.slice(-4)}`,
-            lines: [
-              {
-                debit_account_ref: payable,
-                credit_account_ref: clearing,
-                amount: payout.amount.toString(),
-                purpose: "payout",
-              },
-            ],
-            pending: true,
-          }),
-        )
+        yield* hold(payout, payable, clearing)
 
         return Ending.Done({ payout: yield* reread(businessId, id), confirmed: true })
       }),
@@ -754,6 +778,130 @@ const make = Effect.gen(function* () {
       Done: ({ payout, confirmed }) =>
         Effect.as(confirmed ? relay.nudge : Effect.void, { payout, confirmed } satisfies Confirmed),
     })
+  })
+
+  const schedule = Effect.fn("Payouts.schedule")(function* (
+    businessId: Business.ID,
+    ledger: Ledger.Slug,
+    date: string,
+    available: bigint,
+  ) {
+    // The first instant of `date` in UTC: a switch to automatic before it counts.
+    const dayStart = sql`(${date}::date)::timestamp at time zone 'UTC'`
+
+    const created = yield* database.transaction(
+      Effect.gen(function* () {
+        // Locked `FOR UPDATE` and read again, so a mode change, or another
+        // plane running the same day, waits and then finds nothing due.
+        const found = yield* database.use((db) =>
+          db
+            .select({
+              ...settingsColumns,
+              payable: businesses.primaryPayableAccountRef,
+              clearing: platformAccounts.ledgerAccountRef,
+            })
+            .from(payoutSettings)
+            .innerJoin(ledgers, eq(ledgers.slug, payoutSettings.ledger))
+            .innerJoin(businesses, eq(businesses.id, payoutSettings.businessId))
+            .leftJoin(
+              platformAccounts,
+              and(eq(platformAccounts.ledger, payoutSettings.ledger), eq(platformAccounts.label, "payouts_clearing")),
+            )
+            .where(and(
+              eq(payoutSettings.businessId, businessId),
+              eq(payoutSettings.ledger, ledger),
+              eq(payoutSettings.mode, "automatic"),
+              lt(payoutSettings.automaticSince, dayStart),
+              or(isNull(payoutSettings.lastRunOn), lt(payoutSettings.lastRunOn, date)),
+            ))
+            .for("update", { of: payoutSettings }),
+        )
+
+        const row = found[0]
+
+        if (row === undefined) {
+          return null
+        }
+
+        // Paused fails the transaction, so the day stays due and is retried.
+        yield* refuseMismatched(businessId, ledger)
+
+        const rules = yield* rulesIn(businessId, ledger, row.currency)
+        const payable = row.payable
+        const clearing = row.clearing
+
+        if (payable === null || clearing === null) {
+          return yield* Effect.die(new Error(`no payable or payouts_clearing account for ${businessId} in ${ledger}`))
+        }
+
+        const ran = database.use((db) =>
+          db
+            .update(payoutSettings)
+            // Not a settings change: `updated_at` keeps when the merchant last saved.
+            .set({ lastRunOn: date, updatedAt: sql`${payoutSettings.updatedAt}` })
+            .where(and(eq(payoutSettings.businessId, businessId), eq(payoutSettings.ledger, ledger))),
+        )
+
+        const destination = savedDestination(row.settings, row.name)
+        const amount = available > maxAmount ? maxAmount : available
+
+        // Too little to pay out: the day is done, and the money waits for the next run.
+        if (amount < rules.minimum) {
+          yield* ran
+
+          return null
+        }
+
+        // The saved bank no longer takes payouts; until the merchant saves
+        // another, every day is skipped, so say so.
+        if (!takesPayouts(rules, destination.bankCode)) {
+          yield* Effect.logWarning("automatic payout skipped: the saved bank no longer takes payouts", destination.bankCode)
+          yield* ran
+
+          return null
+        }
+
+        const inserted = yield* database.use((db) =>
+          db
+            .insert(payouts)
+            .values({
+              id: createId("pout"),
+              businessId,
+              ledger,
+              amount,
+              trigger: "scheduled",
+              scheduledFor: date,
+              idempotencyKey: `auto:${businessId}:${ledger}:${date}`,
+              bankCode: destination.bankCode,
+              accountNumber: destination.accountNumber,
+              accountName: destination.accountName,
+              status: "requested",
+            })
+            .onConflictDoNothing()
+            .returning(),
+        )
+
+        yield* ran
+
+        const payout = inserted[0]
+
+        if (payout === undefined) {
+          return null
+        }
+
+        yield* hold(payout, payable, clearing)
+
+        return payout.id
+      }),
+    )
+
+    if (created === null) {
+      return null
+    }
+
+    yield* relay.nudge
+
+    return yield* reread(businessId, created)
   })
 
   const list = Effect.fn("Payouts.list")(function* (businessId: Business.ID, before: Cursor | null) {
@@ -854,7 +1002,7 @@ const make = Effect.gen(function* () {
     }
   })
 
-  return Service.of({ settings, banks, changeSettings, create, confirm, list, get, report })
+  return Service.of({ settings, banks, changeSettings, create, confirm, schedule, list, get, report })
 })
 
 export const layer = Layer.effect(Service)(make)

@@ -1,10 +1,18 @@
 import { LedgerPostings, RelayNudge } from "@pay-tty/core/ledger"
 import { Payments } from "@pay-tty/core/payments"
+import { AutomaticPayouts } from "@pay-tty/core/payouts/automatic"
 import { PayoutDispatcher } from "@pay-tty/core/payouts/dispatcher"
 import { Config, Duration, Effect, Layer, Queue, Schedule } from "effect"
 
 /** The longest the relay waits between passes while the ledger is down. */
 export const maxBackoff = Duration.minutes(1)
+
+/**
+ * How often the daily automatic payout run looks for businesses still due. The
+ * first look after 00:00 UTC does the day's run; later ones retry failures and
+ * catch up after a restart.
+ */
+export const automaticEvery = Duration.minutes(1)
 
 // Sends waiting postings to the ledger, pass after pass while each fills its
 // batch, then every interval or sooner when nudged, for as long as the layer's
@@ -12,11 +20,13 @@ export const maxBackoff = Duration.minutes(1)
 // too, so a slow provider never holds up a posting and a stuck posting never
 // holds up payouts; a relay pass that comes back short wakes it early, so a
 // payout just held goes out at once. Settlement marks due payments for capture
-// the same way, and wakes the relay to send them.
+// the same way, and wakes the relay to send them. Automatic payouts run for
+// the UTC date every `automaticEvery`.
 const make = Effect.gen(function* () {
   const postings = yield* LedgerPostings.Service
   const dispatcher = yield* PayoutDispatcher.Service
   const payments = yield* Payments.Service
+  const automatic = yield* AutomaticPayouts.Service
   const wake = yield* RelayNudge.Service
 
   const interval = yield* Config.Duration("LEDGER_RELAY_INTERVAL").pipe(Config.withDefault(Duration.seconds(5)))
@@ -41,6 +51,18 @@ const make = Effect.gen(function* () {
     Effect.retry(backoff),
   )
 
+  const payOut = Effect.gen(function* () {
+    const created = yield* automatic.run(yield* automatic.today)
+
+    if (created > 0) {
+      yield* Effect.logInfo("automatic payouts created", created)
+    }
+  }).pipe(
+    Effect.tapDefect((defect) => Effect.logError("automatic payout run died", defect)),
+    Effect.sandbox,
+    Effect.retry(backoff),
+  )
+
   // One pending wake-up at most each: passes during a dispatch or settlement start one more.
   const due = yield* Queue.sliding<void>(1)
   const settling = yield* Queue.sliding<void>(1)
@@ -48,6 +70,7 @@ const make = Effect.gen(function* () {
   yield* Effect.forkScoped(
     Effect.forever(dispatcher.dispatch.pipe(Effect.andThen(Effect.timeoutOption(Queue.take(due), interval)))),
   )
+  yield* Effect.forkScoped(Effect.forever(payOut.pipe(Effect.andThen(Effect.sleep(automaticEvery)))))
   yield* Effect.forkScoped(
     Effect.forever(settle.pipe(Effect.andThen(Effect.timeoutOption(Queue.take(settling), interval)))),
   )

@@ -46,9 +46,9 @@ export const balanceSummary = (figures: BusinessBalanceEncoded) => {
 export const destinationLabel = (destination: PayoutDestinationEncoded) =>
   `${destination.bank_name} ••••${destination.account_number.slice(-4)}`
 
-/** `Automatic · daily · GTBank ••••6789`, or how to set one up. */
+/** `Automatic · daily at 00:00 UTC · GTBank ••••6789`, or how to set one up. */
 export const settingsLine = (settings: Settings) => {
-  const mode = settings.mode === "automatic" ? "Automatic · daily" : "Manual"
+  const mode = settings.mode === "automatic" ? "Automatic · daily at 00:00 UTC" : "Manual"
 
   return settings.destination === null ? `${mode} · no payout account` : `${mode} · ${destinationLabel(settings.destination)}`
 }

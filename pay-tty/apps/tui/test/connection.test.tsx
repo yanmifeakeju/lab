@@ -1878,7 +1878,7 @@ void test("automatic payouts take no manual request, and a rejected payout shows
     yield* tui.showing("Payouts         o")
     tui.keys.pressKey("o")
 
-    const list = yield* tui.showing("Automatic · daily · GTBank ••••6789")
+    const list = yield* tui.showing("Automatic · daily at 00:00 UTC · GTBank ••••6789")
 
     assert.doesNotMatch(list, /n new/)
 

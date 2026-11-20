@@ -8,6 +8,7 @@ import { Catalog, Currency, Ledger, LedgerPostings, PayableAccounts, RelayNudge 
 import { Payments } from "@pay-tty/core/payments"
 import { Payouts } from "@pay-tty/core/payouts"
 import { PayoutProvider } from "@pay-tty/core/payouts/provider"
+import { AutomaticPayouts } from "@pay-tty/core/payouts/automatic"
 import { PayoutDispatcher } from "@pay-tty/core/payouts/dispatcher"
 import { Principal } from "@pay-tty/core/principal"
 import { Testing } from "@pay-tty/core/testing"
@@ -76,13 +77,8 @@ const server = (options: ServerOptions = {}) =>
         app: HttpRouter.toWebHandler(
         Layer.mergeAll(ApiLive, PayoutWebhook.layer, UnknownErrorResponse).pipe(
           Layer.provideMerge(Relay.layer),
-          Layer.provideMerge(
-            Layer.mergeAll(
-              AuthenticationLive,
-              Layer.mergeAll(PayableAccounts.layer, LedgerPostings.layer).pipe(Layer.provide(ledger.layer)),
-              PayoutDispatcher.layer,
-            ),
-          ),
+          Layer.provideMerge(Layer.mergeAll(AuthenticationLive, PayoutDispatcher.layer, AutomaticPayouts.layer)),
+          Layer.provideMerge(Layer.mergeAll(PayableAccounts.layer, LedgerPostings.layer).pipe(Layer.provide(ledger.layer))),
           Layer.provideMerge(Token.layerFrom(keys)),
           Layer.provideMerge(provider.layer),
           Layer.provideMerge(

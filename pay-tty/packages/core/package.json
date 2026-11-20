@@ -10,6 +10,7 @@
     "./ledger": "./src/ledger/ledger.ts",
     "./payments": "./src/payments/payments.ts",
     "./payouts": "./src/payouts/payouts.ts",
+    "./payouts/automatic": "./src/payouts/automatic.ts",
     "./payouts/dispatcher": "./src/payouts/dispatcher.ts",
     "./payouts/providers/sim": "./src/payouts/providers/sim/adapter.ts",
     "./payouts/provider": "./src/payouts/provider.ts",
