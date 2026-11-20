@@ -7,21 +7,20 @@
 
 name: pay-tty
 
+# To the host's syslog, which on Fedora is the journal (`journalctl -t
+# pay-tty-plane-1`); `docker compose logs` still reads Docker's local copy.
+x-logging: &logging
+  driver: syslog
+  options:
+    tag: "{{.Name}}"
+
 x-service: &service
   restart: unless-stopped
-  logging:
-    driver: json-file
-    options:
-      max-size: 10m
-      max-file: "3"
+  logging: *logging
 
 x-job: &job
   restart: "no"
-  logging:
-    driver: json-file
-    options:
-      max-size: 10m
-      max-file: "3"
+  logging: *logging
 
 services:
   postgres:
