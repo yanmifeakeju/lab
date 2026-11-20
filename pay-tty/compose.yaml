@@ -147,7 +147,7 @@ services:
     volumes:
       - tui-data:/data
     ports:
-      # Loopback unless told otherwise; on the server this is just "22".
+      # Loopback unless told otherwise; on the server "0.0.0.0:22", IPv4 only.
       - ${TUI_PUBLISH:-127.0.0.1:2222}:2222
     # internal reaches plane; edge carries the published port.
     networks: [internal, edge]
