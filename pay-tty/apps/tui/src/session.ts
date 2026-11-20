@@ -247,10 +247,13 @@ export const followBackoff = Duration.seconds(30);
 
 /**
  * How long a follow keeps reading a payout that doesn't change; `r` starts it
- * again. Past the early checks of plane's provider wait, so most payouts'
- * settling still shows; a long pending one needs `r`.
+ * again. Plane checks a pending payout with its provider 2, 4, 9, 19 and 49
+ * minutes after the send; this outlasts the first two, so nearly every
+ * payout's settling shows, and stays under a merchant's SSH idle limit
+ * (limits.ts), which would otherwise end the session of one watching without
+ * typing. A payout still pending past the 4-minute check needs `r`.
  */
-export const followQuiet = Duration.minutes(20);
+export const followQuiet = Duration.minutes(5);
 
 export interface Options {
   readonly followEvery?: Duration.Duration;
