@@ -8,7 +8,7 @@ import { AutomaticPayouts } from "@pay-tty/core/payouts/automatic";
 import { PayoutDispatcher } from "@pay-tty/core/payouts/dispatcher";
 import { SimProvider } from "@pay-tty/core/payouts/providers/sim";
 import { Principal } from "@pay-tty/core/principal";
-import { ConfigProvider, Effect, Layer } from "effect";
+import { ConfigProvider, Effect, Layer, Logger } from "effect";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 
 import { AuthenticationLive } from "../src/api/middleware/authentication.ts";
@@ -40,6 +40,9 @@ const RuntimeLive = Layer.mergeAll(AuthenticationLive, PayoutDispatcher.layer, A
 // Every setting is read from the environment as PLANE_<name>.
 const ConfigLive = ConfigProvider.layer(ConfigProvider.nested(ConfigProvider.fromEnv(), "PLANE"));
 
+// One line per log, so the journal keeps each whole.
+const LoggerLive = Logger.layer([Logger.consoleLogFmt]);
+
 NodeRuntime.runMain(
-  Layer.launch(Plane).pipe(Effect.provide(Layer.provideMerge(RuntimeLive, ConfigLive))),
+  Layer.launch(Plane).pipe(Effect.provide(Layer.mergeAll(Layer.provideMerge(RuntimeLive, ConfigLive), LoggerLive))),
 );

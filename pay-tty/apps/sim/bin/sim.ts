@@ -3,7 +3,7 @@
 import { createServer } from "node:http"
 
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node"
-import { Config, ConfigProvider, Effect, Layer } from "effect"
+import { Config, ConfigProvider, Effect, Layer, Logger } from "effect"
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
 
@@ -24,4 +24,7 @@ const Sim = HttpRouter.serve(routes).pipe(
 // Every setting is read from the environment as SIM_<name>.
 const ConfigLive = ConfigProvider.layer(ConfigProvider.nested(ConfigProvider.fromEnv(), "SIM"))
 
-NodeRuntime.runMain(Layer.launch(Sim).pipe(Effect.provide(ConfigLive)))
+// One line per log, so the journal keeps each whole.
+const LoggerLive = Logger.layer([Logger.consoleLogFmt])
+
+NodeRuntime.runMain(Layer.launch(Sim).pipe(Effect.provide(Layer.merge(ConfigLive, LoggerLive))))
