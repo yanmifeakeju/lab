@@ -81,19 +81,29 @@ export const troubled = (payout: Payout) =>
 export const reviewKey = (payouts: ReadonlyArray<Payout>) =>
   payouts.some((payout) => payout.under_review) ? "! under review · no action needed" : null
 
-/** Each payout's date, status and amount, the amounts right-aligned in one column. */
+// Both labelled, so a blank never reads as missing.
+const triggerText: Readonly<Record<Payout["trigger"], string>> = { manual: "manual", scheduled: "auto" }
+
+const triggerWidth = Math.max(...Object.values(triggerText).map((text) => text.length))
+
+/**
+ * Each payout's date, status, trigger and amount, the amounts right-aligned in
+ * one column. Narrower, the trigger goes first, then the date.
+ */
 export const payoutRows = (payouts: ReadonlyArray<Payout>, width: number): ReadonlyArray<string> => {
   const amounts = payouts.map((payout) => formatMoney(BigInt(payout.amount), payout.scale, payout.currency))
   const amountWidth = amounts.reduce((widest, amount) => Math.max(widest, stringWidth(amount)), 0)
   const statuses = payouts.map(rowStatus)
   const statusWidth = Math.max(...Object.values(statusText).map((text) => text.length), ...statuses.map((text) => text.length))
   const dated = 16 + 2 + statusWidth + 2 + amountWidth <= width
+  const triggered = dated && 16 + 2 + statusWidth + 2 + triggerWidth + 2 + amountWidth <= width
 
   return payouts.map((payout, index) =>
     cell(
       [
         ...(dated ? [cell(`${payout.created_at.slice(0, 10)} ${payout.created_at.slice(11, 16)}`, 16)] : []),
         cell(statuses[index] ?? "", statusWidth),
+        ...(triggered ? [cell(triggerText[payout.trigger], triggerWidth)] : []),
         cell(amounts[index] ?? "", amountWidth, "end"),
       ].join("  "),
       width,
@@ -158,6 +168,7 @@ export const destinationLine = (payout: Payout) =>
 export const detailLines = (payout: Payout): ReadonlyArray<string> => [
   amountLine(payout),
   destinationLine(payout),
+  payout.trigger === "scheduled" ? "Automatic · the daily payout" : "Requested by you",
   `Created: ${formatTime(payout.created_at)}`,
   ...(payout.sent_at === null ? [] : [`Sent: ${formatTime(payout.sent_at)}`]),
   ...(payout.completed_at === null ? [] : [`${completedAs[payout.status]}: ${formatTime(payout.completed_at)}`]),

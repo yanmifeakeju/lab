@@ -3,7 +3,7 @@ import { test } from "node:test"
 
 import { Deferred, Duration, Effect, Result, SubscriptionRef } from "effect"
 
-import { detailLines, formOf, statusLine, toSettingsRequest } from "../src/payouts.ts"
+import { detailLines, formOf, payoutRows, statusLine, toSettingsRequest } from "../src/payouts.ts"
 import { Balance, Operation, type Popup, Session, SettingsOrigin, type State, View } from "../src/session.ts"
 import { merchantPayment, paymentPage, paid, tips, listed, active, business, failure, fakePlane, figures, first, home, inTurn, me, meetup, movement, overview, banks, gtbank, payout, payoutSettings, type Reply, scenario, sessions, settled, statement, unauthorized } from "./support.ts"
 
@@ -1667,4 +1667,20 @@ void test("a payout's screen says where it stands once sent, paid or failed", ()
     "Failed: 2026-11-10 09:00 UTC",
     "Under review · no action needed",
   ])
+})
+
+void test("a payout says whether the merchant asked for it or the daily run made it", () => {
+  const payouts = [payout(), payout({ trigger: "scheduled", status: "paid" })]
+
+  assert.deepEqual(payoutRows(payouts, 46).map((row) => row.trimEnd()), [
+    "2026-11-10 09:00  requested  manual  ₦2,500.00",
+    "2026-11-10 09:00  paid       auto    ₦2,500.00",
+  ])
+  // Narrower, the trigger goes before the date.
+  assert.deepEqual(payoutRows(payouts, 45).map((row) => row.trimEnd()), [
+    "2026-11-10 09:00  requested  ₦2,500.00",
+    "2026-11-10 09:00  paid       ₦2,500.00",
+  ])
+  assert.ok(detailLines(payouts[0]!).includes("Requested by you"))
+  assert.ok(detailLines(payouts[1]!).includes("Automatic · the daily payout"))
 })
