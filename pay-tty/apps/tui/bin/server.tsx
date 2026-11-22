@@ -127,6 +127,17 @@ const server = createServer({
   limits: { session: { global: sessionsInAll * 2 } },
   // Our own "listening" line says the same, in the log's format.
   startupBanner: false,
+  // ssh2 tags a connection's own failures with a level: those are clients that
+  // can't speak SSH to us, mostly scanners, so one line each, without a stack.
+  onError: (error) => {
+    const failed = error instanceof Error && "level" in error
+
+    const report = failed
+      ? Effect.logWarning("connection failed").pipe(Effect.annotateLogs({ stage: String(error.level), reason: error.message }))
+      : Effect.logError("ssh error", error)
+
+    void runtime.runPromise(report).catch(() => {})
+  },
 }).use((session, next) => {
   // A customer's user name is a share token, which isn't logged either.
   const customer = shareToken.test(session.identity.username)
