@@ -64,6 +64,7 @@ export const connect = (
         startPaymentLink: () => void run(session.startPaymentLink),
         createPaymentLink: (form: Form) => void run(session.createPaymentLink(form)),
         back: () => void run(session.back),
+        home: () => void run(session.home),
         retry: () => void run(session.retry),
         close: () => void run(session.close),
         quit: end,

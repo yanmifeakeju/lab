@@ -825,6 +825,32 @@ void test("returning home from payments or links fetches the balance again", sce
   }),
 ))
 
+void test("home goes straight back from screens deep under it, and fetches the balance again", scenario(
+  Effect.gen(function* () {
+    const plane = fakePlane({ me: me(active), listPaymentLinks: listed(paid) })
+
+    yield* run(plane, (session) => Effect.gen(function* () {
+      yield* session.load
+      yield* current(session)
+      yield* session.manageLinks
+      yield* session.openLink(paid.id)
+      yield* session.linkPayments(paid.id)
+
+      assert.equal((yield* current(session)).view._tag, "Payments")
+
+      yield* session.home
+
+      assert.deepEqual(yield* current(session), idle(home(active, 4)))
+
+      // Already home: nothing more is asked.
+      yield* session.home
+      yield* landed
+    }))
+
+    assert.equal(balanceCalls(plane), 2)
+  }),
+))
+
 void test("an answer for a home that's gone, or for an earlier visit, is dropped", scenario(
   Effect.gen(function* () {
     const earlier = yield* Deferred.make<Reply>()

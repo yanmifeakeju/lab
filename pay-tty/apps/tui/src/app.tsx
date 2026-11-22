@@ -74,6 +74,7 @@ export interface Actions {
   readonly startPaymentLink: () => void
   readonly createPaymentLink: (form: Form) => void
   readonly back: () => void
+  readonly home: () => void
   readonly retry: () => void
   readonly close: () => void
   readonly quit: () => void
@@ -115,11 +116,6 @@ const CreateBusiness = (props: {
   </box>
 )
 
-// Names a demo's settlement delay, so payments settling in minutes aren't taken
-// for how the product behaves.
-const demoTitle = (delay: number | null) =>
-  delay === null ? " pay-tty " : ` pay-tty · demo: payments settle after ${delayLabel(delay)} `
-
 const ShowBalance = (props: { readonly balance: Balance }) => (
   <Switch>
     <Match when={Balance.$is("Unavailable")(props.balance)}>
@@ -150,6 +146,10 @@ const ShowBusiness = (props: {
   readonly short: boolean
   // Too few rows for every line: the country goes, its currency still shown in the amounts.
   readonly cramped: boolean
+  // Rows to spare below the menu for what a first visit needs to know.
+  readonly roomy: boolean
+  /** A demo's settlement delay in seconds; null outside a demo. */
+  readonly settlementDelay: number | null
 }) => (
   <box flexDirection="column" gap={props.short ? 0 : 1}>
     <box flexDirection="column">
@@ -180,6 +180,16 @@ const ShowBusiness = (props: {
         </box>
       </Match>
     </Switch>
+    <Show when={props.roomy && !props.pending && props.business.ledger !== null}>
+      <box flexDirection="column">
+        <text fg={muted}>Payments are simulated; no money moves.</text>
+        <Show when={props.settlementDelay}>
+          {(delay) => <text fg={muted}>Payments settle after {delayLabel(delay())}, then count as Available.</text>}
+        </Show>
+        <text fg={muted}>Open a payment link in a second terminal to pay it yourself.</text>
+        <text fg={muted}>Press d on any screen to come back here.</text>
+      </box>
+    </Show>
   </box>
 )
 
@@ -1074,6 +1084,11 @@ export const App = (props: {
       return
     }
 
+    // Not from a form, where d is typed.
+    if (key.name === "d" && creating() === undefined && payoutSettings() === undefined && requestingPayout() === undefined) {
+      return props.actions.home()
+    }
+
     const shownPayout = payoutDetail()
 
     if (shownPayout !== undefined) {
@@ -1409,7 +1424,7 @@ export const App = (props: {
       paddingY={short() ? 0 : 1}
       flexDirection="column"
       gap={short() ? 0 : 1}
-      title={demoTitle(props.state().settlementDelay)}
+      title=" pay-tty "
     >
       <Switch>
         <Match when={View.$is("Unknown")(view()) && props.state().pending}>
@@ -1433,6 +1448,8 @@ export const App = (props: {
               selected={section()}
               short={short()}
               cramped={terminal().height < 11}
+              roomy={terminal().height >= 20}
+              settlementDelay={props.state().settlementDelay}
             />
           )}
         </Match>

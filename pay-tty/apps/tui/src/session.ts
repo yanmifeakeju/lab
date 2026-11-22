@@ -328,6 +328,8 @@ export interface Interface {
    * business, and from the form or a created link to the list, reloaded.
    */
   readonly back: Effect.Effect<void>;
+  /** Straight to the business, when idle, from any screen under it; a form is left unsaved. */
+  readonly home: Effect.Effect<void>;
   /** Repeats the failed operation; ignored unless the popup offers it. */
   readonly retry: Effect.Effect<void>;
   /** Ignored unless the popup offers it. */
@@ -1460,6 +1462,38 @@ export const make = Effect.fnUntraced(function* (fingerprint: string, options: O
     yield* startBalance(request);
   });
 
+  const goHome = Effect.gen(function* () {
+    const request = yield* nextRequest;
+
+    yield* SubscriptionRef.update(state, (current) => {
+      if (current.popup !== null || current.pending) {
+        return current;
+      }
+
+      const business = View.$match(current.view, {
+        Unknown: () => undefined,
+        NoBusiness: () => undefined,
+        HasBusiness: () => undefined,
+        Payments: ({ business }) => business,
+        PaymentDetail: ({ list }) => list.business,
+        Statement: ({ business }) => business,
+        Links: ({ business }) => business,
+        LinkDetail: ({ business }) => business,
+        CreatingLink: ({ business }) => business,
+        LinkCreated: ({ business }) => business,
+        Payouts: ({ business }) => business,
+        PayoutSettings: ({ business }) => business,
+        RequestingPayout: ({ list }) => list.business,
+        ConfirmingPayout: ({ list }) => list.business,
+        PayoutDetail: ({ list }) => list.business,
+      });
+
+      return business === undefined ? current : { ...current, view: home(business, request) };
+    });
+
+    yield* startBalance(request);
+  });
+
   // The payout screen showing while the payout can still change without the
   // merchant. Each new read of it is a new screen, which starts the follow
   // afresh.
@@ -1632,6 +1666,7 @@ export const make = Effect.fnUntraced(function* (fingerprint: string, options: O
     startPaymentLink,
     createPaymentLink,
     back,
+    home: goHome,
     retry,
     close,
   } satisfies Interface;

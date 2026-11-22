@@ -147,7 +147,7 @@ const clock = (iso: string) => iso.slice(11, 16)
 const availableAt = (iso: string, today: string) =>
   iso.slice(0, 10) === today ? "~" + clock(iso) : iso.slice(5, 10)
 
-/** A demo's settlement delay for the frame's title, e.g. `5 min`. */
+/** A demo's settlement delay, e.g. `5 s` or `5 min`. */
 export const delayLabel = (seconds: number) =>
   seconds < 120 ? `${seconds} s` : seconds < 7200 ? `${Math.round(seconds / 60)} min` : `${Math.round(seconds / 3600)} h`
 
