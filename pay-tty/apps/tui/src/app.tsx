@@ -86,6 +86,8 @@ export const muted = "#888888"
 
 export const bright = "#ffffff"
 
+const sourceUrl = "https://github.com/yanmifeakeju/lab/tree/main/pay-tty"
+
 const countries = { NG: "Nigeria", US: "United States" } as const
 
 const CreateBusiness = (props: {
@@ -188,6 +190,9 @@ const ShowBusiness = (props: {
         </Show>
         <text fg={muted}>Open a payment link in a second terminal to pay it yourself.</text>
         <text fg={muted}>Press d on any screen to come back here.</text>
+        <text fg={muted}>
+          Source: <a href={sourceUrl}>github.com/yanmifeakeju/lab/tree/main/pay-tty</a>
+        </text>
       </box>
     </Show>
   </box>
@@ -1448,7 +1453,7 @@ export const App = (props: {
               selected={section()}
               short={short()}
               cramped={terminal().height < 11}
-              roomy={terminal().height >= 20}
+              roomy={terminal().height >= 21}
               settlementDelay={props.state().settlementDelay}
             />
           )}

@@ -1350,6 +1350,14 @@ void test(
       assert.doesNotMatch(frame, /Incoming|On hold/)
       assert.doesNotMatch(frame, /acct_01K33YV8M82N9MXP4E7J6B1QWK|Account /)
       assert.match(frame, /Payments {8}p/)
+      assert.doesNotMatch(frame, /Source:/)
+
+      tui.setup.resize(70, 21)
+
+      const roomy = yield* tui.showing("Source: github.com/yanmifeakeju/lab/tree/main/pay-tty")
+
+      assert.match(roomy, /Acme Ltd/)
+      assert.match(roomy, /Payments are simulated; no money moves\./)
 
       tui.close()
       yield* Fiber.join(tui.fiber)
